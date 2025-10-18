@@ -1,0 +1,2 @@
+#PCA_Comparison意義不明可能要刪除
+#Scree_Plot可能要了解它的功能
