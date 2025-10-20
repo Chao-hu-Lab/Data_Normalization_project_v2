@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.patches import Ellipse
 import scipy.stats as stats
-from scipy.spatial.distance import mahalanobis
 from scipy.stats import chi2, f as f_dist  # 🔧 改用 F 分布
 import warnings
 import tkinter as tk
@@ -121,42 +120,113 @@ def calculate_istd_cv(istd_signals, sample_columns):
         istd_cv[row['FeatureID']] = cv_percent
     return istd_cv
 
-def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv, cv_weight=0.1, epsilon=1e-6):
+def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv, 
+                                rt_weight=0.6, cv_weight=0.25, 
+                                intensity_weight=0.1, mz_weight=0.05):
+    """
+    多因素加權評分的 ISTD 選擇函數
+    
+    評分公式（越低越好）：
+    score = 0.6 × RT差異(標準化) + 0.25 × CV%(標準化) + 
+            0.1 × 強度倒數(標準化) + 0.05 × m/z差異(標準化)
+    
+
+    """
     analyte_rt = analyte_row.get('rt', np.nan)
     analyte_mz = analyte_row.get('mz', np.nan)
+    
+    # 檢查 analyte 資訊完整性
     if np.isnan(analyte_rt) or np.isnan(analyte_mz):
         return None, float('inf')
     
-    rt_diffs = {}
-    for _, istd_row in istd_signals.iterrows():
-        istd_rt = istd_row.get('rt', np.nan)
-        if not np.isnan(istd_rt):
-            rt_diffs[istd_row['FeatureID']] = abs(analyte_rt - istd_rt)
+    # ========== 步驟 1: 收集所有 ISTD 的指標 ==========
+    candidates = []
     
-    if not rt_diffs:
+    for _, istd_row in istd_signals.iterrows():
+        istd_id = istd_row['FeatureID']
+        istd_rt = istd_row.get('rt', np.nan)
+        istd_mz = istd_row.get('mz', np.nan)
+        
+        # 跳過缺少資訊的 ISTD
+        if np.isnan(istd_rt) or np.isnan(istd_mz):
+            continue
+        
+        # 計算 RT 差異
+        rt_diff = abs(analyte_rt - istd_rt)
+        
+        # 獲取 CV%
+        cv = istd_cv.get(istd_id, np.nan)
+        if np.isnan(cv):
+            cv = 100.0  # 如果沒有 CV%，設為高值
+        
+        # 計算 m/z 差異（ppm）
+        mz_diff_ppm = abs(analyte_mz - istd_mz) / analyte_mz * 1e6
+        
+        # 計算強度（中位數）
+        # 獲取所有數值欄位
+        numeric_cols = [col for col in istd_row.index 
+                       if col not in ['FeatureID', 'rt', 'mz', 'is_ISTD']]
+        values = []
+        for col in numeric_cols:
+            try:
+                val = float(istd_row[col])
+                if not pd.isna(val) and val > 0:
+                    values.append(val)
+            except (ValueError, TypeError):
+                pass
+        
+        median_intensity = np.median(values) if values else 0.0
+        
+        # 儲存候選資訊
+        candidates.append({
+            'istd_row': istd_row,
+            'istd_id': istd_id,
+            'rt_diff': rt_diff,
+            'cv': cv,
+            'intensity': median_intensity,
+            'mz_diff_ppm': mz_diff_ppm
+        })
+    
+    # ========== 步驟 2: 如果沒有候選，返回 None ==========
+    if len(candidates) == 0:
         return None, float('inf')
     
-    min_rt_diff = min(rt_diffs.values())
-    candidates = [istd_id for istd_id, diff in rt_diffs.items() if abs(diff - min_rt_diff) <= epsilon]
+    # ========== 步驟 3: 標準化各指標（Min-Max Normalization）==========
+    # 提取所有候選的指標
+    rt_diffs = np.array([c['rt_diff'] for c in candidates])
+    cvs = np.array([c['cv'] for c in candidates])
+    intensities = np.array([c['intensity'] for c in candidates])
+    mz_diffs = np.array([c['mz_diff_ppm'] for c in candidates])
     
-    if len(candidates) == 1:
-        best_id = candidates[0]
-        return istd_signals[istd_signals['FeatureID'] == best_id].iloc[0], min_rt_diff
+    # 標準化函數（0-1 範圍）
+    def normalize(values):
+        min_val = np.min(values)
+        max_val = np.max(values)
+        if max_val == min_val:
+            return np.full(len(values), 0.5)  # 如果所有值相同，返回中間值
+        return (values - min_val) / (max_val - min_val)
     
-    min_score = float('inf')
-    best_istd = None
-    for istd_id in candidates:
-        istd_row = istd_signals[istd_signals['FeatureID'] == istd_id].iloc[0]
-        istd_mz = istd_row.get('mz', np.nan)
-        if np.isnan(istd_mz): continue
-        mz_diff_ppm = abs(analyte_mz - istd_mz) / analyte_mz * 1e6
-        cv = istd_cv.get(istd_id, 100 if np.isnan(istd_cv.get(istd_id)) else istd_cv[istd_id])
-        score = cv * cv_weight * 100 + mz_diff_ppm * 0.0001
-        if score < min_score:
-            min_score = score
-            best_istd = istd_row
+    # 標準化各指標
+    normalized_rt = normalize(rt_diffs)
+    normalized_cv = normalize(cvs)
+    normalized_intensity_inv = normalize(1.0 / (intensities + 1e-10))  # 強度倒數（避免除以零）
+    normalized_mz = normalize(mz_diffs)
     
-    return best_istd, min_rt_diff
+    # ========== 步驟 4: 計算加權評分 ==========
+    for i, candidate in enumerate(candidates):
+        # 加權評分（越低越好）
+        score = (
+            rt_weight * normalized_rt[i] +
+            cv_weight * normalized_cv[i] +
+            intensity_weight * normalized_intensity_inv[i] +
+            mz_weight * normalized_mz[i]
+        )
+        candidate['score'] = score
+    
+    # ========== 步驟 5: 選擇評分最低的 ISTD ==========
+    best_candidate = min(candidates, key=lambda x: x['score'])
+    
+    return best_candidate['istd_row'], best_candidate['rt_diff']
 
 def calculate_istd_medians(istd_signals, sample_columns):
     istd_medians = {}
@@ -466,7 +536,7 @@ def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
     return t2_values, threshold, outliers
 
 def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
-    """繪製 p 值分佈圖（驗證統計檢定有效性）"""
+    """繪製 p 值分佈圖（註解移到下方空白區域）"""
     try:
         variance_pvalues = cv_results_df['Variance_Test_pvalue'].dropna()
         
@@ -474,42 +544,87 @@ def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
             print("  ⚠️ 有效 p 值數量不足，跳過 p 值分佈圖")
             return
         
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 9))
         
-        # 左圖：直方圖
-        ax1.hist(variance_pvalues, bins=20, color='steelblue', edgecolor='black', alpha=0.7)
-        ax1.axhline(y=len(variance_pvalues)/20, color='red', linestyle='--', linewidth=2,
-                   label='Uniform Distribution Expected')
-        ax1.set_xlabel('P-value (Levene\'s Test)', fontsize=12, fontweight='bold')
-        ax1.set_ylabel('Frequency', fontsize=12, fontweight='bold')
-        ax1.set_title('P-value Distribution\n(Variance Homogeneity Test)', 
-                     fontsize=14, fontweight='bold')
-        ax1.legend(fontsize=10)
-        ax1.grid(True, alpha=0.3, linestyle='--')
+        # ===== 左圖：直方圖 =====
+        ax1.hist(variance_pvalues, bins=20, color='steelblue', edgecolor='black', alpha=0.75)
+        ax1.axhline(y=len(variance_pvalues)/20, color='red', linestyle='--', linewidth=2.5,
+                   label='Expected (Uniform)', zorder=5)
         
-        # 右圖：Q-Q Plot
-        from scipy.stats import probplot
-        probplot(variance_pvalues, dist="uniform", plot=ax2)
-        ax2.set_title('Q-Q Plot (Uniform Distribution)', fontsize=14, fontweight='bold')
-        ax2.set_xlabel('Theoretical Quantiles', fontsize=12, fontweight='bold')
-        ax2.set_ylabel('Sample Quantiles', fontsize=12, fontweight='bold')
-        ax2.grid(True, alpha=0.3, linestyle='--')
+        ax1.set_xlabel('P-value (Levene\'s Test)', fontsize=13, fontweight='bold')
+        ax1.set_ylabel('Frequency', fontsize=13, fontweight='bold')
+        ax1.set_title('P-value Distribution of Levene\'s Test\n'
+                     'Variance Homogeneity: Before vs After ISTD Correction', 
+                     fontsize=14, fontweight='bold', pad=15)
+        ax1.legend(fontsize=11, loc='upper right')
+        ax1.grid(True, alpha=0.25, linestyle=':', linewidth=0.5)
+        
+        ax1.ticklabel_format(style='scientific', axis='x', scilimits=(0,0))
         
         # Kolmogorov-Smirnov 檢定
         from scipy.stats import kstest
         ks_stat, ks_pvalue = kstest(variance_pvalues, 'uniform')
         
-        textstr = f'Kolmogorov-Smirnov Test:\n'
-        textstr += f'Statistic = {ks_stat:.4f}\n'
-        textstr += f'P-value = {ks_pvalue:.4f}\n'
-        if ks_pvalue > 0.05:
-            textstr += 'Result: Uniform ✓'
-        else:
-            textstr += 'Result: Non-uniform ✗'
+        # 統計有效校正的 features
+        sig_features = (cv_results_df['Variance_Test_pvalue'] < 0.05).sum()
+        total_features = len(cv_results_df)
         
-        ax1.text(0.98, 0.97, textstr, transform=ax1.transAxes,
-                fontsize=10, verticalalignment='top', horizontalalignment='right',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        # ✅ 文字框移到下方（y=-0.15）
+        textstr = (
+            f'Kolmogorov-Smirnov Test:\n'
+            f'  KS Statistic = {ks_stat:.4f}\n'
+            f'  P-value = {ks_pvalue:.4f}\n\n'
+            f'Interpretation:\n'
+        )
+        
+        if ks_pvalue < 0.05:
+            textstr += (
+                f'  ✓ Non-uniform distribution\n'
+                f'  → ISTD correction EFFECTIVE\n\n'
+                f'Features with p < 0.05:\n'
+                f'  {sig_features}/{total_features} '
+                f'({sig_features/total_features*100:.1f}%)\n'
+                f'  = Significant variance reduction'
+            )
+        else:
+            textstr += (
+                f'  ✗ Uniform distribution\n'
+                f'  → ISTD correction ineffective'
+            )
+        
+        # ✅ 移到下方：va='bottom', y=-0.15
+        ax1.text(0.97, -0.50, textstr, transform=ax1.transAxes,
+                fontsize=10, verticalalignment='bottom', horizontalalignment='right',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.85, edgecolor='black'))
+        
+        # 添加子圖編號
+        ax1.text(0.02, 0.98, '(A)', transform=ax1.transAxes,
+                fontsize=16, fontweight='bold', va='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        # ===== 右圖：Q-Q Plot =====
+        from scipy.stats import probplot
+        probplot(variance_pvalues, dist="uniform", plot=ax2)
+        ax2.set_title('Q-Q Plot (Uniform Distribution)\n'
+                     'Deviation from diagonal = Non-uniform', 
+                     fontsize=14, fontweight='bold', pad=15)
+        ax2.set_xlabel('Theoretical Quantiles', fontsize=13, fontweight='bold')
+        ax2.set_ylabel('Sample Quantiles', fontsize=13, fontweight='bold')
+        ax2.grid(True, alpha=0.25, linestyle=':', linewidth=0.5)
+        
+        # ✅ 註解移到下方（y=0.15）
+        ax2.text(0.05, -0.50, 
+                'Points deviate from red line:\n'
+                '→ P-values NOT uniformly distributed\n'
+                '→ ISTD correction is EFFECTIVE', 
+                transform=ax2.transAxes,
+                fontsize=10, verticalalignment='bottom',
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.75, edgecolor='black'))
+        
+        # 添加子圖編號
+        ax2.text(0.02, 0.98, '(B)', transform=ax2.transAxes,
+                fontsize=16, fontweight='bold', va='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
         
         plt.tight_layout()
         
@@ -519,10 +634,11 @@ def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
         
         print(f"\n✓ P 值分佈圖已儲存: {pvalue_plot_path}")
         print(f"  - Kolmogorov-Smirnov 檢定: KS={ks_stat:.4f}, p={ks_pvalue:.4f}")
-        if ks_pvalue > 0.05:
-            print(f"  - 結論: p 值分佈接近均勻分佈 ✓")
+        if ks_pvalue < 0.05:
+            print(f"  - 結論: p 值分佈偏離均勻分佈 → ISTD 校正有效 ✓")
+            print(f"  - 顯著改善的 features: {sig_features}/{total_features} ({sig_features/total_features*100:.1f}%)")
         else:
-            print(f"  - 結論: p 值分佈偏離均勻分佈 ✗")
+            print(f"  - 結論: p 值分佈接近均勻分佈 → ISTD 校正可能無效 ✗")
         
     except Exception as e:
         print(f"  ⚠️ 繪製 p 值分佈圖時發生錯誤: {e}")
@@ -619,10 +735,11 @@ def draw_hotelling_t2_ellipse(ax, scores, alpha=0.05, label=None, edgecolor='bla
 # ========== 修改：2D PCA 分析（Hotelling T² 異常值檢測 + 橢圓）==========
 def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sample_info_df):
     """
-    執行 2D PCA 分析
-    - 🔧 使用 Hotelling T² 檢測異常值（取代馬氏距離）
-    - 使用 Hotelling T² 繪製橢圓（中心固定為原點）
-    - 顏色：控制組=藍色、暴露組=紅色、QC=紫色
+    執行 2D PCA 分析（美化版）
+    - 使用 Hotelling T² 檢測異常值
+    - 繪製橢圓（中心為實際均值）
+    - 顏色：控制組=亮藍色、暴露組=亮紅色、QC=亮紫色
+    - 標題顯示實際變化數值（而非百分比）
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(script_dir, "ISTD_Correction_plots")
@@ -633,7 +750,7 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
     sample_meta = sample_info_df.set_index('Sample_Name')
 
-        # 識別 QC 樣本和樣本類型
+    # 識別 QC 樣本和樣本類型
     qc_columns = []
     control_columns = []
     exposed_columns = []
@@ -676,15 +793,15 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
     print(f"  - 暴露組: {len(exposed_columns)} 個")
     print(f"  - 總計: {len(sample_columns)} 個")
 
-    # 顏色映射
+    # 更鮮明的顏色映射
     color_map = {}
     for col in sample_columns:
         if col in qc_columns:
-            color_map[col] = '#9370DB'  # 紫色
+            color_map[col] = '#9C27B0'  # 亮紫色
         elif col in exposed_columns:
-            color_map[col] = '#DC143C'  # 紅色
+            color_map[col] = '#E53935'  # 亮紅色
         else:
-            color_map[col] = '#4169E1'  # 藍色
+            color_map[col] = '#1E88E5'  # 亮藍色
 
     def prepare_matrix(df, cols, feature_col='FeatureID'):
         try:
@@ -733,18 +850,22 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         scores_right = pca_right.fit_transform(right_matrix)
         var_right = pca_right.explained_variance_ratio_
 
-        # 🔧 使用 Hotelling T² 檢測 QC 異常值（傳入所有樣本的分數）
+        # 使用 Hotelling T² 檢測 QC 異常值
         qc_indices = [i for i, col in enumerate(sample_columns) if col in qc_columns]
         qc_scores_left = scores_left[qc_indices]
         qc_scores_right = scores_right[qc_indices]
 
-        # 🔧 關鍵修正：傳入 all_scores
         t2_left, t2_threshold_left, outliers_left = calculate_hotelling_t2_outliers(
             qc_scores_left, scores_left, alpha=0.05
         )
         t2_right, t2_threshold_right, outliers_right = calculate_hotelling_t2_outliers(
             qc_scores_right, scores_right, alpha=0.05
         )
+
+        # ✅ 計算實際變化（絕對值，單位：百分點）
+        pc1_change = (var_left[0] - var_right[0]) * 100  # 轉為百分點
+        pc2_change = (var_right[1] - var_left[1]) * 100  # 轉為百分點
+        outlier_reduction = np.sum(outliers_left) - np.sum(outliers_right)
 
         print(f"\n🔍 Hotelling T² 異常值檢測:")
         print(f"   {left_name}:")
@@ -753,182 +874,140 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         print(f"   {right_name}:")
         print(f"   - T² 閾值: {t2_threshold_right:.2f}")
         print(f"   - 異常值數量: {np.sum(outliers_right)}/{len(qc_columns)}")
+        print(f"   - 異常值減少: {outlier_reduction} 個")
 
         # 繪製 2D PCA 圖
         fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(18, 7.5))
         fig.suptitle(f'2D PCA Comparison: {left_name} vs {right_name}',
                      fontsize=18, y=0.98, fontweight='bold')
 
-        # ===== 左圖：校正前 =====
-        for i, col in enumerate(sample_columns):
-            color = color_map[col]
-            
-            # 🔧 判斷是否為異常值（使用 Hotelling T²）
-            is_outlier = False
-            if col in qc_columns:
-                qc_idx = qc_columns.index(col)
-                is_outlier = outliers_left[qc_idx]
-            
-            # 設定標記樣式
-            if is_outlier:
-                edgecolor = 'red'
-                linewidth = 3
-                size = 150
-                alpha = 0.9
-            else:
-                edgecolor = 'black'
-                linewidth = 1
-                size = 100
-                alpha = 0.7
-            
-            ax_left.scatter(scores_left[i, 0], scores_left[i, 1],
+        # ===== 繪圖函數 =====
+        def plot_pca_subplot(ax, scores, qc_scores, var, t2_threshold, outliers, 
+                            title, is_right=False, pc1_change=0, pc2_change=0, outlier_info=""):
+            # 繪製樣本點
+            for i, col in enumerate(sample_columns):
+                color = color_map[col]
+                
+                is_outlier = False
+                if col in qc_columns:
+                    qc_idx = qc_columns.index(col)
+                    is_outlier = outliers[qc_idx]
+                
+                if is_outlier:
+                    edgecolor = '#D32F2F'
+                    linewidth = 4
+                    size = 180
+                    alpha = 0.95
+                else:
+                    edgecolor = 'black'
+                    linewidth = 1.5
+                    size = 120
+                    alpha = 0.75
+                
+                ax.scatter(scores[i, 0], scores[i, 1],
                           c=[color], marker='o', s=size, alpha=alpha,
                           edgecolors=edgecolor, linewidths=linewidth)
 
-        # 繪製兩個 Hotelling T² 橢圓
-        all_bounds_left = []
-
-        # 1. 所有樣本的橢圓（灰色虛線）- 中心在原點
-        bounds_all_left = draw_hotelling_t2_ellipse(ax_left, scores_left,
+            # 繪製橢圓
+            all_bounds = []
+            
+            bounds_all = draw_hotelling_t2_ellipse(ax, scores,
                                                     label='95% CI (All Samples)',
                                                     edgecolor='gray', linestyle='--', linewidth=2)
-        if bounds_all_left:
-            all_bounds_left.append(bounds_all_left)
-
-        # 2. QC 樣本的橢圓（紫色實線）- 中心在 QC 均值
-        bounds_qc_left = draw_hotelling_t2_ellipse(ax_left, qc_scores_left,
-                                                    label='95% CI (QC Only)',
-                                                    edgecolor='#9370DB', linestyle='-', linewidth=3)
-        if bounds_qc_left:
-            all_bounds_left.append(bounds_qc_left)
-
-        
-        # 🔧 調整軸範圍（確保橢圓完整顯示 + 原點居中）
-        if all_bounds_left:
-            x_min = min([b[0] for b in all_bounds_left])
-            x_max = max([b[1] for b in all_bounds_left])
-            y_min = min([b[2] for b in all_bounds_left])
-            y_max = max([b[3] for b in all_bounds_left])
-        else:
-            x_min, x_max = np.min(scores_left[:, 0]), np.max(scores_left[:, 0])
-            y_min, y_max = np.min(scores_left[:, 1]), np.max(scores_left[:, 1])
-        
-        # 同時考慮數據點範圍
-        data_x_min, data_x_max = np.min(scores_left[:, 0]), np.max(scores_left[:, 0])
-        data_y_min, data_y_max = np.min(scores_left[:, 1]), np.max(scores_left[:, 1])
-        
-        x_min = min(x_min, data_x_min)
-        x_max = max(x_max, data_x_max)
-        y_min = min(y_min, data_y_min)
-        y_max = max(y_max, data_y_max)
-        
-        # 🔧 確保原點在圖中心（對稱軸範圍）
-        x_abs_max = max(abs(x_min), abs(x_max))
-        y_abs_max = max(abs(y_min), abs(y_max))
-        
-        x_margin = x_abs_max * 0.2
-        y_margin = y_abs_max * 0.2
-        
-        ax_left.set_xlim(-x_abs_max - x_margin, x_abs_max + x_margin)
-        ax_left.set_ylim(-y_abs_max - y_margin, y_abs_max + y_margin)
-        
-        ax_left.set_title(f'{left_name}\nPC1: {var_left[0]:.1%}, PC2: {var_left[1]:.1%}\nHotelling T² Threshold: {t2_threshold_left:.2f}',
-                         fontsize=13, fontweight='bold', pad=10)
-        ax_left.set_xlabel(f't[1] ({var_left[0]:.1%})', fontsize=12, fontweight='bold')
-        ax_left.set_ylabel(f't[2] ({var_left[1]:.1%})', fontsize=12, fontweight='bold')
-        ax_left.grid(True, alpha=0.3, linestyle='--')
-        ax_left.axhline(y=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-        ax_left.axvline(x=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-
-        # ===== 右圖：校正後（相同邏輯）=====
-        for i, col in enumerate(sample_columns):
-            color = color_map[col]
+            if bounds_all:
+                all_bounds.append(bounds_all)
             
-            is_outlier = False
-            if col in qc_columns:
-                qc_idx = qc_columns.index(col)
-                is_outlier = outliers_right[qc_idx]
+            bounds_qc = draw_hotelling_t2_ellipse(ax, qc_scores,
+                                                   label='95% CI (QC Only)',
+                                                   edgecolor='#9C27B0', linestyle='-', linewidth=3)
+            if bounds_qc:
+                all_bounds.append(bounds_qc)
             
-            if is_outlier:
-                edgecolor = 'red'
-                linewidth = 3
-                size = 150
-                alpha = 0.9
+            # 調整軸範圍
+            if all_bounds:
+                x_min = min([b[0] for b in all_bounds])
+                x_max = max([b[1] for b in all_bounds])
+                y_min = min([b[2] for b in all_bounds])
+                y_max = max([b[3] for b in all_bounds])
             else:
-                edgecolor = 'black'
-                linewidth = 1
-                size = 100
-                alpha = 0.7
+                x_min, x_max = np.min(scores[:, 0]), np.max(scores[:, 0])
+                y_min, y_max = np.min(scores[:, 1]), np.max(scores[:, 1])
             
-            ax_right.scatter(scores_right[i, 0], scores_right[i, 1],
-                           c=[color], marker='o', s=size, alpha=alpha,
-                           edgecolors=edgecolor, linewidths=linewidth)
+            data_x_min, data_x_max = np.min(scores[:, 0]), np.max(scores[:, 0])
+            data_y_min, data_y_max = np.min(scores[:, 1]), np.max(scores[:, 1])
+            
+            x_min = min(x_min, data_x_min)
+            x_max = max(x_max, data_x_max)
+            y_min = min(y_min, data_y_min)
+            y_max = max(y_max, data_y_max)
+            
+            x_abs_max = max(abs(x_min), abs(x_max))
+            y_abs_max = max(abs(y_min), abs(y_max))
+            
+            x_margin = x_abs_max * 0.2
+            y_margin = y_abs_max * 0.2
+            
+            ax.set_xlim(-x_abs_max - x_margin, x_abs_max + x_margin)
+            ax.set_ylim(-y_abs_max - y_margin, y_abs_max + y_margin)
+            
+            # ✅ 修改標題：顯示實際變化數值（百分點）
+            if is_right and pc1_change != 0:
+                title_text = (f'{title}\n'
+                             f'PC1: {var[0]:.1%} (↓{pc1_change:.1f}%), '
+                             f'PC2: {var[1]:.1%} (↑{pc2_change:.1f}%)\n'
+                             f'{outlier_info}\n'
+                             f'Hotelling T² Threshold: {t2_threshold:.2f}')
+            else:
+                title_text = (f'{title}\n'
+                             f'PC1: {var[0]:.1%}, PC2: {var[1]:.1%}\n'
+                             f'Hotelling T² Threshold: {t2_threshold:.2f}')
+            
+            ax.set_title(title_text, fontsize=12, fontweight='bold', pad=10)
+            ax.set_xlabel(f't[1] ({var[0]:.1%})', fontsize=12, fontweight='bold')
+            ax.set_ylabel(f't[2] ({var[1]:.1%})', fontsize=12, fontweight='bold')
+            
+            ax.grid(True, alpha=0.2, linestyle=':', linewidth=0.5)
+            ax.axhline(y=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
+            ax.axvline(x=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
+            
+            # 添加子圖編號
+            label = '(A)' if not is_right else '(B)'
+            ax.text(0.02, 0.98, label, transform=ax.transAxes,
+                   fontsize=16, fontweight='bold', va='top',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
-        all_bounds_right = []
+        # 繪製左圖
+        plot_pca_subplot(ax_left, scores_left, qc_scores_left, var_left, 
+                        t2_threshold_left, outliers_left, 
+                        f'{left_name} (Before Correction)', 
+                        is_right=False)
         
-        bounds_all_right = draw_hotelling_t2_ellipse(ax_right, scores_right,
-                                                      label='95% CI (All Samples)',
-                                                      edgecolor='gray', linestyle='--', linewidth=2)
-        if bounds_all_right:
-            all_bounds_right.append(bounds_all_right)
-        
-        bounds_qc_right = draw_hotelling_t2_ellipse(ax_right, qc_scores_right,
-                                                     label='95% CI (QC Only)',
-                                                     edgecolor='#9370DB', linestyle='-', linewidth=3)
-        if bounds_qc_right:
-            all_bounds_right.append(bounds_qc_right)
-        
-        if all_bounds_right:
-            x_min = min([b[0] for b in all_bounds_right])
-            x_max = max([b[1] for b in all_bounds_right])
-            y_min = min([b[2] for b in all_bounds_right])
-            y_max = max([b[3] for b in all_bounds_right])
-        else:
-            x_min, x_max = np.min(scores_right[:, 0]), np.max(scores_right[:, 0])
-            y_min, y_max = np.min(scores_right[:, 1]), np.max(scores_right[:, 1])
-        
-        data_x_min, data_x_max = np.min(scores_right[:, 0]), np.max(scores_right[:, 0])
-        data_y_min, data_y_max = np.min(scores_right[:, 1]), np.max(scores_right[:, 1])
-        
-        x_min = min(x_min, data_x_min)
-        x_max = max(x_max, data_x_max)
-        y_min = min(y_min, data_y_min)
-        y_max = max(y_max, data_y_max)
-        
-        x_abs_max = max(abs(x_min), abs(x_max))
-        y_abs_max = max(abs(y_min), abs(y_max))
-        
-        x_margin = x_abs_max * 0.2
-        y_margin = y_abs_max * 0.2
-        
-        ax_right.set_xlim(-x_abs_max - x_margin, x_abs_max + x_margin)
-        ax_right.set_ylim(-y_abs_max - y_margin, y_abs_max + y_margin)
-        
-        ax_right.set_title(f'{right_name}\nPC1: {var_right[0]:.1%}, PC2: {var_right[1]:.1%}\nHotelling T² Threshold: {t2_threshold_right:.2f}',
-                          fontsize=13, fontweight='bold', pad=10)
-        ax_right.set_xlabel(f't[1] ({var_right[0]:.1%})', fontsize=12, fontweight='bold')
-        ax_right.set_ylabel(f't[2] ({var_right[1]:.1%})', fontsize=12, fontweight='bold')
-        ax_right.grid(True, alpha=0.3, linestyle='--')
-        ax_right.axhline(y=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-        ax_right.axvline(x=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
+        # 繪製右圖（包含實際變化數值）
+        outlier_info = f'QC Outliers: {np.sum(outliers_right)}/{len(qc_columns)} (↓{outlier_reduction})'
+        plot_pca_subplot(ax_right, scores_right, qc_scores_right, var_right,
+                        t2_threshold_right, outliers_right, 
+                        f'{right_name} (After Correction)', 
+                        is_right=True, pc1_change=pc1_change, pc2_change=pc2_change, 
+                        outlier_info=outlier_info)
 
         # ===== 添加圖例 =====
         sample_legend_elements = [
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#4169E1',
-                      markersize=10, label='Control', markeredgecolor='black', markeredgewidth=1),
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#DC143C',
-                      markersize=10, label='Exposed', markeredgecolor='black', markeredgewidth=1),
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
-                      markersize=10, label='QC', markeredgecolor='black', markeredgewidth=1),
+            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#1E88E5',
+                      markersize=11, label='Control', markeredgecolor='black', markeredgewidth=1.5),
+            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#E53935',
+                      markersize=11, label='Exposed', markeredgecolor='black', markeredgewidth=1.5),
+            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9C27B0',
+                      markersize=11, label='QC', markeredgecolor='black', markeredgewidth=1.5),
             plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='gray',
-                      markersize=10, label='QC Outlier (T² > threshold)', markeredgecolor='red', markeredgewidth=3)
+                      markersize=11, label='QC Outlier (T² > threshold)', 
+                      markeredgecolor='#D32F2F', markeredgewidth=4)
         ]
         
         ellipse_legend_elements = [
             plt.Line2D([0], [0], linestyle='--', color='gray',
-                      linewidth=2, label='95% CI (All Samples)'),
-            plt.Line2D([0], [0], linestyle='-', color='#9370DB',
-                      linewidth=3, label='95% CI (QC Only)')
+                      linewidth=2.5, label='95% CI (All Samples)'),
+            plt.Line2D([0], [0], linestyle='-', color='#9C27B0',
+                      linewidth=3.5, label='95% CI (QC Only)')
         ]
         
         legend1 = fig.legend(handles=sample_legend_elements, 
@@ -936,22 +1015,24 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
                             bbox_to_anchor=(1.01, 0.7),
                             fontsize=11,
                             title='Sample Type', 
-                            title_fontsize=12,
+                            title_fontsize=13,
                             frameon=True, 
                             fancybox=True, 
-                            shadow=True)
+                            shadow=True,
+                            edgecolor='black')
         
         legend2 = fig.legend(handles=ellipse_legend_elements, 
                             loc='center left', 
                             bbox_to_anchor=(1.01, 0.3),
                             fontsize=11,
                             title='Confidence Ellipse', 
-                            title_fontsize=12,
+                            title_fontsize=13,
                             frameon=True, 
                             fancybox=True, 
-                            shadow=True)
+                            shadow=True,
+                            edgecolor='black')
 
-        plt.tight_layout(rect=[0, 0, 0.88, 0.96])
+        plt.tight_layout(rect=[0, 0.2, 1, 0.96])
 
         output_path = os.path.join(output_dir, f"2D_PCA_{left_name.replace(' ', '_')}_vs_{right_name.replace(' ', '_')}_{timestamp}.png")
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
@@ -962,7 +1043,7 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         print(f"\n{'='*70}")
         print(f"📊 {left_name} - Hotelling T² 異常值檢測結果")
         print(f"{'='*70}")
-        print(f"QC 異常值數量: {np.sum(outliers_left)}/{len(outliers_left)}")
+        print(f"QC 異常值數量: {np.sum(outliers_left)}/{len(outliers_left)} ({np.sum(outliers_left)/len(outliers_left)*100:.1f}%)")
         if np.sum(outliers_left) > 0:
             outlier_samples = [qc_columns[i] for i in range(len(outliers_left)) if outliers_left[i]]
             outlier_t2_values = [t2_left[i] for i in range(len(outliers_left)) if outliers_left[i]]
@@ -974,7 +1055,7 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         
         print(f"\n📊 {right_name} - Hotelling T² 異常值檢測結果")
         print(f"{'='*70}")
-        print(f"QC 異常值數量: {np.sum(outliers_right)}/{len(outliers_right)}")
+        print(f"QC 異常值數量: {np.sum(outliers_right)}/{len(outliers_right)} ({np.sum(outliers_right)/len(outliers_right)*100:.1f}%)")
         if np.sum(outliers_right) > 0:
             outlier_samples = [qc_columns[i] for i in range(len(outliers_right)) if outliers_right[i]]
             outlier_t2_values = [t2_right[i] for i in range(len(outliers_right)) if outliers_right[i]]
@@ -983,6 +1064,11 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
                 print(f"  - {sample}: T² = {t2_val:.2f} (閾值 = {t2_threshold_right:.2f})")
         else:
             print("  ✓ 無異常樣本")
+        
+        print(f"\n📈 校正效果摘要:")
+        print(f"  - PC1 變異量: {var_left[0]:.1%} → {var_right[0]:.1%} (↓{pc1_change:.1f} 百分點)")
+        print(f"  - PC2 變異量: {var_left[1]:.1%} → {var_right[1]:.1%} (↑{pc2_change:.1f} 百分點)")
+        print(f"  - QC 異常值: {np.sum(outliers_left)} → {np.sum(outliers_right)} (↓{outlier_reduction} 個)")
         print(f"{'='*70}\n")
 
 # ========== 🔧 修改：save_results_to_excel==========
