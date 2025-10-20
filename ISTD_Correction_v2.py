@@ -230,156 +230,175 @@ def calculate_corrected_ratios(df, sample_info_df):
     
     return results_df, sample_columns
 
-# ========== 🔧 修改：使用 F-test 取代 Levene's Test ==========
-def f_test_variance(original_values, corrected_values):
-    """
-    執行 F-test 比較兩組數據的方差
-    
-    優勢：
-    - 直接比較方差比
-    - 適合檢驗 LOWESS 是否顯著降低方差
-    
-    Parameters:
-    -----------
-    original_values : array-like
-        校正前的 QC 數值
-    corrected_values : array-like
-        校正後的 QC 數值
-    
-    Returns:
-    --------
-    f_statistic : float
-        F 統計量（var_original / var_corrected）
-    p_value : float
-        p 值（單尾檢定，檢驗 original > corrected）
-    variance_ratio : float
-        方差比（original/corrected）
-    """
-    if len(original_values) < 2 or len(corrected_values) < 2:
-        return np.nan, np.nan, np.nan
-    
-    var_original = np.var(original_values, ddof=1)
-    var_corrected = np.var(corrected_values, ddof=1)
-    
-    # 處理方差為零的情況
-    min_variance_threshold = 1e-10
-    
-    if var_corrected < min_variance_threshold:
-        if var_original < min_variance_threshold:
-            # 兩者都無變異
-            return np.nan, np.nan, 1.0
-        else:
-            # 校正後完美（方差→0）
-            return np.inf, 0.0, np.inf
-    
-    if var_original < min_variance_threshold:
-        # 原始無變異
-        return 0.0, 1.0, 0.0
-    
-    # 計算 F 統計量（方差比）
-    f_statistic = var_original / var_corrected
-    variance_ratio = f_statistic
-    
-    # 自由度
-    df1 = len(original_values) - 1
-    df2 = len(corrected_values) - 1
-    
-    # 🔧 單尾檢定：檢驗 var_original > var_corrected
-    # p-value = P(F > f_statistic)
-    try:
-        p_value = 1 - f_dist.cdf(f_statistic, df1, df2)
-    except Exception as e:
-        print(f"   警告：F-test 計算失敗 ({e})")
-        return np.nan, np.nan, np.nan
-    
-    return f_statistic, p_value, variance_ratio
 
-# ========== 🔧 修改：CV% 計算加入 F-test ==========
-def calculate_qc_cv_with_f_test(results_df, sample_columns, sample_info_df, original_df):
+
+from scipy.stats import ttest_rel, levene, shapiro
+
+def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_info_df, original_df):
     """
-    計算 QC 樣本的 CV%，並進行 F-test 比較校正前後的方差變化
+    計算 QC 樣本的 CV%，並進行正確的統計檢定
+    
+    統計方法：
+    1. 配對 t 檢定（檢驗均值偏移）
+    2. Levene's test（檢驗方差齊性）
+    3. Shapiro-Wilk test（檢驗正態性）
     """
     qc_samples = sample_info_df[sample_info_df['Sample_Type'].str.upper().str.contains('QC')]['Sample_Name'].tolist()
     qc_columns = [col for col in sample_columns if col in qc_samples]
     
-    print(f"\n📊 開始計算 QC CV% 並執行 F-test...")
-    print(f"   - QC 樣本數: {len(qc_columns)}")
-    print(f"   - Feature 總數: {len(results_df)}")
+    print(f"\n{'='*70}")
+    print(f"🔬 開始統計檢定（配對 t 檢定 + Levene's test）")
+    print(f"{'='*70}")
+    print(f"  - QC 樣本數: {len(qc_columns)}")
+    print(f"  - Feature 總數: {len(results_df)}")
     
     cv_results = []
+    
     for idx, row in results_df.iterrows():
         feature_id = row['FeatureID']
         
-        # 校正後的 QC CV%
+        # 校正後的 QC 值
         qc_values_corrected = get_valid_values(row, qc_columns)
-        mean_corrected = np.mean(qc_values_corrected) if qc_values_corrected else np.nan
-        std_corrected = np.std(qc_values_corrected, ddof=1) if len(qc_values_corrected) >= 2 else np.nan
-        cv_corrected = (std_corrected / mean_corrected) * 100 if mean_corrected != 0 else np.nan
         
-        # 原始的 QC CV%
+        # 原始的 QC 值
         original_row = original_df[original_df['FeatureID'] == feature_id]
         if not original_row.empty:
             qc_values_original = get_valid_values(original_row.iloc[0], qc_columns)
-            mean_original = np.mean(qc_values_original) if qc_values_original else np.nan
-            std_original = np.std(qc_values_original, ddof=1) if len(qc_values_original) >= 2 else np.nan
-            cv_original = (std_original / mean_original) * 100 if mean_original != 0 else np.nan
-            
-            # 🔧 F-test 比較方差
-            if len(qc_values_original) >= 2 and len(qc_values_corrected) >= 2:
-                try:
-                    f_stat, p_value, var_ratio = f_test_variance(qc_values_original, qc_values_corrected)
-                except Exception as e:
-                    print(f"   警告：Feature {feature_id} F-test 失敗 ({e})")
-                    f_stat, p_value, var_ratio = np.nan, np.nan, np.nan
-            else:
-                f_stat, p_value, var_ratio = np.nan, np.nan, np.nan
         else:
-            cv_original = np.nan
-            f_stat, p_value, var_ratio = np.nan, np.nan, np.nan
+            qc_values_original = []
         
-        improvement = cv_original - cv_corrected if not np.isnan(cv_original) and not np.isnan(cv_corrected) else np.nan
-        improvement_percent = (improvement / cv_original * 100) if cv_original != 0 and not np.isnan(cv_original) else np.nan
+        # 確保配對樣本數一致
+        min_len = min(len(qc_values_original), len(qc_values_corrected))
+        
+        if min_len < 3:
+            cv_results.append({
+                'FeatureID': feature_id,
+                'Original_QC_CV%': np.nan,
+                'Corrected_QC_CV%': np.nan,
+                'CV_Improvement%': np.nan,
+                'Mean_Shift_pvalue': np.nan,
+                'Variance_Test_pvalue': np.nan,
+                'Normality_pvalue': np.nan,
+                'Significant_Improvement': 'N/A'
+            })
+            continue
+        
+        qc_values_original = np.array(qc_values_original[:min_len])
+        qc_values_corrected = np.array(qc_values_corrected[:min_len])
+        
+        # 計算 CV%
+        original_cv = (np.std(qc_values_original, ddof=1) / np.mean(qc_values_original)) * 100
+        corrected_cv = (np.std(qc_values_corrected, ddof=1) / np.mean(qc_values_corrected)) * 100
+        cv_improvement = original_cv - corrected_cv
+        
+        # ✅ 1. 配對 t 檢定（檢驗均值是否改變）
+        try:
+            t_stat, mean_shift_pvalue = ttest_rel(qc_values_original, qc_values_corrected)
+        except Exception:
+            mean_shift_pvalue = np.nan
+        
+        # ✅ 2. Levene's test（檢驗方差齊性）
+        try:
+            levene_stat, variance_test_pvalue = levene(qc_values_original, qc_values_corrected)
+        except Exception:
+            variance_test_pvalue = np.nan
+        
+        # ✅ 3. Shapiro-Wilk test（檢驗正態性）
+        try:
+            shapiro_stat, normality_pvalue = shapiro(qc_values_original)
+        except Exception:
+            normality_pvalue = np.nan
+        
+        # ✅ 判斷顯著性
+        if not np.isnan(variance_test_pvalue) and cv_improvement > 5:
+            if variance_test_pvalue < 0.05:
+                significant = 'Yes'
+            else:
+                significant = 'Marginal'
+        elif cv_improvement > 10:
+            significant = 'Yes (CV% only)'
+        else:
+            significant = 'No'
         
         cv_results.append({
             'FeatureID': feature_id,
-            'Original_QC_CV%': cv_original,
-            'Corrected_QC_CV%': cv_corrected,
-            'Improvement_QC_CV%': improvement,
-            'F_statistic': f_stat,
-            'F_test_pvalue': p_value,
-            'Variance_Ratio': var_ratio,
-            'Significant': 'Yes' if p_value < 0.05 else 'No' if not np.isnan(p_value) else 'N/A'
+            'Original_QC_CV%': original_cv,
+            'Corrected_QC_CV%': corrected_cv,
+            'CV_Improvement%': cv_improvement,
+            'Mean_Shift_pvalue': mean_shift_pvalue,
+            'Variance_Test_pvalue': variance_test_pvalue,
+            'Normality_pvalue': normality_pvalue,
+            'Significant_Improvement': significant
         })
+        
+        if (idx + 1) % 100 == 0:
+            print(f"  處理進度: {idx + 1}/{len(results_df)} features")
+    
+    print(f"  ✓ 統計檢定完成！")
     
     cv_results_df = pd.DataFrame(cv_results)
     
     # 統計摘要
-    significant_count = (cv_results_df['Significant'] == 'Yes').sum()
+    sig_yes = (cv_results_df['Significant_Improvement'] == 'Yes').sum()
+    sig_marginal = (cv_results_df['Significant_Improvement'] == 'Marginal').sum()
+    sig_cv_only = (cv_results_df['Significant_Improvement'] == 'Yes (CV% only)').sum()
+    sig_no = (cv_results_df['Significant_Improvement'] == 'No').sum()
     total_count = len(cv_results_df)
     
-    print(f"\n📈 F-test 統計摘要:")
-    print(f"   - 總 Feature 數: {total_count}")
-    print(f"   - 顯著改善 (p < 0.05): {significant_count} ({significant_count/total_count*100:.1f}%)")
-    print(f"   - 無顯著差異: {total_count - significant_count} ({(total_count - significant_count)/total_count*100:.1f}%)")
+    print(f"\n📊 統計檢定摘要:")
+    print(f"  - 總特徵數: {total_count}")
+    print(f"  - 顯著改善 (Yes): {sig_yes} ({sig_yes/total_count*100:.1f}%)")
+    print(f"  - 邊緣顯著 (Marginal): {sig_marginal} ({sig_marginal/total_count*100:.1f}%)")
+    print(f"  - 僅 CV% 改善: {sig_cv_only} ({sig_cv_only/total_count*100:.1f}%)")
+    print(f"  - 無顯著改善 (No): {sig_no} ({sig_no/total_count*100:.1f}%)")
     
-    # 方差比統計
-    valid_ratios = cv_results_df['Variance_Ratio'].replace([np.inf, -np.inf], np.nan).dropna()
-    if len(valid_ratios) > 0:
-        print(f"\n📉 方差比統計 (Original/Corrected):")
-        print(f"   - 中位數: {valid_ratios.median():.2f}")
-        print(f"   - 平均值: {valid_ratios.mean():.2f}")
-        print(f"   - 最大值: {valid_ratios.max():.2f}")
-        print(f"   - 最小值: {valid_ratios.min():.2f}")
+    # 配對 t 檢定統計
+    mean_shift_valid = cv_results_df['Mean_Shift_pvalue'].notna().sum()
+    mean_shift_sig = ((cv_results_df['Mean_Shift_pvalue'] < 0.05) & 
+                      (cv_results_df['Mean_Shift_pvalue'].notna())).sum()
+    
+    print(f"\n🔬 配對 t 檢定（均值變化）:")
+    print(f"  - 成功執行: {mean_shift_valid}/{total_count} ({mean_shift_valid/total_count*100:.1f}%)")
+    if mean_shift_valid > 0:
+        print(f"  - 均值顯著改變 (p < 0.05): {mean_shift_sig}/{mean_shift_valid} ({mean_shift_sig/mean_shift_valid*100:.1f}%)")
+        print(f"  - 均值無顯著改變: {mean_shift_valid - mean_shift_sig}/{mean_shift_valid} ({(mean_shift_valid-mean_shift_sig)/mean_shift_valid*100:.1f}%)")
+    
+    # Levene's test 統計
+    variance_valid = cv_results_df['Variance_Test_pvalue'].notna().sum()
+    variance_sig = ((cv_results_df['Variance_Test_pvalue'] < 0.05) & 
+                    (cv_results_df['Variance_Test_pvalue'].notna())).sum()
+    
+    print(f"\n🔬 Levene's Test（方差齊性）:")
+    print(f"  - 成功執行: {variance_valid}/{total_count} ({variance_valid/total_count*100:.1f}%)")
+    if variance_valid > 0:
+        print(f"  - 方差顯著改變 (p < 0.05): {variance_sig}/{variance_valid} ({variance_sig/variance_valid*100:.1f}%)")
+        print(f"  - 方差無顯著改變: {variance_valid - variance_sig}/{variance_valid} ({(variance_valid-variance_sig)/variance_valid*100:.1f}%)")
+    
+    # CV% 改善統計
+    cv_improvement_valid = cv_results_df['CV_Improvement%'].notna()
+    if cv_improvement_valid.sum() > 0:
+        improvements = cv_results_df.loc[cv_improvement_valid, 'CV_Improvement%']
+        improvements_finite = improvements[np.isfinite(improvements)]
         
-        # 改善程度分類
-        improved = (valid_ratios > 1.2).sum()
-        neutral = ((valid_ratios >= 0.8) & (valid_ratios <= 1.2)).sum()
-        worsened = (valid_ratios < 0.8).sum()
-        
-        print(f"\n   改善程度分類:")
-        print(f"   - 顯著改善 (>1.2x): {improved} ({improved/len(valid_ratios)*100:.1f}%)")
-        print(f"   - 無明顯變化 (0.8-1.2x): {neutral} ({neutral/len(valid_ratios)*100:.1f}%)")
-        print(f"   - 惡化 (<0.8x): {worsened} ({worsened/len(valid_ratios)*100:.1f}%)")
+        if len(improvements_finite) > 0:
+            median_improvement = np.median(improvements_finite)
+            mean_improvement = np.mean(improvements_finite)
+            
+            print(f"\n📊 CV% 改善統計:")
+            print(f"  - 中位數改善: {median_improvement:.2f}%")
+            print(f"  - 平均改善: {mean_improvement:.2f}%")
+            print(f"  - 範圍: {improvements_finite.min():.2f}% - {improvements_finite.max():.2f}%")
+            
+            improved_cv = (improvements_finite > 5).sum()
+            similar_cv = ((improvements_finite >= -5) & (improvements_finite <= 5)).sum()
+            worse_cv = (improvements_finite < -5).sum()
+            
+            print(f"\n  改善程度分類:")
+            print(f"  - 顯著改善 (>5%): {improved_cv} ({improved_cv/len(improvements_finite)*100:.1f}%)")
+            print(f"  - 無明顯變化 (±5%): {similar_cv} ({similar_cv/len(improvements_finite)*100:.1f}%)")
+            print(f"  - 變差 (<-5%): {worse_cv} ({worse_cv/len(improvements_finite)*100:.1f}%)")
+    
+    print(f"\n{'='*70}\n")
     
     return cv_results_df
 
@@ -446,7 +465,69 @@ def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
     
     return t2_values, threshold, outliers
 
-
+def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
+    """繪製 p 值分佈圖（驗證統計檢定有效性）"""
+    try:
+        variance_pvalues = cv_results_df['Variance_Test_pvalue'].dropna()
+        
+        if len(variance_pvalues) < 10:
+            print("  ⚠️ 有效 p 值數量不足，跳過 p 值分佈圖")
+            return
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+        
+        # 左圖：直方圖
+        ax1.hist(variance_pvalues, bins=20, color='steelblue', edgecolor='black', alpha=0.7)
+        ax1.axhline(y=len(variance_pvalues)/20, color='red', linestyle='--', linewidth=2,
+                   label='Uniform Distribution Expected')
+        ax1.set_xlabel('P-value (Levene\'s Test)', fontsize=12, fontweight='bold')
+        ax1.set_ylabel('Frequency', fontsize=12, fontweight='bold')
+        ax1.set_title('P-value Distribution\n(Variance Homogeneity Test)', 
+                     fontsize=14, fontweight='bold')
+        ax1.legend(fontsize=10)
+        ax1.grid(True, alpha=0.3, linestyle='--')
+        
+        # 右圖：Q-Q Plot
+        from scipy.stats import probplot
+        probplot(variance_pvalues, dist="uniform", plot=ax2)
+        ax2.set_title('Q-Q Plot (Uniform Distribution)', fontsize=14, fontweight='bold')
+        ax2.set_xlabel('Theoretical Quantiles', fontsize=12, fontweight='bold')
+        ax2.set_ylabel('Sample Quantiles', fontsize=12, fontweight='bold')
+        ax2.grid(True, alpha=0.3, linestyle='--')
+        
+        # Kolmogorov-Smirnov 檢定
+        from scipy.stats import kstest
+        ks_stat, ks_pvalue = kstest(variance_pvalues, 'uniform')
+        
+        textstr = f'Kolmogorov-Smirnov Test:\n'
+        textstr += f'Statistic = {ks_stat:.4f}\n'
+        textstr += f'P-value = {ks_pvalue:.4f}\n'
+        if ks_pvalue > 0.05:
+            textstr += 'Result: Uniform ✓'
+        else:
+            textstr += 'Result: Non-uniform ✗'
+        
+        ax1.text(0.98, 0.97, textstr, transform=ax1.transAxes,
+                fontsize=10, verticalalignment='top', horizontalalignment='right',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        plt.tight_layout()
+        
+        pvalue_plot_path = os.path.join(output_dir, f'Pvalue_Distribution_{timestamp}.png')
+        plt.savefig(pvalue_plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"\n✓ P 值分佈圖已儲存: {pvalue_plot_path}")
+        print(f"  - Kolmogorov-Smirnov 檢定: KS={ks_stat:.4f}, p={ks_pvalue:.4f}")
+        if ks_pvalue > 0.05:
+            print(f"  - 結論: p 值分佈接近均勻分佈 ✓")
+        else:
+            print(f"  - 結論: p 值分佈偏離均勻分佈 ✗")
+        
+    except Exception as e:
+        print(f"  ⚠️ 繪製 p 值分佈圖時發生錯誤: {e}")
+        import traceback
+        traceback.print_exc()
 
 # ========== Hotelling T² 橢圓繪製函數（固定原點）==========
 def draw_hotelling_t2_ellipse(ax, scores, alpha=0.05, label=None, edgecolor='black', linestyle='-', linewidth=2.5):
@@ -904,20 +985,29 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
             print("  ✓ 無異常樣本")
         print(f"{'='*70}\n")
 
-# ========== 🔧 修改：save_results_to_excel（使用 F-test）==========
+# ========== 🔧 修改：save_results_to_excel==========
 def save_results_to_excel(original_df, results_df, sample_info_df, output_file, all_sheets, sample_columns, original_workbook):
     """
-    儲存結果到 Excel，使用 F-test
+    儲存結果到 Excel，使用配對 t 檢定 + Levene's test
     """
-    # 🔧 使用新的 F-test 函數
-    cv_results_df = calculate_qc_cv_with_f_test(results_df, sample_columns, sample_info_df, original_df)
+    # 設定輸出目錄
+    output_dir = os.path.join(os.path.dirname(output_file), "ISTD_Correction_plots")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # ✅ 使用新的統計檢定函數
+    cv_results_df = calculate_qc_cv_with_statistical_test(
+        results_df, sample_columns, sample_info_df, original_df
+    )
     
     # 合併結果
     results_with_cv = results_df.merge(cv_results_df, on='FeatureID', how='left')
     
-    # 調整欄位順序
-    cols_order = ['Original_QC_CV%', 'Corrected_QC_CV%', 'Improvement_QC_CV%',
-                  'F_statistic', 'F_test_pvalue', 'Variance_Ratio', 'Significant']
+    # ✅ 調整欄位順序
+    cols_order = [
+        'Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%',
+        'Mean_Shift_pvalue', 'Variance_Test_pvalue', 'Normality_pvalue',
+        'Significant_Improvement'
+    ]
     other_cols = [col for col in results_with_cv.columns if col not in cols_order]
     results_with_cv = results_with_cv[other_cols + cols_order]
     
@@ -951,36 +1041,47 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file, 
     green_fill = PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')
     yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
     light_blue_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')
+    light_purple_fill = PatternFill(start_color='E6E6FA', end_color='E6E6FA', fill_type='solid')
+    light_pink_fill = PatternFill(start_color='FFB6C1', end_color='FFB6C1', fill_type='solid')
     
     if 'ISTD_Correction' in new_workbook.sheetnames:
         worksheet = new_workbook['ISTD_Correction']
         header = [cell.value for cell in worksheet[1]]
         
         # CV% 欄位塗橙色
-        for col_name in ['Original_QC_CV%', 'Corrected_QC_CV%', 'Improvement_QC_CV%']:
+        for col_name in ['Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%']:
             if col_name in header:
                 col_idx = header.index(col_name) + 1
                 for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
                     for cell in row:
                         cell.fill = orange_fill
         
-        # 🔧 F-test 相關欄位塗淡藍色
-        for col_name in ['F_statistic', 'F_test_pvalue', 'Variance_Ratio']:
+        # ✅ 統計檢定欄位塗淡藍色
+        for col_name in ['Mean_Shift_pvalue', 'Variance_Test_pvalue']:
             if col_name in header:
                 col_idx = header.index(col_name) + 1
                 for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
                     for cell in row:
                         cell.fill = light_blue_fill
         
-        # 顯著性標記（p < 0.05 標綠色）
-        if 'Significant' in header:
-            col_idx = header.index('Significant') + 1
+        # ✅ 正態性檢定塗淡紫色
+        if 'Normality_pvalue' in header:
+            col_idx = header.index('Normality_pvalue') + 1
             for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
                 for cell in row:
-                    if cell.value == 'Yes':
+                    cell.fill = light_purple_fill
+        
+        # ✅ 顯著性標記
+        if 'Significant_Improvement' in header:
+            col_idx = header.index('Significant_Improvement') + 1
+            for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
+                for cell in row:
+                    if cell.value == 'Yes' or cell.value == 'Yes (CV% only)':
                         cell.fill = green_fill
-                    elif cell.value == 'No':
+                    elif cell.value == 'Marginal':
                         cell.fill = yellow_fill
+                    elif cell.value == 'No':
+                        cell.fill = light_pink_fill
         
         # 數字格式
         for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=1, max_col=worksheet.max_column):
@@ -989,10 +1090,15 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file, 
                     cell.number_format = scientific_format
     
     new_workbook.save(output_file)
+    
     print(f"\n{'='*70}")
     print(f"✓ ISTD Correction 結果已保存:")
     print(f"  {output_file}")
     print(f"{'='*70}\n")
+    
+    # ✅ 繪製 P 值分佈圖
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+    plot_pvalue_distribution(cv_results_df, output_dir, timestamp)
 
 # ========== main 函數 ==========
 def main(input_file=None):
@@ -1091,5 +1197,3 @@ def main(input_file=None):
 if __name__ == "__main__":
     # 🔧 獨立運行時不傳入 input_file，會顯示對話框
     main()
-
-
