@@ -479,23 +479,7 @@ def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
     
     ✅ 正確邏輯：計算每個 QC 樣本與 QC 群組中心的偏離
     
-    Parameters:
-    -----------
-    qc_scores : ndarray
-        QC 樣本的 PCA 分數 (n_qc, n_components)
-    all_scores : ndarray, optional
-        所有樣本的 PCA 分數（此參數保留以兼容舊代碼，但不使用）
-    alpha : float
-        顯著水平（預設 0.05）
     
-    Returns:
-    --------
-    t2_values : ndarray
-        每個 QC 樣本的 Hotelling T² 值
-    threshold : float
-        T² 閾值
-    outliers : ndarray (bool)
-        異常值標記
     """
     n_qc, p = qc_scores.shape
     
@@ -877,7 +861,7 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         print(f"   - 異常值減少: {outlier_reduction} 個")
 
         # 繪製 2D PCA 圖
-        fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(18, 7.5))
+        fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(16, 10))
         fig.suptitle(f'2D PCA Comparison: {left_name} vs {right_name}',
                      fontsize=18, y=0.98, fontweight='bold')
 
