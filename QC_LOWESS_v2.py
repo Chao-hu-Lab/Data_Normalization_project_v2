@@ -1452,7 +1452,7 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
 
 
 # ========== 主程式 ==========
-def main():
+def main(input_file=None):
     """主程式入口"""
     print("="*70)
     print("🔬 QC-LOWESS 批次效應校正工具 v6.1 Final")
@@ -1465,19 +1465,25 @@ def main():
     print("   📊 統計摘要顯示在終端機")
     print("="*70)
     
-    root = tk.Tk()
-    root.withdraw()
-    
-    file_path = filedialog.askopenfilename(
-        title="選擇 Excel 檔案",
-        filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
-    )
-    
-    if not file_path:
-        print("❌ 未選擇檔案，程式結束")
-        return
-    
-    print(f"\n📂 選擇的檔案: {os.path.basename(file_path)}")
+    # 如果有傳入 input_file 參數，直接使用它
+    if input_file:
+        file_path = input_file
+        print(f"\n📂 使用傳入的檔案: {os.path.basename(file_path)}")
+    else:
+        # 如果沒有傳入參數，則開啟檔案選擇對話框
+        root = tk.Tk()
+        root.withdraw()
+        
+        file_path = filedialog.askopenfilename(
+            title="選擇 Excel 檔案",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+        )
+        
+        if not file_path:
+            print("❌ 未選擇檔案，程式結束")
+            return
+        
+        print(f"\n📂 選擇的檔案: {os.path.basename(file_path)}")
     
     print(f"\n{'='*70}")
     print(f"📥 載入數據...")
@@ -1496,7 +1502,7 @@ def main():
     lowess_df, sample_columns, qc_corrected_values, trend_stats_df = perform_lowess_normalization(istd_df, sample_info_df)
     
     if lowess_df is None:
-        print("❌ LOWESS 校正失敗，程式結束")
+        print("❌ LOWESS 校正失敗,程式結束")
         return
     
     print(f"\n{'='*70}")
@@ -1542,6 +1548,9 @@ def main():
     print(f"    - LOWESS_R² 顯示擬合優度（越高越好）")
     print(f"    - LOWESS_RMSE 顯示絕對誤差（越低越好）")
     print(f"\n{'='*70}\n")
+    
+    # 返回輸出檔案路徑，供主程式使用
+    return output_file
 
 
 if __name__ == "__main__":
