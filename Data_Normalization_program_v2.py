@@ -29,7 +29,8 @@ class DataNormalizationApp:
             'text_dark': '#2c3e50',
             'text_light': '#7f8c8d',
             'running': '#e67e22',
-            'border': '#e0e0e0'
+            'border': '#e0e0e0',
+            'link': '#0066cc'  # 新增：超連結顏色
         }
         
         master.configure(bg=self.color_scheme['background'])
@@ -46,13 +47,19 @@ class DataNormalizationApp:
         self.file_selected = threading.Event()
         self.selected_file_path = None
         
+        # 🆕 新增：步驟輸出檔案追蹤
+        self.step_outputs = {}  # 格式: {'step_name': 'output_file_path'}
+        self.last_output_file = None  # 記錄最後一個輸出檔案
+        
         # 統計資訊
         self.current_stats = {
             'step_name': '',
             'file_path': '',
             'metabolites': 0,
             'samples': 0,
-            'output_path': ''
+            'output_path': '',
+            'output_folder': '',  # 🆕 新增：輸出資料夾路徑
+            'execution_time': 0  # 🆕 新增：執行時間
         }
         
         # 🔧 新增：用於從終端機輸出抓取資訊
@@ -166,6 +173,14 @@ class DataNormalizationApp:
                              font=('Microsoft JhengHei', 9, 'bold'),
                              background=self.color_scheme['panel_bg'],
                              foreground=self.color_scheme['text_dark'])
+        
+        # 🆕 新增：超連結按鈕樣式
+        self.style.configure('Link.TButton',
+                             font=('Microsoft JhengHei', 9, 'underline'),
+                             foreground=self.color_scheme['link'],
+                             background=self.color_scheme['panel_bg'],
+                             borderwidth=0,
+                             relief='flat')
 
     def create_main_layout(self):
         """創建主佈局"""
@@ -246,569 +261,607 @@ class DataNormalizationApp:
 
     def create_steps_area(self):
         """創建步驟區域"""
-        steps_container = ttk.LabelFrame(
+        steps_title = ttk.Label(
             self.left_frame, 
-            text="處理步驟", 
-            padding=10
+            text="📊 執行步驟",
+            font=('Microsoft JhengHei', 12, 'bold'),
+            background=self.color_scheme['background'],
+            foreground=self.color_scheme['text_dark']
         )
-        steps_container.pack(fill=tk.BOTH, expand=True)
-
+        steps_title.pack(anchor='w', pady=(0, 10))
+        
+        # 步驟定義
         self.steps = [
             {
-                "name": "ISTD校正", 
-                "script": "ISTD_Correction_v2", 
-                "color": "#3498db",
-                "dependencies": []
+                'name': 'Step 1: ISTD 校正',
+                'description': '使用內標物進行訊號校正',
+                'script': 'ISTD_Correction_v2.py',
+                'enabled': True
             },
             {
-                "name": "QC校正", 
-                "script": "QC_LOWESS_v2", 
-                "color": "#2ecc71",
-                "dependencies": ["ISTD校正"]
+                'name': 'Step 2: QC 校正',
+                'description': '使用品管樣本進行批次間校正',
+                'script': 'QC_LOWESS_v2.py',
+                'enabled': False
             },
             {
-                "name": "批次校正", 
-                "script": "Batch_Effect_v2", 
-                "color": "#e74c3c",
-                "dependencies": ["ISTD校正", "QC校正"]
+                'name': 'Step 3: 批次效應校正',
+                'description': '修正不同批次間的系統性差異',
+                'script': 'Batch_Effect_v2.py',
+                'enabled': False
             },
             {
-                "name": "濃度校正", 
-                "script": "Concentration_Normalization_v2", 
-                "color": "#f39c12",
-                "dependencies": ["ISTD校正", "QC校正", "批次校正"]
+                'name': 'Step 4: 濃度轉換',
+                'description': '將訊號轉換為實際濃度值',
+                'script': 'Concentration_Normalization_v2.py',
+                'enabled': False
             }
         ]
-
+        
         self.step_buttons = []
         self.step_status_labels = []
-        self.step_frames = []
-
-        for step in self.steps:
-            step_frame = self.create_step_frame(steps_container, step)
-            step_frame.pack(fill=tk.X, pady=5, padx=5)
-            self.step_frames.append(step_frame)
-
-    def create_step_frame(self, parent, step):
-        """創建單個步驟框架"""
-        # 🎨 使用Frame替代ttk.Frame以獲得更好的邊框控制
-        step_frame = tk.Frame(
-            parent, 
-            bg=self.color_scheme['panel_bg'],
-            highlightbackground=self.color_scheme['border'],
-            highlightthickness=1,
-            relief='flat'
-        )
-
-        step_label = tk.Label(
-            step_frame, 
-            text=step['name'], 
-            width=12,
-            font=('Microsoft JhengHei', 11, 'bold'),
-            foreground=step['color'],
-            bg=self.color_scheme['panel_bg']
-        )
-        step_label.pack(side=tk.LEFT, padx=10, pady=5)
-
-        if step['dependencies']:
-            dep_text = f"(需先完成: {', '.join(step['dependencies'])})"
-            dep_label = tk.Label(
-                step_frame,
-                text=dep_text,
-                font=('Microsoft JhengHei', 8),
-                foreground='gray',
-                bg=self.color_scheme['panel_bg']
+        
+        for i, step in enumerate(self.steps):
+            step_frame = ttk.Frame(self.left_frame, style='Step.TFrame', relief='solid', borderwidth=1)
+            step_frame.pack(fill=tk.X, pady=5, padx=2)
+            
+            # 內部 padding
+            inner_frame = ttk.Frame(step_frame, style='Step.TFrame')
+            inner_frame.pack(fill=tk.X, padx=15, pady=12)
+            
+            # 上排：步驟名稱和狀態
+            top_row = ttk.Frame(inner_frame, style='Step.TFrame')
+            top_row.pack(fill=tk.X)
+            
+            step_label = ttk.Label(
+                top_row, 
+                text=step['name'],
+                font=('Microsoft JhengHei', 11, 'bold'),
+                background=self.color_scheme['panel_bg'],
+                foreground=self.color_scheme['text_dark']
             )
-            dep_label.pack(side=tk.LEFT, padx=5)
-
-        execute_btn = ttk.Button(
-            step_frame, 
-            text="▶ 執行", 
-            width=10,
-            style='Step.TButton',
-            command=lambda s=step: self.execute_step(s)
-        )
-        execute_btn.pack(side=tk.RIGHT, padx=10, pady=5)
-
-        status_label = tk.Label(
-            step_frame, 
-            text="⚪ 未執行", 
-            foreground="gray", 
-            font=('Microsoft JhengHei', 10),
-            bg=self.color_scheme['panel_bg']
-        )
-        status_label.pack(side=tk.RIGHT, padx=10)
-
-        self.step_buttons.append(execute_btn)
-        self.step_status_labels.append(status_label)
-
-        return step_frame
+            step_label.pack(side=tk.LEFT)
+            
+            status_label = ttk.Label(
+                top_row,
+                text="⚪ 未執行",
+                font=('Microsoft JhengHei', 10),
+                foreground="gray",
+                background=self.color_scheme['panel_bg']
+            )
+            status_label.pack(side=tk.RIGHT)
+            self.step_status_labels.append(status_label)
+            
+            # 中排：描述
+            desc_label = ttk.Label(
+                inner_frame,
+                text=step['description'],
+                font=('Microsoft JhengHei', 9),
+                foreground=self.color_scheme['text_light'],
+                background=self.color_scheme['panel_bg']
+            )
+            desc_label.pack(anchor='w', pady=(5, 8))
+            
+            # 下排：執行按鈕
+            btn = ttk.Button(
+                inner_frame,
+                text="▶ 執行",
+                command=lambda s=step: self.execute_step(s),
+                style='Step.TButton',
+                state='disabled' if not step['enabled'] else 'normal'
+            )
+            btn.pack(anchor='w')
+            self.step_buttons.append(btn)
 
     def create_stats_panel(self):
-        """🎨 創建統計面板 - 優化樣式"""
-        # 使用tk.Frame替代ttk.LabelFrame以獲得更好的樣式控制
-        stats_outer = tk.Frame(
-            self.right_frame,
-            bg=self.color_scheme['panel_bg'],
-            highlightbackground=self.color_scheme['border'],
-            highlightthickness=1,
-            relief='flat'
-        )
-        stats_outer.pack(fill=tk.BOTH, expand=True)
-        stats_outer.pack_propagate(False)
-        stats_outer.config(width=280)
+        """🆕 優化：創建統計面板，增加超連結功能"""
+        # 外框
+        stats_container = ttk.Frame(self.right_frame, style='Stats.TFrame', relief='solid', borderwidth=1)
+        stats_container.pack(fill=tk.BOTH, expand=True, padx=2)
+        
+        # 內部 padding
+        stats_frame = ttk.Frame(stats_container, style='Stats.TFrame')
+        stats_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
         
         # 標題
-        title_label = tk.Label(
-            stats_outer,
-            text="📊 處理統計",
+        title_label = ttk.Label(
+            stats_frame,
+            text="📈 執行摘要",
             font=('Microsoft JhengHei', 12, 'bold'),
-            bg=self.color_scheme['panel_bg'],
-            fg=self.color_scheme['text_dark']
+            background=self.color_scheme['panel_bg'],
+            foreground=self.color_scheme['text_dark']
         )
-        title_label.pack(anchor='w', padx=15, pady=(15, 10))
+        title_label.pack(anchor='w', pady=(0, 15))
         
-        # 內容容器
-        stats_container = tk.Frame(stats_outer, bg=self.color_scheme['panel_bg'])
-        stats_container.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+        # === 當前步驟 ===
+        self._create_stats_row(stats_frame, "當前步驟：", "等待執行...")
+        self.stats_step_label = self._get_last_value_label(stats_frame)
         
-        # 當前步驟
-        tk.Label(
-            stats_container,
-            text="當前步驟：",
-            font=('Microsoft JhengHei', 9, 'bold'),
-            bg=self.color_scheme['panel_bg'],
-            fg=self.color_scheme['text_dark']
-        ).pack(anchor='w', pady=(0, 2))
+        self._add_separator(stats_frame)
         
-        self.stats_step_label = tk.Label(
-            stats_container,
-            text="等待執行...",
-            font=('Microsoft JhengHei', 10),
-            foreground=self.color_scheme['primary'],
-            bg=self.color_scheme['panel_bg']
+        # === 輸入檔案 ===
+        self._create_stats_row(stats_frame, "輸入檔案：", "未選擇")
+        self.stats_file_label = self._get_last_value_label(stats_frame)
+        
+        # 🆕 新增：複製檔案路徑按鈕
+        copy_input_btn = ttk.Button(
+            stats_frame,
+            text="📋 複製路徑",
+            command=self.copy_input_path,
+            width=12
         )
-        self.stats_step_label.pack(anchor='w', pady=(0, 15))
+        copy_input_btn.pack(anchor='w', pady=(2, 0))
+        self.copy_input_btn = copy_input_btn
         
-        # 處理檔案
-        tk.Label(
-            stats_container,
-            text="處理檔案：",
-            font=('Microsoft JhengHei', 9, 'bold'),
-            bg=self.color_scheme['panel_bg'],
-            fg=self.color_scheme['text_dark']
-        ).pack(anchor='w', pady=(0, 2))
+        self._add_separator(stats_frame)
         
-        self.stats_file_label = tk.Label(
-            stats_container,
-            text="未選擇",
-            font=('Microsoft JhengHei', 9),
-            foreground=self.color_scheme['text_dark'],
-            bg=self.color_scheme['panel_bg'],
-            wraplength=240,
-            justify='left'
+        # === 資料維度 ===
+        self._create_stats_row(stats_frame, "資料維度：", "Metabolites: - | Samples: -")
+        self.stats_data_label = self._get_last_value_label(stats_frame)
+        
+        self._add_separator(stats_frame)
+        
+        # === 🆕 執行時間 ===
+        self._create_stats_row(stats_frame, "執行時間：", "未開始")
+        self.stats_time_label = self._get_last_value_label(stats_frame)
+        
+        self._add_separator(stats_frame)
+        
+        # === 輸出檔案 ===
+        self._create_stats_row(stats_frame, "輸出檔案：", "未生成")
+        self.stats_output_label = self._get_last_value_label(stats_frame)
+        
+        # 🆕 新增：輸出檔案操作按鈕（水平排列）
+        output_btn_frame = ttk.Frame(stats_frame, style='Stats.TFrame')
+        output_btn_frame.pack(anchor='w', pady=(5, 0))
+        
+        # 打開檔案按鈕
+        self.open_file_btn = ttk.Button(
+            output_btn_frame,
+            text="📄 開啟檔案",
+            command=self.open_output_file,
+            state='disabled',
+            width=12
         )
-        self.stats_file_label.pack(anchor='w', pady=(0, 15))
+        self.open_file_btn.pack(side=tk.LEFT, padx=(0, 5))
         
-        # 數據統計
-        tk.Label(
-            stats_container,
-            text="數據統計：",
-            font=('Microsoft JhengHei', 9, 'bold'),
-            bg=self.color_scheme['panel_bg'],
-            fg=self.color_scheme['text_dark']
-        ).pack(anchor='w', pady=(0, 2))
-        
-        self.stats_data_label = tk.Label(
-            stats_container,
-            text="代謝物：- | 樣本：-",
-            font=('Times New Roman', 9),
-            foreground=self.color_scheme['text_dark'],
-            bg=self.color_scheme['panel_bg']
-        )
-        self.stats_data_label.pack(anchor='w', pady=(0, 15))
-        
-        # 輸出路徑
-        tk.Label(
-            stats_container,
-            text="輸出路徑：",
-            font=('Microsoft JhengHei', 9, 'bold'),
-            bg=self.color_scheme['panel_bg'],
-            fg=self.color_scheme['text_dark']
-        ).pack(anchor='w', pady=(0, 2))
-        
-        output_frame = tk.Frame(stats_container, bg=self.color_scheme['panel_bg'])
-        output_frame.pack(fill=tk.X, pady=(0, 15))
-        
-        self.stats_output_label = tk.Label(
-            output_frame,
-            text="未生成",
-            font=('Microsoft JhengHei', 9),
-            foreground=self.color_scheme['text_dark'],
-            bg=self.color_scheme['panel_bg'],
-            wraplength=180,
-            justify='left'
-        )
-        self.stats_output_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
+        # 打開資料夾按鈕
         self.open_folder_btn = ttk.Button(
-            output_frame,
-            text="📂",
-            width=3,
+            output_btn_frame,
+            text="📁 開啟資料夾",
             command=self.open_output_folder,
-            state='disabled'
+            state='disabled',
+            width=12
         )
-        self.open_folder_btn.pack(side=tk.RIGHT)
+        self.open_folder_btn.pack(side=tk.LEFT)
         
-        # 系統資源
-        tk.Label(
-            stats_container,
-            text="系統資源：",
+        # 🆕 新增：複製輸出路徑按鈕
+        copy_output_btn = ttk.Button(
+            stats_frame,
+            text="📋 複製輸出路徑",
+            command=self.copy_output_path,
+            state='disabled',
+            width=25
+        )
+        copy_output_btn.pack(anchor='w', pady=(5, 0))
+        self.copy_output_btn = copy_output_btn
+        
+        self._add_separator(stats_frame)
+        
+        # === 🆕 步驟輸出歷史 ===
+        history_label = ttk.Label(
+            stats_frame,
+            text="📜 步驟輸出記錄：",
             font=('Microsoft JhengHei', 9, 'bold'),
-            bg=self.color_scheme['panel_bg'],
-            fg=self.color_scheme['text_dark']
-        ).pack(anchor='w', pady=(10, 2))
-        
-        self.stats_resource_label = tk.Label(
-            stats_container,
-            text="CPU: -% | 記憶體: - MB",
-            font=('Times New Roman', 9),
-            foreground=self.color_scheme['text_dark'],
-            bg=self.color_scheme['panel_bg']
+            background=self.color_scheme['panel_bg'],
+            foreground=self.color_scheme['text_dark']
         )
-        self.stats_resource_label.pack(anchor='w')
+        history_label.pack(anchor='w', pady=(10, 5))
+        
+        # 歷史記錄容器（可滾動）
+        history_container = ttk.Frame(stats_frame, style='Stats.TFrame')
+        history_container.pack(fill=tk.BOTH, expand=True)
+        
+        # 創建 Canvas 和 Scrollbar
+        canvas = tk.Canvas(
+            history_container,
+            bg=self.color_scheme['panel_bg'],
+            highlightthickness=0,
+            height=150
+        )
+        scrollbar = ttk.Scrollbar(history_container, orient="vertical", command=canvas.yview)
+        self.history_frame = ttk.Frame(canvas, style='Stats.TFrame')
+        
+        self.history_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=self.history_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        self.history_canvas = canvas
+        
+        # 初始化提示
+        no_history_label = ttk.Label(
+            self.history_frame,
+            text="尚無輸出記錄",
+            font=('Microsoft JhengHei', 9),
+            foreground=self.color_scheme['text_light'],
+            background=self.color_scheme['panel_bg']
+        )
+        no_history_label.pack(pady=10)
+
+    def _create_stats_row(self, parent, title, value):
+        """輔助方法：創建統計資訊行"""
+        row = ttk.Frame(parent, style='Stats.TFrame')
+        row.pack(fill=tk.X, pady=3)
+        
+        title_label = ttk.Label(
+            row,
+            text=title,
+            style='StatsTitle.TLabel'
+        )
+        title_label.pack(anchor='w')
+        
+        value_label = ttk.Label(
+            row,
+            text=value,
+            style='Stats.TLabel',
+            wraplength=250
+        )
+        value_label.pack(anchor='w', padx=(10, 0))
+
+    def _get_last_value_label(self, parent):
+        """輔助方法：獲取最後創建的值標籤"""
+        for child in parent.winfo_children():
+            if isinstance(child, ttk.Frame):
+                for subchild in child.winfo_children():
+                    if isinstance(subchild, ttk.Label):
+                        last_label = subchild
+        return last_label
+
+    def _add_separator(self, parent):
+        """輔助方法：添加分隔線"""
+        sep = ttk.Separator(parent, orient='horizontal')
+        sep.pack(fill=tk.X, pady=8)
 
     def create_result_preview_area(self):
         """創建結果預覽區域"""
-        preview_container = ttk.LabelFrame(
-            self.main_frame, 
-            text="執行日誌（實時顯示）", 
-            padding=10
+        result_frame = ttk.Frame(self.main_frame, style='Main.TFrame')
+        result_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+        
+        result_title = ttk.Label(
+            result_frame,
+            text="📋 執行日誌",
+            font=('Microsoft JhengHei', 12, 'bold'),
+            background=self.color_scheme['background'],
+            foreground=self.color_scheme['text_dark']
         )
-        preview_container.pack(fill=tk.BOTH, expand=True, pady=10)
-
+        result_title.pack(anchor='w', pady=(0, 5))
+        
+        # 日誌文字區域 - 使用 Times New Roman 顯示英文和數字
         self.result_text = scrolledtext.ScrolledText(
-            preview_container, 
-            height=15, 
+            result_frame,
+            height=12,
             wrap=tk.WORD,
             font=('Consolas', 9),
-            bg='#1e1e1e',
-            fg='#d4d4d4'
+            bg='#2b2b2b',
+            fg='#f0f0f0',
+            insertbackground='white',
+            relief='flat',
+            borderwidth=0
         )
         self.result_text.pack(fill=tk.BOTH, expand=True)
         
-        # 🎨 日誌標籤 - 無底色
-        self.result_text.tag_config('INFO', foreground='#4ec9b0')
-        self.result_text.tag_config('SUCCESS', foreground='#4ec9b0', font=('Consolas', 9, 'bold'))
-        self.result_text.tag_config('ERROR', foreground='#f48771', font=('Consolas', 9, 'bold'))
-        self.result_text.tag_config('WARNING', foreground='#dcdcaa')
-        self.result_text.tag_config('DEBUG', foreground='#808080')
-        self.result_text.tag_config('CRITICAL', foreground='#ff0000', font=('Consolas', 9, 'bold'))
-
-    def update_stats_display(self):
-        """更新統計顯示"""
-        # 更新系統資源
-        try:
-            cpu_percent = psutil.cpu_percent(interval=0.1)
-            memory_info = psutil.Process().memory_info()
-            memory_mb = memory_info.rss / 1024 / 1024
-            self.stats_resource_label.config(
-                text=f"CPU: {cpu_percent:.1f}% | Memory: {memory_mb:.1f} MB"
-            )
-        except:
-            pass
-        
-        # 每秒更新一次
-        self.master.after(1000, self.update_stats_display)
-
-    def open_output_folder(self):
-        """開啟輸出資料夾"""
-        if self.current_stats['output_path'] and os.path.exists(self.current_stats['output_path']):
-            folder_path = os.path.dirname(self.current_stats['output_path'])
-            if sys.platform == 'win32':
-                # Windows: 使用 explorer /select 選中檔案
-                os.system(f'explorer /select,"{os.path.abspath(self.current_stats["output_path"])}"')
-            elif sys.platform == 'darwin':
-                subprocess.Popen(['open', '-R', self.current_stats['output_path']])
-            else:
-                subprocess.Popen(['xdg-open', folder_path])
-        else:
-            messagebox.showwarning("提示", "輸出路徑不存在或尚未生成")
-
-    def check_progress(self):
-        """定期檢查進度隊列"""
-        try:
-            while True:
-                progress_data = self.progress_queue.get_nowait()
-                
-                if isinstance(progress_data, dict):
-                    # 更新統計資訊
-                    if 'file_path' in progress_data:
-                        self.current_stats['file_path'] = progress_data['file_path']
-                        filename = os.path.basename(progress_data['file_path'])
-                        self.stats_file_label.config(text=filename)
-                    
-                    if 'metabolites' in progress_data:
-                        self.current_stats['metabolites'] = progress_data['metabolites']
-                        self.stats_data_label.config(
-                            text=f"Metabolites: {self.current_stats['metabolites']} | Samples: {self.current_stats['samples']}"
-                        )
-                    
-                    if 'samples' in progress_data:
-                        self.current_stats['samples'] = progress_data['samples']
-                        self.stats_data_label.config(
-                            text=f"Metabolites: {self.current_stats['metabolites']} | Samples: {self.current_stats['samples']}"
-                        )
-                    
-                    if 'output_path' in progress_data:
-                        self.current_stats['output_path'] = progress_data['output_path']
-                        filename = os.path.basename(progress_data['output_path'])
-                        self.stats_output_label.config(text=filename)
-                        self.open_folder_btn.config(state='normal')
-                
-                self.master.update_idletasks()
-        except queue.Empty:
-            pass
-        
-        self.master.after(100, self.check_progress)
-
-    def check_log_queue(self):
-        """定期檢查日誌隊列"""
-        try:
-            while True:
-                log_record = self.log_queue.get_nowait()
-                self.display_log(log_record)
-                
-                # 🔧 從日誌中提取統計資訊
-                self.parse_log_for_stats(log_record)
-                
-        except queue.Empty:
-            pass
-        
-        self.master.after(50, self.check_log_queue)
-
-    def parse_log_for_stats(self, log_record):
-        """🔧 從日誌記錄中解析統計資訊"""
-        message = log_record.getMessage()
-        
-        # 提取代謝物數量
-        metabolite_match = re.search(r'代謝物[數数量]*[:：\s]*(\d+)', message)
-        if metabolite_match:
-            metabolites = int(metabolite_match.group(1))
-            self.current_stats['metabolites'] = metabolites
-            self.stats_data_label.config(
-                text=f"Metabolites: {self.current_stats['metabolites']} | Samples: {self.current_stats['samples']}"
-            )
-        
-        # 提取樣本數量
-        sample_match = re.search(r'樣本[數数量]*[:：\s]*(\d+)', message)
-        if sample_match:
-            samples = int(sample_match.group(1))
-            self.current_stats['samples'] = samples
-            self.stats_data_label.config(
-                text=f"Metabolites: {self.current_stats['metabolites']} | Samples: {self.current_stats['samples']}"
-            )
-        
-        # 提取輸出檔案路徑
-        # 匹配各種可能的輸出路徑格式
-        output_patterns = [
-            r'輸出[檔文件案]*[:：\s]*(.*?\.xlsx)',
-            r'保存[至到]*[:：\s]*(.*?\.xlsx)',
-            r'[Ss]aved?\s+(?:to|as)[:：\s]*(.*?\.xlsx)',
-            r'[Oo]utput\s+(?:file|path)[:：\s]*(.*?\.xlsx)',
-            r'結果檔案[:：\s]*(.*?\.xlsx)',
-            r'檔案路徑[:：\s]*(.*?\.xlsx)'
-        ]
-        
-        for pattern in output_patterns:
-            output_match = re.search(pattern, message, re.IGNORECASE)
-            if output_match:
-                output_path = output_match.group(1).strip()
-                # 清理路徑中的引號和多餘空白
-                output_path = output_path.strip('"\'').strip()
-                
-                # 驗證路徑是否存在
-                if os.path.exists(output_path):
-                    self.current_stats['output_path'] = output_path
-                    filename = os.path.basename(output_path)
-                    self.stats_output_label.config(text=filename)
-                    self.open_folder_btn.config(state='normal')
-                    self.logger.info(f"✓ 已捕獲輸出路徑: {output_path}")
-                    break
-                else:
-                    # 嘗試相對路徑
-                    abs_path = os.path.abspath(output_path)
-                    if os.path.exists(abs_path):
-                        self.current_stats['output_path'] = abs_path
-                        filename = os.path.basename(abs_path)
-                        self.stats_output_label.config(text=filename)
-                        self.open_folder_btn.config(state='normal')
-                        self.logger.info(f"✓ 已捕獲輸出路徑: {abs_path}")
-                        break
-
-    def display_log(self, log_record):
-        """在GUI中顯示日誌"""
-        message = log_record.getMessage()
-        level = log_record.levelname
-        
-        tag = level
-        
-        self.result_text.insert(tk.END, f"[{level}] {message}\n", tag)
-        self.result_text.see(tk.END)
+        # 配置標籤顏色
+        self.result_text.tag_configure('INFO', foreground='#a8d5ff')
+        self.result_text.tag_configure('WARNING', foreground='#ffd966')
+        self.result_text.tag_configure('ERROR', foreground='#ff6b6b')
+        self.result_text.tag_configure('SUCCESS', foreground='#66ff66')
 
     def update_button_states(self):
-        """更新所有按鈕的啟用/禁用狀態"""
-        for i, step in enumerate(self.steps):
-            dependencies_met = all(
-                dep in self.completed_steps 
-                for dep in step['dependencies']
-            )
-            
-            if dependencies_met and step['name'] not in self.completed_steps:
+        """更新按鈕狀態"""
+        # Step 1 永遠可用
+        self.step_buttons[0].config(state='normal')
+        
+        # 其他步驟需要前一步驟完成
+        for i in range(1, len(self.steps)):
+            prev_step = self.steps[i-1]['name']
+            if prev_step in self.completed_steps:
                 self.step_buttons[i].config(state='normal')
             else:
-                if step['name'] in self.completed_steps:
-                    self.step_buttons[i].config(state='normal')
+                self.step_buttons[i].config(state='disabled')
+
+    def check_progress(self):
+        """檢查進度隊列"""
+        try:
+            while True:
+                data = self.progress_queue.get_nowait()
+                
+                # 更新統計資訊
+                if 'metabolites' in data:
+                    self.current_stats['metabolites'] = data['metabolites']
+                if 'samples' in data:
+                    self.current_stats['samples'] = data['samples']
+                if 'output_path' in data:
+                    self.current_stats['output_path'] = data['output_path']
+                    # 🆕 記錄輸出檔案
+                    self.last_output_file = data['output_path']
+                    # 🆕 記錄到步驟輸出
+                    if self.current_stats['step_name']:
+                        self.step_outputs[self.current_stats['step_name']] = data['output_path']
+                    # 🆕 提取輸出資料夾
+                    self.current_stats['output_folder'] = os.path.dirname(data['output_path'])
+                
+                self.update_stats_display()
+                
+        except queue.Empty:
+            pass
+        finally:
+            self.master.after(100, self.check_progress)
+
+    def check_log_queue(self):
+        """檢查日誌隊列"""
+        try:
+            while True:
+                record = self.log_queue.get_nowait()
+                self.display_log(record)
+        except queue.Empty:
+            pass
+        finally:
+            self.master.after(100, self.check_log_queue)
+
+    def display_log(self, record):
+        """顯示日誌訊息"""
+        msg = self.format_log_message(record)
+        
+        # 根據日誌等級選擇標籤
+        if record.levelno >= logging.ERROR:
+            tag = 'ERROR'
+        elif record.levelno >= logging.WARNING:
+            tag = 'WARNING'
+        elif '✅' in msg or '成功' in msg:
+            tag = 'SUCCESS'
+        else:
+            tag = 'INFO'
+        
+        self.result_text.insert(tk.END, msg + '\n', tag)
+        self.result_text.see(tk.END)
+
+    def format_log_message(self, record):
+        """格式化日誌訊息"""
+        return f"{record.getMessage()}"
+
+    def update_stats_display(self):
+        """🆕 優化：更新統計顯示，包含按鈕狀態"""
+        # 更新步驟名稱
+        if self.current_stats['step_name']:
+            self.stats_step_label.config(text=self.current_stats['step_name'])
+        
+        # 更新檔案路徑
+        if self.current_stats['file_path']:
+            file_name = os.path.basename(self.current_stats['file_path'])
+            self.stats_file_label.config(text=file_name)
+            self.copy_input_btn.config(state='normal')
+        
+        # 更新資料維度
+        if self.current_stats['metabolites'] > 0 or self.current_stats['samples'] > 0:
+            data_text = f"Metabolites: {self.current_stats['metabolites']} | Samples: {self.current_stats['samples']}"
+            self.stats_data_label.config(text=data_text)
+        
+        # 更新輸出檔案
+        if self.current_stats['output_path']:
+            output_name = os.path.basename(self.current_stats['output_path'])
+            self.stats_output_label.config(text=output_name)
+            # 🆕 啟用按鈕
+            self.open_file_btn.config(state='normal')
+            self.open_folder_btn.config(state='normal')
+            self.copy_output_btn.config(state='normal')
+            
+            # 🆕 更新歷史記錄
+            self.add_to_history(self.current_stats['step_name'], self.current_stats['output_path'])
+        
+        # 🆕 更新執行時間
+        if self.current_stats['execution_time'] > 0:
+            time_text = f"{self.current_stats['execution_time']:.2f} 秒"
+            self.stats_time_label.config(text=time_text)
+        
+        self.master.after(500, self.update_stats_display)
+
+    # 🆕 新增：複製路徑功能
+    def copy_input_path(self):
+        """複製輸入檔案路徑到剪貼簿"""
+        if self.current_stats['file_path']:
+            self.master.clipboard_clear()
+            self.master.clipboard_append(self.current_stats['file_path'])
+            self.logger.info(f"✅ 已複製輸入路徑: {self.current_stats['file_path']}")
+            messagebox.showinfo("複製成功", "輸入檔案路徑已複製到剪貼簿")
+
+    def copy_output_path(self):
+        """複製輸出檔案路徑到剪貼簿"""
+        if self.current_stats['output_path']:
+            self.master.clipboard_clear()
+            self.master.clipboard_append(self.current_stats['output_path'])
+            self.logger.info(f"✅ 已複製輸出路徑: {self.current_stats['output_path']}")
+            messagebox.showinfo("複製成功", "輸出檔案路徑已複製到剪貼簿")
+
+    # 🆕 新增：開啟檔案功能
+    def open_output_file(self):
+        """使用預設程式開啟輸出檔案"""
+        if self.current_stats['output_path'] and os.path.exists(self.current_stats['output_path']):
+            try:
+                if sys.platform == 'win32':
+                    os.startfile(self.current_stats['output_path'])
+                elif sys.platform == 'darwin':  # macOS
+                    subprocess.run(['open', self.current_stats['output_path']])
+                else:  # Linux
+                    subprocess.run(['xdg-open', self.current_stats['output_path']])
+                self.logger.info(f"✅ 已開啟檔案: {self.current_stats['output_path']}")
+            except Exception as e:
+                self.logger.error(f"❌ 無法開啟檔案: {e}")
+                messagebox.showerror("錯誤", f"無法開啟檔案：\n{e}")
+        else:
+            messagebox.showwarning("警告", "輸出檔案不存在")
+
+    def open_output_folder(self):
+        """開啟輸出檔案所在的資料夾"""
+        if self.current_stats['output_folder'] and os.path.exists(self.current_stats['output_folder']):
+            try:
+                if sys.platform == 'win32':
+                    # Windows: 開啟資料夾並選中檔案
+                    subprocess.run(['explorer', '/select,', self.current_stats['output_path']])
+                elif sys.platform == 'darwin':  # macOS
+                    subprocess.run(['open', self.current_stats['output_folder']])
+                else:  # Linux
+                    subprocess.run(['xdg-open', self.current_stats['output_folder']])
+                self.logger.info(f"✅ 已開啟資料夾: {self.current_stats['output_folder']}")
+            except Exception as e:
+                self.logger.error(f"❌ 無法開啟資料夾: {e}")
+                messagebox.showerror("錯誤", f"無法開啟資料夾：\n{e}")
+        else:
+            messagebox.showwarning("警告", "輸出資料夾不存在")
+
+    # 🆕 新增：歷史記錄功能
+    def add_to_history(self, step_name, output_path):
+        """添加輸出記錄到歷史"""
+        # 清除 "尚無輸出記錄" 提示
+        for widget in self.history_frame.winfo_children():
+            widget.destroy()
+        
+        # 創建歷史記錄項目
+        history_item = ttk.Frame(self.history_frame, style='Stats.TFrame')
+        history_item.pack(fill=tk.X, pady=2, padx=5)
+        
+        # 步驟名稱（縮短顯示）
+        step_short = step_name.replace('Step ', 'S').replace(': ', '-')[:20]
+        step_label = ttk.Label(
+            history_item,
+            text=step_short,
+            font=('Microsoft JhengHei', 8, 'bold'),
+            background=self.color_scheme['panel_bg'],
+            foreground=self.color_scheme['text_dark'],
+            width=25,
+            anchor='w'
+        )
+        step_label.pack(side=tk.TOP, anchor='w')
+        
+        # 檔案名稱（可點擊）
+        file_name = os.path.basename(output_path)
+        file_btn = tk.Label(
+            history_item,
+            text=f"📄 {file_name[:30]}",
+            font=('Microsoft JhengHei', 8, 'underline'),
+            fg=self.color_scheme['link'],
+            bg=self.color_scheme['panel_bg'],
+            cursor='hand2',
+            anchor='w'
+        )
+        file_btn.pack(side=tk.TOP, anchor='w', padx=(5, 0))
+        file_btn.bind('<Button-1>', lambda e, path=output_path: self.open_file_from_history(path))
+        
+        # 更新滾動區域
+        self.history_canvas.configure(scrollregion=self.history_canvas.bbox("all"))
+
+    def open_file_from_history(self, file_path):
+        """從歷史記錄開啟檔案"""
+        if os.path.exists(file_path):
+            try:
+                if sys.platform == 'win32':
+                    os.startfile(file_path)
+                elif sys.platform == 'darwin':
+                    subprocess.run(['open', file_path])
                 else:
-                    self.step_buttons[i].config(state='disabled')
+                    subprocess.run(['xdg-open', file_path])
+                self.logger.info(f"✅ 已從歷史開啟: {file_path}")
+            except Exception as e:
+                self.logger.error(f"❌ 無法開啟檔案: {e}")
+                messagebox.showerror("錯誤", f"無法開啟檔案：\n{e}")
+        else:
+            messagebox.showwarning("警告", "檔案不存在或已被移動")
 
     def load_script(self, script_name):
-        """動態且安全地載入腳本"""
+        """動態載入腳本"""
         try:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            script_path = os.path.join(script_dir, f"{script_name}.py")
+            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script_name)
             
             if not os.path.exists(script_path):
-                raise FileNotFoundError(f"找不到腳本: {script_path}")
-            
-            sys.path.insert(0, script_dir)
+                self.logger.error(f"腳本不存在: {script_path}")
+                return None
             
             spec = importlib.util.spec_from_file_location(script_name, script_path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             
-            if not hasattr(module, 'main'):
-                raise AttributeError(f"腳本 {script_name} 缺少 main() 函數")
-            
+            self.logger.info(f"✅ 成功載入腳本: {script_name}")
             return module
-        
+            
         except Exception as e:
             self.logger.error(f"載入腳本失敗: {script_name}")
             self.logger.error(traceback.format_exc())
-            raise
-        
-        finally:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            if script_dir in sys.path:
-                sys.path.remove(script_dir)
-
-    def select_file_in_main_thread(self, title="選擇檔案", filetypes=None):
-        """在主線程中選擇檔案"""
-        if filetypes is None:
-            filetypes = [("Excel files", "*.xlsx *.xls")]
-        
-        self.selected_file_path = filedialog.askopenfilename(
-            title=title,
-            filetypes=filetypes,
-            parent=self.master
-        )
-        
-        self.file_selected.set()
+            return None
 
     def execute_step(self, step):
-        """執行指定步驟的校正"""
-        missing_deps = [
-            dep for dep in step['dependencies'] 
-            if dep not in self.completed_steps
-        ]
-        
-        if missing_deps:
-            messagebox.showwarning(
-                "無法執行", 
-                f"請先完成以下步驟：\n• " + "\n• ".join(missing_deps)
-            )
+        """執行步驟"""
+        if self.is_executing:
+            messagebox.showwarning("執行中", "已有步驟正在執行，請稍候")
             return
         
-        if step['name'] in self.completed_steps:
-            confirm = messagebox.askyesno(
-                "確認重新執行",
-                f"步驟「{step['name']}」已完成，是否要重新執行？"
-            )
-            if not confirm:
-                return
-            
-            self.remove_step_and_dependents(step['name'])
+        self.logger.info("=" * 80)
+        self.logger.info(f"開始執行: {step['name']}")
+        self.logger.info("=" * 80)
         
-        # 重置統計資訊
-        self.current_stats = {
-            'step_name': step['name'],
-            'file_path': '',
-            'metabolites': 0,
-            'samples': 0,
-            'output_path': ''
-        }
+        # 🆕 記錄開始時間
+        self.execution_start_time = datetime.now()
         
-        self.stats_step_label.config(text=step['name'])
-        self.stats_file_label.config(text="未選擇")
-        self.stats_data_label.config(text="Metabolites: - | Samples: -")
-        self.stats_output_label.config(text="未生成")
-        self.open_folder_btn.config(state='disabled')
-        
+        # 重置取消標誌
         self.cancel_flag.clear()
         
-        # 先在主線程中選擇檔案
-        self.logger.info(f"請選擇 {step['name']} 的輸入檔案...")
-        self.file_selected.clear()
-        self.selected_file_path = None
+        # 更新當前步驟名稱
+        self.current_stats['step_name'] = step['name']
+        self.current_stats['execution_time'] = 0
         
-        # 在主線程中顯示檔案選擇對話框
-        self.master.after(100, lambda: self.select_file_in_main_thread(
-            title=f"選擇 {step['name']} 的輸入檔案",
-            filetypes=[("Excel files", "*.xlsx *.xls")]
-        ))
-        
-        # 啟動執行線程（會等待檔案選擇完成）
+        # 在新線程中執行
         self.current_thread = threading.Thread(
-            target=self.run_step_in_thread, 
+            target=self.run_step,
             args=(step,),
             daemon=True
         )
         self.current_thread.start()
+        
+        # 更新UI
+        self.master.after(0, lambda: self.on_step_start(step))
 
-    def remove_step_and_dependents(self, step_name):
-        """移除步驟及其所有依賴它的後續步驟"""
-        self.completed_steps.discard(step_name)
-        
-        for step in self.steps:
-            if step_name in step['dependencies']:
-                self.remove_step_and_dependents(step['name'])
-        
-        for i, step in enumerate(self.steps):
-            if step['name'] not in self.completed_steps:
-                self.step_status_labels[i].config(
-                    text="⚪ 未執行", 
-                    foreground="gray"
-                )
-
-    def run_step_in_thread(self, step):
-        """在線程中執行步驟"""
-        result = None
-        error_msg = None
-        
+    def run_step(self, step):
+        """在背景線程中執行步驟"""
         try:
-            self.master.after(0, lambda s=step: self.on_step_start(s))
-            
-            self.logger.info("=" * 80)
-            self.logger.info(f"開始執行: {step['name']}")
-            self.logger.info("=" * 80)
-            
-            # 等待檔案選擇完成（最多等待60秒）
-            if not self.file_selected.wait(timeout=60):
-                raise TimeoutError("檔案選擇超時")
+            # 🆕 優化：自動選擇上一步驟的輸出檔案
+            if step['name'] != 'Step 1: ISTD 校正' and self.last_output_file:
+                # 如果不是第一步，且有上一步的輸出，自動使用
+                self.logger.info(f"🔄 自動選擇上一步輸出: {os.path.basename(self.last_output_file)}")
+                self.selected_file_path = self.last_output_file
+                self.file_selected.set()
+            else:
+                # 第一步或沒有上一步輸出，需要手動選擇
+                self.logger.info("請選擇輸入檔案...")
+                self.master.after(0, self.select_input_file)
+                
+                # 等待檔案選擇或取消
+                timeout = 300  # 5分鐘超時
+                if not self.file_selected.wait(timeout):
+                    error_msg = "檔案選擇超時（5分鐘）"
+                    self.master.after(0, lambda s=step, err=error_msg: self.on_step_cancelled(s, err))
+                    return
+                
+                # 重置事件
+                self.file_selected.clear()
             
             # 檢查是否被取消
             if self.cancel_flag.is_set():
-                error_msg = "執行被用戶取消"
+                error_msg = "用戶取消了執行"
                 self.master.after(0, lambda s=step, err=error_msg: self.on_step_cancelled(s, err))
                 return
             
@@ -849,6 +902,10 @@ class DataNormalizationApp:
                 sys.stdout = old_stdout
                 sys.stderr = old_stderr
             
+            # 🆕 計算執行時間
+            execution_time = (datetime.now() - self.execution_start_time).total_seconds()
+            self.current_stats['execution_time'] = execution_time
+            
             # 檢查是否被取消
             if self.cancel_flag.is_set():
                 error_msg = "執行被用戶取消"
@@ -870,6 +927,23 @@ class DataNormalizationApp:
             self.logger.error(f"執行失敗: {step['name']}")
             self.logger.error(traceback.format_exc())
             self.master.after(0, lambda s=step, err=error_msg: self.on_step_error(s, err))
+
+    def select_input_file(self):
+        """選擇輸入檔案"""
+        file_path = filedialog.askopenfilename(
+            title="選擇輸入檔案",
+            filetypes=[
+                ("Excel files", "*.xlsx *.xls"),
+                ("All files", "*.*")
+            ]
+        )
+        
+        if file_path:
+            self.selected_file_path = file_path
+            self.file_selected.set()
+        else:
+            self.selected_file_path = None
+            self.file_selected.set()
 
     def on_step_start(self, step):
         """步驟開始時的UI更新"""
@@ -902,6 +976,7 @@ class DataNormalizationApp:
         
         self.logger.info("=" * 80)
         self.logger.info(f"✅ {step['name']} 執行完成！")
+        self.logger.info(f"⏱️ 執行時間: {self.current_stats['execution_time']:.2f} 秒")
         if result and result != True:
             self.logger.info(f"結果: {result}")
         self.logger.info("=" * 80)
@@ -910,7 +985,7 @@ class DataNormalizationApp:
         
         self.cancel_btn.config(state='disabled')
         
-        messagebox.showinfo("完成", f"{step['name']} 已成功執行！")
+        messagebox.showinfo("完成", f"{step['name']} 已成功執行！\n執行時間: {self.current_stats['execution_time']:.2f} 秒")
 
     def on_step_error(self, step, error):
         """步驟失敗時的UI更新"""
@@ -975,9 +1050,11 @@ class DataNormalizationApp:
         
         if messagebox.askyesno(
             "確認重置", 
-            "確定要重置所有步驟嗎？\n這將清除所有完成記錄。"
+            "確定要重置所有步驟嗎？\n這將清除所有完成記錄和輸出歷史。"
         ):
             self.completed_steps.clear()
+            self.step_outputs.clear()  # 🆕 清除輸出記錄
+            self.last_output_file = None  # 🆕 清除最後輸出
             
             for label in self.step_status_labels:
                 label.config(text="⚪ 未執行", foreground="gray")
@@ -988,14 +1065,35 @@ class DataNormalizationApp:
                 'file_path': '',
                 'metabolites': 0,
                 'samples': 0,
-                'output_path': ''
+                'output_path': '',
+                'output_folder': '',
+                'execution_time': 0
             }
             
             self.stats_step_label.config(text="等待執行...")
             self.stats_file_label.config(text="未選擇")
             self.stats_data_label.config(text="Metabolites: - | Samples: -")
+            self.stats_time_label.config(text="未開始")
             self.stats_output_label.config(text="未生成")
+            
+            # 🆕 禁用按鈕
+            self.open_file_btn.config(state='disabled')
             self.open_folder_btn.config(state='disabled')
+            self.copy_input_btn.config(state='disabled')
+            self.copy_output_btn.config(state='disabled')
+            
+            # 🆕 清除歷史記錄
+            for widget in self.history_frame.winfo_children():
+                widget.destroy()
+            
+            no_history_label = ttk.Label(
+                self.history_frame,
+                text="尚無輸出記錄",
+                font=('Microsoft JhengHei', 9),
+                foreground=self.color_scheme['text_light'],
+                background=self.color_scheme['panel_bg']
+            )
+            no_history_label.pack(pady=10)
             
             self.update_button_states()
             

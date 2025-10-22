@@ -938,7 +938,11 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         
         print(f"\n{'='*70}\n")
         
-        output_dir = os.path.dirname(output_file)
+        # 🔧 修改：確保 output_dir 指向 QC_LOWESS_plots 資料夾
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, "QC_LOWESS_plots")
+        os.makedirs(output_dir, exist_ok=True)  # 確保資料夾存在
+        
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
         plot_pvalue_distribution(cv_results_df, output_dir, timestamp)
         
@@ -1549,8 +1553,24 @@ def main(input_file=None):
     print(f"    - LOWESS_RMSE 顯示絕對誤差（越低越好）")
     print(f"\n{'='*70}\n")
     
-    # 返回輸出檔案路徑，供主程式使用
-    return output_file
+    # 🔧 關鍵修改：返回包含絕對路徑的字典
+    output_file_abs = os.path.abspath(output_file)
+    metabolites_count = len(lowess_df)
+    samples_count = len(sample_columns)
+    
+    print(f"\n{'='*70}")
+    print(f"📦 返回結果資訊（供主程式使用）:")
+    print(f"  - 輸出檔案: {output_file}")
+    print(f"  - 絕對路徑: {output_file_abs}")
+    print(f"  - 代謝物數: {metabolites_count}")
+    print(f"  - 樣本數: {samples_count}")
+    print(f"{'='*70}\n")
+    
+    return {
+        'metabolites': metabolites_count,
+        'samples': samples_count,
+        'output_path': output_file_abs
+    }
 
 
 if __name__ == "__main__":
