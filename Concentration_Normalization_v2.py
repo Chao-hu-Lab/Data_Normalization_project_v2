@@ -822,7 +822,7 @@ def plot_qc_quality_assessment(original_qc, normalized_qc, qc_names, output_path
         summary_text += "\n  ★★      NEEDS IMPROVEMENT - Consider reviewing experimental procedures"
         color = 'red'
     
-    ax7.text(0.5, 0.5, summary_text, transform=ax7.transAxes,
+    ax7.text(0.5, 0.2, summary_text, transform=ax7.transAxes,
             fontsize=9, verticalalignment='center', horizontalalignment='center',
             family='monospace',
             bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8, edgecolor=color, linewidth=2))
@@ -1125,8 +1125,18 @@ def plot_cv_comparison(original_cv, normalized_cv, output_path, method_name):
     
     print(f"  ✓ CV%分佈圖已儲存")
 
-def plot_pca_comparison(original_data, normalized_data, sample_names, sample_info_df, output_path, method_name):
-    """繪製PCA對比圖（標準化前後）"""
+def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_names, 
+                                     sample_info_df, output_path, method_name):
+    """
+    繪製 PCA 對比圖，加入 Hotelling's T² 信賴橢圓
+    
+    - 只繪製兩個橢圓：
+      1. QC 樣本橢圓（黃色）
+      2. 所有樣本橢圓（灰色，包含 QC、CONTROL、EXPOSURE）
+    """
+    from scipy.stats import f as f_dist
+    from matplotlib.patches import Ellipse
+    
     # 數據預處理（轉置：樣本 x 特徵）
     original_transposed = original_data.T
     normalized_transposed = normalized_data.T
@@ -1154,11 +1164,15 @@ def plot_pca_comparison(original_data, normalized_data, sample_names, sample_inf
         else:
             sample_groups.append('Unknown')
     
+    sample_groups = np.array(sample_groups)
+    
     # 顏色映射
-    unique_groups = list(set(sample_groups))
-    colors = plt.cm.Set3(np.linspace(0, 1, len(unique_groups)))
-    color_map = {group: colors[i] for i, group in enumerate(unique_groups)}
-    sample_colors = [color_map[group] for group in sample_groups]
+    color_palette = {
+        'QC': '#FDB462',       # 橙色
+        'CONTROL': '#80B1D3',   # 藍色
+        'EXPOSURE': '#FB8072',  # 紅色
+        'Unknown': '#BEBADA'    # 紫色
+    }
     
     # 標準化（用於PCA）
     scaler_orig = StandardScaler()
@@ -1168,50 +1182,293 @@ def plot_pca_comparison(original_data, normalized_data, sample_names, sample_inf
     normalized_scaled = scaler_norm.fit_transform(normalized_clean)
     
     # PCA
-    pca = PCA(n_components=2)
-    pc_original = pca.fit_transform(original_scaled)
-    var_original = pca.explained_variance_ratio_
+    pca_orig = PCA(n_components=2)
+    pc_original = pca_orig.fit_transform(original_scaled)
+    var_original = pca_orig.explained_variance_ratio_
     
-    pca = PCA(n_components=2)
-    pc_normalized = pca.fit_transform(normalized_scaled)
-    var_normalized = pca.explained_variance_ratio_
+    pca_norm = PCA(n_components=2)
+    pc_normalized = pca_norm.fit_transform(normalized_scaled)
+    var_normalized = pca_norm.explained_variance_ratio_
     
-    # 繪圖
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
+    # ========== 繪圖 ==========
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
     
-    # 標準化前
-    for group in unique_groups:
-        mask = [g == group for g in sample_groups]
+    # ========== 子圖 1: 標準化前 ==========
+    # 繪製所有散點（依組別上色）
+    for group in sorted(set(sample_groups)):
+        mask = sample_groups == group
         ax1.scatter(pc_original[mask, 0], pc_original[mask, 1], 
-                   c=[color_map[group]], label=group, s=100, alpha=0.7, edgecolors='black', linewidth=1.5)
+                   c=[color_palette.get(group, '#BEBADA')], 
+                   label=group, s=100, alpha=0.7, 
+                   edgecolors='black', linewidth=1.5, zorder=3)
     
-    ax1.set_xlabel(f'PC1 ({var_original[0]*100:.1f}%)', fontsize=12, fontweight='bold')
-    ax1.set_ylabel(f'PC2 ({var_original[1]*100:.1f}%)', fontsize=12, fontweight='bold')
-    ax1.set_title('Before Normalization', fontsize=14, fontweight='bold')
-    ax1.legend(loc='best', fontsize=10)
-    ax1.grid(True, alpha=0.3)
-    ax1.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
-    ax1.axvline(x=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
+    # 🎯 只繪製兩個橢圓
+    # 1. 所有樣本的橢圓（灰色）
+    plot_confidence_ellipse(pc_original, ax1, 
+                           color='gray', 
+                           label='All Samples 95% CI',
+                           linestyle='-',
+                           linewidth=2)
     
-    # 標準化後
-    for group in unique_groups:
-        mask = [g == group for g in sample_groups]
+    # 2. QC 樣本的橢圓（橙色）
+    qc_mask = sample_groups == 'QC'
+    if np.sum(qc_mask) >= 3:
+        plot_confidence_ellipse(pc_original[qc_mask], ax1, 
+                               color='#FDB462', 
+                               label='QC Samples 95% CI',
+                               linestyle='--',
+                               linewidth=2.5)
+    
+    ax1.set_xlabel(f'PC1 ({var_original[0]*100:.1f}%)', fontsize=14, fontweight='bold')
+    ax1.set_ylabel(f'PC2 ({var_original[1]*100:.1f}%)', fontsize=14, fontweight='bold')
+    ax1.set_title('Before Normalization', fontsize=16, fontweight='bold')
+    ax1.legend(loc='best', fontsize=11, framealpha=0.9)
+    ax1.grid(True, alpha=0.3, linestyle='--')
+    ax1.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
+    ax1.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
+    
+    # ========== 子圖 2: 標準化後 ==========
+    # 繪製所有散點（依組別上色）
+    for group in sorted(set(sample_groups)):
+        mask = sample_groups == group
         ax2.scatter(pc_normalized[mask, 0], pc_normalized[mask, 1], 
-                   c=[color_map[group]], label=group, s=100, alpha=0.7, edgecolors='black', linewidth=1.5)
+                   c=[color_palette.get(group, '#BEBADA')], 
+                   label=group, s=100, alpha=0.7, 
+                   edgecolors='black', linewidth=1.5, zorder=3)
     
-    ax2.set_xlabel(f'PC1 ({var_normalized[0]*100:.1f}%)', fontsize=12, fontweight='bold')
-    ax2.set_ylabel(f'PC2 ({var_normalized[1]*100:.1f}%)', fontsize=12, fontweight='bold')
-    ax2.set_title(f'After Normalization ({method_name})', fontsize=14, fontweight='bold')
-    ax2.legend(loc='best', fontsize=10)
-    ax2.grid(True, alpha=0.3)
-    ax2.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
-    ax2.axvline(x=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
+    # 🎯 只繪製兩個橢圓
+    # 1. 所有樣本的橢圓（灰色）
+    plot_confidence_ellipse(pc_normalized, ax2, 
+                           color='gray', 
+                           label='All Samples 95% CI',
+                           linestyle='-',
+                           linewidth=2)
+    
+    # 2. QC 樣本的橢圓（橙色）
+    if np.sum(qc_mask) >= 3:
+        plot_confidence_ellipse(pc_normalized[qc_mask], ax2, 
+                               color='#FDB462', 
+                               label='QC Samples 95% CI',
+                               linestyle='--',
+                               linewidth=2.5)
+    
+    ax2.set_xlabel(f'PC1 ({var_normalized[0]*100:.1f}%)', fontsize=14, fontweight='bold')
+    ax2.set_ylabel(f'PC2 ({var_normalized[1]*100:.1f}%)', fontsize=14, fontweight='bold')
+    ax2.set_title(f'After Normalization ({method_name})', fontsize=16, fontweight='bold')
+    ax2.legend(loc='best', fontsize=11, framealpha=0.9)
+    ax2.grid(True, alpha=0.3, linestyle='--')
+    ax2.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
+    ax2.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"  ✓ PCA對比圖已儲存")
+    print(f"  ✓ PCA 對比圖（含信賴橢圓）已儲存")
+
+
+def plot_confidence_ellipse(points, ax, color='blue', label=None, n_std=2.447, 
+                            linestyle='--', linewidth=2.5):
+    """
+    繪製 Hotelling's T² 95% 信賴橢圓
+    
+    Parameters:
+    -----------
+    points : np.ndarray
+        二維數據點 (n_samples, 2)
+    ax : matplotlib.axes.Axes
+        繪圖軸
+    color : str
+        橢圓顏色
+    label : str
+        標籤
+    n_std : float
+        標準差倍數（2.447 對應 95% 信賴區間）
+    linestyle : str
+        線條樣式
+    linewidth : float
+        線條寬度
+    """
+    from scipy.stats import f as f_dist
+    from matplotlib.patches import Ellipse
+    
+    if len(points) < 3:
+        return
+    
+    # 計算均值和協方差矩陣
+    mean = np.mean(points, axis=0)
+    cov = np.cov(points.T)
+    
+    # 計算特徵值和特徵向量
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+    
+    # 排序（從大到小）
+    order = eigenvalues.argsort()[::-1]
+    eigenvalues = eigenvalues[order]
+    eigenvectors = eigenvectors[:, order]
+    
+    # 計算橢圓的角度
+    angle = np.degrees(np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0]))
+    
+    # 計算 Hotelling's T² 的臨界值（95% 信賴區間）
+    n = len(points)
+    p = 2  # 維度（PC1 和 PC2）
+    
+    # F 分佈臨界值
+    f_critical = f_dist.ppf(0.95, p, n - p)
+    
+    # Hotelling's T² 臨界值
+    chi2_critical = (n - 1) * p / (n - p) * f_critical
+    
+    # 橢圓的寬度和高度
+    width, height = 2 * np.sqrt(eigenvalues * chi2_critical)
+    
+    # 繪製橢圓
+    ellipse = Ellipse(mean, width, height, angle=angle,
+                     facecolor='none', edgecolor=color, 
+                     linewidth=linewidth, linestyle=linestyle, 
+                     alpha=0.6, zorder=2, label=label)
+    
+    ax.add_patch(ellipse)
+    
+    # 繪製中心點
+    ax.plot(mean[0], mean[1], marker='x', markersize=12, 
+           color=color, markeredgewidth=3, zorder=4)
+
+def plot_oplsda_comparison(original_data, normalized_data, sample_names, 
+                           sample_info_df, output_path, method_name):
+    """
+    繪製 OPLS-DA 對比圖（標準化前後）
+    
+    僅比較 CONTROL vs EXPOSURE（排除 QC）
+    """
+    from sklearn.cross_decomposition import PLSRegression
+    from sklearn.preprocessing import LabelEncoder
+    
+    # 數據預處理（轉置：樣本 x 特徵）
+    original_transposed = original_data.T
+    normalized_transposed = normalized_data.T
+    
+    # 移除含有NaN的樣本
+    valid_samples_orig = ~np.isnan(original_transposed).any(axis=1)
+    valid_samples_norm = ~np.isnan(normalized_transposed).any(axis=1)
+    valid_samples = valid_samples_orig & valid_samples_norm
+    
+    original_clean = original_transposed[valid_samples]
+    normalized_clean = normalized_transposed[valid_samples]
+    sample_names_clean = [sample_names[i] for i in range(len(sample_names)) if valid_samples[i]]
+    
+    # 獲取樣本分組信息（排除 QC）
+    sample_groups = []
+    control_exposure_mask = []
+    
+    for i, sample in enumerate(sample_names_clean):
+        sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
+        if not sample_row.empty:
+            sample_type = str(sample_row.iloc[0].get('Sample_Type', '')).upper()
+            if sample_type in ['CONTROL', 'EXPOSURE']:
+                sample_groups.append(sample_type)
+                control_exposure_mask.append(True)
+            else:
+                control_exposure_mask.append(False)
+        else:
+            control_exposure_mask.append(False)
+    
+    control_exposure_mask = np.array(control_exposure_mask)
+    
+    if len(sample_groups) < 6:
+        print("  ⚠ CONTROL 或 EXPOSURE 樣本數不足，無法進行 OPLS-DA")
+        return
+    
+    # 過濾數據（僅保留 CONTROL 和 EXPOSURE）
+    X_orig = original_clean[control_exposure_mask]
+    X_norm = normalized_clean[control_exposure_mask]
+    
+    # 編碼標籤
+    le = LabelEncoder()
+    y = le.fit_transform(sample_groups)
+    
+    # ========== OPLS-DA（使用 PLS 近似）==========
+    # 注：完整的 OPLS-DA 需要額外的包，這裡使用 PLS-DA 作為替代
+    
+    # 標準化前
+    scaler_orig = StandardScaler()
+    X_orig_scaled = scaler_orig.fit_transform(X_orig)
+    
+    pls_orig = PLSRegression(n_components=2)
+    pls_orig.fit(X_orig_scaled, y)
+    X_orig_pls = pls_orig.transform(X_orig_scaled)
+    
+    # 計算 R²X 和 R²Y
+    r2x_orig = pls_orig.score(X_orig_scaled, y)
+    
+    # 標準化後
+    scaler_norm = StandardScaler()
+    X_norm_scaled = scaler_norm.fit_transform(X_norm)
+    
+    pls_norm = PLSRegression(n_components=2)
+    pls_norm.fit(X_norm_scaled, y)
+    X_norm_pls = pls_norm.transform(X_norm_scaled)
+    
+    r2x_norm = pls_norm.score(X_norm_scaled, y)
+    
+    # ========== 繪圖 ==========
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+    
+    # 顏色映射
+    color_map = {'CONTROL': '#80B1D3', 'EXPOSURE': '#FB8072'}
+    
+    # ========== 子圖 1: 標準化前 ==========
+    for group in ['CONTROL', 'EXPOSURE']:
+        mask = np.array([g == group for g in sample_groups])
+        
+        # 繪製散點
+        ax1.scatter(X_orig_pls[mask, 0], X_orig_pls[mask, 1], 
+                   c=[color_map[group]], label=group, s=120, alpha=0.7, 
+                   edgecolors='black', linewidth=1.5, zorder=3)
+        
+        # 繪製 95% 信賴橢圓
+        if np.sum(mask) >= 3:
+            plot_confidence_ellipse(X_orig_pls[mask], ax1, 
+                                   color=color_map[group], 
+                                   label=f'{group} 95% CI')
+    
+    ax1.set_xlabel(f'Component 1 (R²X={r2x_orig:.3f})', fontsize=14, fontweight='bold')
+    ax1.set_ylabel('Component 2', fontsize=14, fontweight='bold')
+    ax1.set_title('PLS-DA - Before Normalization', fontsize=16, fontweight='bold')
+    ax1.legend(loc='best', fontsize=11, framealpha=0.9)
+    ax1.grid(True, alpha=0.3, linestyle='--')
+    ax1.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
+    ax1.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
+    
+    # ========== 子圖 2: 標準化後 ==========
+    for group in ['CONTROL', 'EXPOSURE']:
+        mask = np.array([g == group for g in sample_groups])
+        
+        # 繪製散點
+        ax2.scatter(X_norm_pls[mask, 0], X_norm_pls[mask, 1], 
+                   c=[color_map[group]], label=group, s=120, alpha=0.7, 
+                   edgecolors='black', linewidth=1.5, zorder=3)
+        
+        # 繪製 95% 信賴橢圓
+        if np.sum(mask) >= 3:
+            plot_confidence_ellipse(X_norm_pls[mask], ax2, 
+                                   color=color_map[group], 
+                                   label=f'{group} 95% CI')
+    
+    ax2.set_xlabel(f'Component 1 (R²X={r2x_norm:.3f})', fontsize=14, fontweight='bold')
+    ax2.set_ylabel('Component 2', fontsize=14, fontweight='bold')
+    ax2.set_title(f'PLS-DA - After Normalization ({method_name})', fontsize=16, fontweight='bold')
+    ax2.legend(loc='best', fontsize=11, framealpha=0.9)
+    ax2.grid(True, alpha=0.3, linestyle='--')
+    ax2.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
+    ax2.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"  ✓ PLS-DA 對比圖已儲存")
 
 def plot_correlation_heatmap(original_data, normalized_data, sample_names, output_path, method_name):
     """繪製樣本相關性熱圖（標準化前後）"""
@@ -1875,9 +2132,9 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
         method_name
     )
     
-    # 5. PCA對比圖
+    # 5. PCA對比圖（改進版：加入信賴橢圓）
     try:
-        plot_pca_comparison(
+        plot_pca_with_confidence_ellipse(
             original_data_valid, normalized_data_valid, sample_columns_valid, sample_info_df,
             output_dir / f"PCA_Comparison_{method_name}.png",
             method_name
@@ -1885,6 +2142,16 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     except Exception as e:
         print(f"  ⚠ PCA對比圖生成失敗: {e}")
     
+    # 5b. 新增：PLS-DA 對比圖
+    try:
+        plot_oplsda_comparison(
+            original_data_valid, normalized_data_valid, sample_columns_valid, sample_info_df,
+            output_dir / f"PLSDA_Comparison_{method_name}.png",
+            method_name
+        )
+    except Exception as e:
+        print(f"  ⚠ PLS-DA對比圖生成失敗: {e}")
+
     # 6. 相關性熱圖
     try:
         plot_correlation_heatmap(
