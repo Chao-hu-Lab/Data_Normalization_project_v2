@@ -291,8 +291,8 @@ class DataNormalizationApp:
                 'enabled': False
             },
             {
-                'name': 'Step 4: 濃度轉換',
-                'description': '將訊號轉換為實際濃度值',
+                'name': 'Step 4: 濃度校正',
+                'description': '將訊號強度藉由校正物轉換為實際濃度',
                 'script': 'Concentration_Normalization_v2.py',
                 'enabled': False
             }
