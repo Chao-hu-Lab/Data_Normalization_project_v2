@@ -573,9 +573,12 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
 
 # ========== ✅ 修正：P 值分佈圖（移到 QC_LOWESS_plots）==========
 def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
-    """繪製 p 值分佈圖（僅直方圖）"""
+    """繪製 p 值分佈圖（儲存在 QC_LOWESS_plots）"""
     try:
-        # ✅ 直接儲存到 output_dir（QC_LOWESS_plots）
+        # ✅ 確保儲存到 QC_LOWESS_plots 子資料夾
+        plots_dir = os.path.join(output_dir, 'QC_LOWESS_plots')
+        os.makedirs(plots_dir, exist_ok=True)
+        
         variance_pvalues = cv_results_df['Variance_Test_pvalue'].dropna()
         
         if len(variance_pvalues) < 10:
@@ -614,7 +617,7 @@ def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
         plt.tight_layout()
         
         # ✅ 儲存到 QC_LOWESS_plots 資料夾
-        pvalue_plot_path = os.path.join(output_dir, f'Pvalue_Distribution_{timestamp}.png')
+        pvalue_plot_path = os.path.join(plots_dir, f'Pvalue_Distribution_{timestamp}.png')
         plt.savefig(pvalue_plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
@@ -938,7 +941,8 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         
         output_dir = os.path.dirname(output_file)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-        plot_pvalue_distribution(cv_results_df, output_dir, timestamp)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        plot_pvalue_distribution(cv_results_df, script_dir, timestamp)
         
         return True
 
@@ -980,7 +984,7 @@ def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
         print(f"   ⚠️ QC 樣本數不足 ({n_qc} < 3)，無法進行異常值檢測")
         return np.zeros(n_qc), 0, np.zeros(n_qc, dtype=bool)
     
-    # ✅ 關鍵：使用 QC 群組的統計量
+    # ✅ 關鍵修正：只使用 QC 群組的統計量
     qc_mean = np.mean(qc_scores, axis=0)
     qc_cov = np.cov(qc_scores, rowvar=False)
     
