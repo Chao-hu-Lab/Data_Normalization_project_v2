@@ -7,3 +7,18 @@
 /QC_LOWESS_20251017_0415.xlsx
 /requirements.txt
 /__pycache__
+
+# 忽略所有 Excel 檔案
+*.xlsx
+*.xls
+*.csv
+
+# 忽略所有圖片檔案
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.svg
+*.pdf

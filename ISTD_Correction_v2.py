@@ -121,42 +121,162 @@ def calculate_istd_cv(istd_signals, sample_columns):
         istd_cv[row['FeatureID']] = cv_percent
     return istd_cv
 
-def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv, cv_weight=0.1, epsilon=1e-6):
+def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv, 
+                                sample_columns,  # ✅ 新增參數
+                                rt_weight=0.6, cv_weight=0.25, 
+                                intensity_weight=0.1, mz_weight=0.05):
+    """
+    多因素加權評分的 ISTD 選擇函數
+    
+    評分公式（越低越好）：
+    score = 0.6 × RT差異(標準化) + 0.25 × CV%(標準化) + 
+            0.1 × 強度倒數(標準化) + 0.05 × m/z差異(標準化)
+    
+    Parameters:
+    -----------
+    analyte_row : pd.Series
+        待校正的代謝物資料
+    istd_signals : pd.DataFrame
+        所有 ISTD 訊號
+    istd_cv : dict
+        ISTD 的 CV% 字典
+    sample_columns : list
+        樣本欄位名稱列表
+    rt_weight : float
+        RT 差異權重（預設 0.6）
+    cv_weight : float
+        CV% 權重（預設 0.25）
+    intensity_weight : float
+        強度權重（預設 0.1）
+    mz_weight : float
+        m/z 差異權重（預設 0.05）
+    
+    Returns:
+    --------
+    best_istd : pd.Series or None
+        最佳 ISTD
+    rt_diff : float
+        RT 差異
+    """
+    # ✅ 權重總和檢查
+    total_weight = rt_weight + cv_weight + intensity_weight + mz_weight
+    if not np.isclose(total_weight, 1.0, atol=1e-6):
+        raise ValueError(
+            f"❌ 錯誤：權重總和 = {total_weight:.6f}，必須等於 1.0\n"
+            f"   rt_weight={rt_weight}, cv_weight={cv_weight}, "
+            f"intensity_weight={intensity_weight}, mz_weight={mz_weight}"
+        )
+    
     analyte_rt = analyte_row.get('rt', np.nan)
     analyte_mz = analyte_row.get('mz', np.nan)
+    
+    # 檢查 analyte 資訊完整性
     if np.isnan(analyte_rt) or np.isnan(analyte_mz):
         return None, float('inf')
     
-    rt_diffs = {}
-    for _, istd_row in istd_signals.iterrows():
-        istd_rt = istd_row.get('rt', np.nan)
-        if not np.isnan(istd_rt):
-            rt_diffs[istd_row['FeatureID']] = abs(analyte_rt - istd_rt)
+    # ========== 步驟 1: 收集所有 ISTD 的指標 ==========
+    candidates = []
     
-    if not rt_diffs:
+    for _, istd_row in istd_signals.iterrows():
+        istd_id = istd_row['FeatureID']
+        istd_rt = istd_row.get('rt', np.nan)
+        istd_mz = istd_row.get('mz', np.nan)
+        
+        # 跳過缺少資訊的 ISTD
+        if np.isnan(istd_rt) or np.isnan(istd_mz):
+            continue
+        
+        # 計算 RT 差異
+        rt_diff = abs(analyte_rt - istd_rt)
+        
+        # 獲取 CV%
+        cv = istd_cv.get(istd_id, np.nan)
+        if np.isnan(cv):
+            cv = 100.0  # 如果沒有 CV%，設為高值
+        
+        # 計算 m/z 差異（ppm）
+        mz_diff_ppm = abs(analyte_mz - istd_mz) / analyte_mz * 1e6
+        
+        # 🔧 修正：使用明確的樣本欄位計算強度
+        values = []
+        for col in sample_columns:
+            if col in istd_row.index:
+                try:
+                    val = float(istd_row[col])
+                    if not pd.isna(val) and val > 0:
+                        values.append(val)
+                except (ValueError, TypeError):
+                    pass
+        
+        median_intensity = np.median(values) if values else 0.0
+        
+        # 儲存候選資訊
+        candidates.append({
+            'istd_row': istd_row,
+            'istd_id': istd_id,
+            'rt_diff': rt_diff,
+            'cv': cv,
+            'intensity': median_intensity,
+            'mz_diff_ppm': mz_diff_ppm
+        })
+    
+    # ========== 步驟 2: 如果沒有候選，返回 None ==========
+    if len(candidates) == 0:
         return None, float('inf')
     
-    min_rt_diff = min(rt_diffs.values())
-    candidates = [istd_id for istd_id, diff in rt_diffs.items() if abs(diff - min_rt_diff) <= epsilon]
+    # ========== 步驟 3: 標準化各指標（Min-Max Normalization）==========
+    # 提取所有候選的指標
+    rt_diffs = np.array([c['rt_diff'] for c in candidates])
+    cvs = np.array([c['cv'] for c in candidates])
+    intensities = np.array([c['intensity'] for c in candidates])
+    mz_diffs = np.array([c['mz_diff_ppm'] for c in candidates])
     
-    if len(candidates) == 1:
-        best_id = candidates[0]
-        return istd_signals[istd_signals['FeatureID'] == best_id].iloc[0], min_rt_diff
+    # 🔧 修正：標準化函數（處理所有值相同的情況）
+    def normalize(values):
+        """
+        Min-Max 標準化到 [0, 1] 範圍
+        如果所有值相同，返回 0（表示無差異）
+        """
+        min_val = np.min(values)
+        max_val = np.max(values)
+        if np.isclose(max_val, min_val, atol=1e-10):
+            # 如果所有值相同，表示無差異，返回 0（不影響評分）
+            return np.zeros(len(values))
+        return (values - min_val) / (max_val - min_val)
     
-    min_score = float('inf')
-    best_istd = None
-    for istd_id in candidates:
-        istd_row = istd_signals[istd_signals['FeatureID'] == istd_id].iloc[0]
-        istd_mz = istd_row.get('mz', np.nan)
-        if np.isnan(istd_mz): continue
-        mz_diff_ppm = abs(analyte_mz - istd_mz) / analyte_mz * 1e6
-        cv = istd_cv.get(istd_id, 100 if np.isnan(istd_cv.get(istd_id)) else istd_cv[istd_id])
-        score = cv * cv_weight * 100 + mz_diff_ppm * 0.0001
-        if score < min_score:
-            min_score = score
-            best_istd = istd_row
+    # 標準化各指標
+    normalized_rt = normalize(rt_diffs)
+    normalized_cv = normalize(cvs)
     
-    return best_istd, min_rt_diff
+    # 🔧 修正：強度標準化（強度越高 → 分數越低）
+    normalized_intensity = normalize(intensities)
+    normalized_intensity_inv = 1.0 - normalized_intensity  # 反轉（強度高得分低）
+    
+    normalized_mz = normalize(mz_diffs)
+    
+    # ========== 步驟 4: 計算加權評分 ==========
+    for i, candidate in enumerate(candidates):
+        # 加權評分（越低越好）
+        score = (
+            rt_weight * normalized_rt[i] +
+            cv_weight * normalized_cv[i] +
+            intensity_weight * normalized_intensity_inv[i] +
+            mz_weight * normalized_mz[i]
+        )
+        candidate['score'] = score
+        
+        # 🔧 新增：記錄各項評分（用於調試）
+        candidate['score_breakdown'] = {
+            'rt_score': rt_weight * normalized_rt[i],
+            'cv_score': cv_weight * normalized_cv[i],
+            'intensity_score': intensity_weight * normalized_intensity_inv[i],
+            'mz_score': mz_weight * normalized_mz[i]
+        }
+    
+    # ========== 步驟 5: 選擇評分最低的 ISTD ==========
+    best_candidate = min(candidates, key=lambda x: x['score'])
+    
+    return best_candidate['istd_row'], best_candidate['rt_diff']
 
 def calculate_istd_medians(istd_signals, sample_columns):
     istd_medians = {}
@@ -167,7 +287,8 @@ def calculate_istd_medians(istd_signals, sample_columns):
 
 def calculate_corrected_ratios(df, sample_info_df):
     istd_signals, analyte_signals = identify_istd_signals(df)
-    if len(istd_signals) == 0: return None, None
+    if len(istd_signals) == 0: 
+        return None, None
     
     if 'Sample_Name' not in sample_info_df.columns:
         print("錯誤：'SampleInfo' 缺少 'Sample_Name' 欄位")
@@ -196,25 +317,56 @@ def calculate_corrected_ratios(df, sample_info_df):
     istd_cv = calculate_istd_cv(istd_signals, sample_columns)
     istd_medians = calculate_istd_medians(istd_signals, sample_columns)
     
+    # ✅ 新增：印出權重設定資訊
+    print(f"\n{'='*70}")
+    print(f"🎯 ISTD 選擇權重設定:")
+    print(f"{'='*70}")
+    print(f"  - RT 差異權重:    60%")
+    print(f"  - CV% 權重:       25%")
+    print(f"  - 強度權重:       10%")
+    print(f"  - m/z 差異權重:    5%")
+    print(f"  - 總和:          100%")
+    print(f"{'='*70}\n")
+    
     results = []
     for _, analyte_row in analyte_signals.iterrows():
-        best_istd, min_rt_diff = find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv)
-        if best_istd is None: continue
+        # ✅ 傳入 sample_columns
+        best_istd, min_rt_diff = find_best_istd_for_analyte(
+            analyte_row, istd_signals, istd_cv, 
+            sample_columns  # ✅ 新增參數
+        )
+        
+        if best_istd is None: 
+            continue
+        
         istd_id = best_istd['FeatureID']
         istd_median = istd_medians[istd_id]
         rt_diff = analyte_row['rt'] - best_istd['rt']
         
-        result_row = {'FeatureID': analyte_row['FeatureID'], 'RT': analyte_row['rt'], 'ISTD': istd_id, 'ISTD_RT': best_istd['rt'], 'RT_Difference': rt_diff, 'ISTD_Median': istd_median}
+        result_row = {
+            'FeatureID': analyte_row['FeatureID'], 
+            'RT': analyte_row['rt'], 
+            'ISTD': istd_id, 
+            'ISTD_RT': best_istd['rt'], 
+            'RT_Difference': rt_diff, 
+            'ISTD_Median': istd_median
+        }
         
         for col in sample_columns:
-            if col not in df.columns: continue
+            if col not in df.columns: 
+                continue
             try:
                 analyte_intensity = float(analyte_row[col])
                 istd_intensity = float(best_istd[col])
             except (ValueError, KeyError):
                 analyte_intensity = np.nan
                 istd_intensity = np.nan
-            corrected = (analyte_intensity / istd_intensity) * istd_median if istd_intensity > 0 and not np.isnan(istd_median) and not np.isnan(analyte_intensity) else np.nan
+            
+            corrected = (
+                (analyte_intensity / istd_intensity) * istd_median 
+                if istd_intensity > 0 and not np.isnan(istd_median) and not np.isnan(analyte_intensity) 
+                else np.nan
+            )
             result_row[col] = corrected
         
         results.append(result_row)
@@ -232,22 +384,21 @@ def calculate_corrected_ratios(df, sample_info_df):
 
 
 
-from scipy.stats import ttest_rel, levene, shapiro
+from scipy.stats import wilcoxon, levene
 
 def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_info_df, original_df):
     """
     計算 QC 樣本的 CV%，並進行正確的統計檢定
     
     統計方法：
-    1. 配對 t 檢定（檢驗均值偏移）
+    1. Wilcoxon 配對符號等級檢定（檢驗中位數偏移，適用於非常態分佈）
     2. Levene's test（檢驗方差齊性）
-    3. Shapiro-Wilk test（檢驗正態性）
     """
     qc_samples = sample_info_df[sample_info_df['Sample_Type'].str.upper().str.contains('QC')]['Sample_Name'].tolist()
     qc_columns = [col for col in sample_columns if col in qc_samples]
     
     print(f"\n{'='*70}")
-    print(f"🔬 開始統計檢定（配對 t 檢定 + Levene's test）")
+    print(f"🔬 開始統計檢定（Wilcoxon 配對符號等級檢定 + Levene's test）")
     print(f"{'='*70}")
     print(f"  - QC 樣本數: {len(qc_columns)}")
     print(f"  - Feature 總數: {len(results_df)}")
@@ -276,9 +427,8 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
                 'Original_QC_CV%': np.nan,
                 'Corrected_QC_CV%': np.nan,
                 'CV_Improvement%': np.nan,
-                'Mean_Shift_pvalue': np.nan,
+                'Wilcoxon_pvalue': np.nan,
                 'Variance_Test_pvalue': np.nan,
-                'Normality_pvalue': np.nan,
                 'Significant_Improvement': 'N/A'
             })
             continue
@@ -291,23 +441,30 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
         corrected_cv = (np.std(qc_values_corrected, ddof=1) / np.mean(qc_values_corrected)) * 100
         cv_improvement = original_cv - corrected_cv
         
-        # ✅ 1. 配對 t 檢定（檢驗均值是否改變）
+        # ✅ 1. Wilcoxon 配對符號等級檢定（檢驗中位數是否改變）
         try:
-            t_stat, mean_shift_pvalue = ttest_rel(qc_values_original, qc_values_corrected)
-        except Exception:
-            mean_shift_pvalue = np.nan
+            # 計算差異
+            differences = qc_values_original - qc_values_corrected
+            
+            # 只有當存在非零差異時才進行檢定
+            if np.any(differences != 0):
+                wilcoxon_stat, wilcoxon_pvalue = wilcoxon(
+                    qc_values_original, 
+                    qc_values_corrected,
+                    alternative='two-sided',
+                    zero_method='wilcox'  # 處理零差異的方法
+                )
+            else:
+                # 所有值都相同，p-value = 1.0
+                wilcoxon_pvalue = 1.0
+        except Exception as e:
+            wilcoxon_pvalue = np.nan
         
         # ✅ 2. Levene's test（檢驗方差齊性）
         try:
             levene_stat, variance_test_pvalue = levene(qc_values_original, qc_values_corrected)
         except Exception:
             variance_test_pvalue = np.nan
-        
-        # ✅ 3. Shapiro-Wilk test（檢驗正態性）
-        try:
-            shapiro_stat, normality_pvalue = shapiro(qc_values_original)
-        except Exception:
-            normality_pvalue = np.nan
         
         # ✅ 判斷顯著性
         if not np.isnan(variance_test_pvalue) and cv_improvement > 5:
@@ -325,9 +482,8 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
             'Original_QC_CV%': original_cv,
             'Corrected_QC_CV%': corrected_cv,
             'CV_Improvement%': cv_improvement,
-            'Mean_Shift_pvalue': mean_shift_pvalue,
+            'Wilcoxon_pvalue': wilcoxon_pvalue,
             'Variance_Test_pvalue': variance_test_pvalue,
-            'Normality_pvalue': normality_pvalue,
             'Significant_Improvement': significant
         })
         
@@ -352,16 +508,16 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
     print(f"  - 僅 CV% 改善: {sig_cv_only} ({sig_cv_only/total_count*100:.1f}%)")
     print(f"  - 無顯著改善 (No): {sig_no} ({sig_no/total_count*100:.1f}%)")
     
-    # 配對 t 檢定統計
-    mean_shift_valid = cv_results_df['Mean_Shift_pvalue'].notna().sum()
-    mean_shift_sig = ((cv_results_df['Mean_Shift_pvalue'] < 0.05) & 
-                      (cv_results_df['Mean_Shift_pvalue'].notna())).sum()
+    # Wilcoxon 檢定統計
+    wilcoxon_valid = cv_results_df['Wilcoxon_pvalue'].notna().sum()
+    wilcoxon_sig = ((cv_results_df['Wilcoxon_pvalue'] < 0.05) & 
+                    (cv_results_df['Wilcoxon_pvalue'].notna())).sum()
     
-    print(f"\n🔬 配對 t 檢定（均值變化）:")
-    print(f"  - 成功執行: {mean_shift_valid}/{total_count} ({mean_shift_valid/total_count*100:.1f}%)")
-    if mean_shift_valid > 0:
-        print(f"  - 均值顯著改變 (p < 0.05): {mean_shift_sig}/{mean_shift_valid} ({mean_shift_sig/mean_shift_valid*100:.1f}%)")
-        print(f"  - 均值無顯著改變: {mean_shift_valid - mean_shift_sig}/{mean_shift_valid} ({(mean_shift_valid-mean_shift_sig)/mean_shift_valid*100:.1f}%)")
+    print(f"\n🔬 Wilcoxon 配對符號等級檢定（中位數變化）:")
+    print(f"  - 成功執行: {wilcoxon_valid}/{total_count} ({wilcoxon_valid/total_count*100:.1f}%)")
+    if wilcoxon_valid > 0:
+        print(f"  - 中位數顯著改變 (p < 0.05): {wilcoxon_sig}/{wilcoxon_valid} ({wilcoxon_sig/wilcoxon_valid*100:.1f}%)")
+        print(f"  - 中位數無顯著改變: {wilcoxon_valid - wilcoxon_sig}/{wilcoxon_valid} ({(wilcoxon_valid-wilcoxon_sig)/wilcoxon_valid*100:.1f}%)")
     
     # Levene's test 統計
     variance_valid = cv_results_df['Variance_Test_pvalue'].notna().sum()
@@ -474,42 +630,51 @@ def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
             print("  ⚠️ 有效 p 值數量不足，跳過 p 值分佈圖")
             return
         
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+        # ✅ 只繪製直方圖（移除 Q-Q Plot）
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
         
-        # 左圖：直方圖
-        ax1.hist(variance_pvalues, bins=20, color='steelblue', edgecolor='black', alpha=0.7)
-        ax1.axhline(y=len(variance_pvalues)/20, color='red', linestyle='--', linewidth=2,
+        # 直方圖
+        ax.hist(variance_pvalues, bins=20, color='steelblue', edgecolor='black', alpha=0.7)
+        ax.axhline(y=len(variance_pvalues)/20, color='red', linestyle='--', linewidth=2,
                    label='Uniform Distribution Expected')
-        ax1.set_xlabel('P-value (Levene\'s Test)', fontsize=12, fontweight='bold')
-        ax1.set_ylabel('Frequency', fontsize=12, fontweight='bold')
-        ax1.set_title('P-value Distribution\n(Variance Homogeneity Test)', 
+        ax.set_xlabel('P-value (Levene\'s Test)', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Frequency', fontsize=12, fontweight='bold')
+        ax.set_title('P-value Distribution (Variance Homogeneity Test)', 
                      fontsize=14, fontweight='bold')
-        ax1.legend(fontsize=10)
-        ax1.grid(True, alpha=0.3, linestyle='--')
-        
-        # 右圖：Q-Q Plot
-        from scipy.stats import probplot
-        probplot(variance_pvalues, dist="uniform", plot=ax2)
-        ax2.set_title('Q-Q Plot (Uniform Distribution)', fontsize=14, fontweight='bold')
-        ax2.set_xlabel('Theoretical Quantiles', fontsize=12, fontweight='bold')
-        ax2.set_ylabel('Sample Quantiles', fontsize=12, fontweight='bold')
-        ax2.grid(True, alpha=0.3, linestyle='--')
+        ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.3, linestyle='--')
         
         # Kolmogorov-Smirnov 檢定
         from scipy.stats import kstest
         ks_stat, ks_pvalue = kstest(variance_pvalues, 'uniform')
         
-        textstr = f'Kolmogorov-Smirnov Test:\n'
-        textstr += f'Statistic = {ks_stat:.4f}\n'
-        textstr += f'P-value = {ks_pvalue:.4f}\n'
-        if ks_pvalue > 0.05:
-            textstr += 'Result: Uniform ✓'
-        else:
-            textstr += 'Result: Non-uniform ✗'
+        # 統計摘要
+        p_below_005 = (variance_pvalues < 0.05).sum()
+        p_below_001 = (variance_pvalues < 0.01).sum()
+        total = len(variance_pvalues)
         
-        ax1.text(0.98, 0.97, textstr, transform=ax1.transAxes,
+        textstr = f'📊 Statistical Summary:\n'
+        textstr += f'Total features: {total}\n'
+        textstr += f'p < 0.05: {p_below_005} ({p_below_005/total*100:.1f}%)\n'
+        textstr += f'p < 0.01: {p_below_001} ({p_below_001/total*100:.1f}%)\n\n'
+        textstr += f'Kolmogorov-Smirnov Test:\n'
+        textstr += f'KS statistic = {ks_stat:.4f}\n'
+        textstr += f'P-value = {ks_pvalue:.4f}\n\n'
+        
+        if ks_pvalue < 0.05:
+            textstr += '✅ Result: Non-uniform\n'
+            textstr += '→ ISTD correction significantly\n'
+            textstr += '   reduced QC variance'
+            bgcolor = 'lightgreen'
+        else:
+            textstr += '⚠️ Result: Uniform\n'
+            textstr += '→ Limited effect of\n'
+            textstr += '   ISTD correction'
+            bgcolor = 'lightyellow'
+        
+        ax.text(0.98, 0.97, textstr, transform=ax.transAxes,
                 fontsize=10, verticalalignment='top', horizontalalignment='right',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+                bbox=dict(boxstyle='round', facecolor=bgcolor, alpha=0.8))
         
         plt.tight_layout()
         
@@ -519,10 +684,10 @@ def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
         
         print(f"\n✓ P 值分佈圖已儲存: {pvalue_plot_path}")
         print(f"  - Kolmogorov-Smirnov 檢定: KS={ks_stat:.4f}, p={ks_pvalue:.4f}")
-        if ks_pvalue > 0.05:
-            print(f"  - 結論: p 值分佈接近均勻分佈 ✓")
+        if ks_pvalue < 0.05:
+            print(f"  - ✅ 結論: ISTD 校正顯著改善 QC 方差穩定性")
         else:
-            print(f"  - 結論: p 值分佈偏離均勻分佈 ✗")
+            print(f"  - ⚠️ 結論: ISTD 校正效果有限")
         
     except Exception as e:
         print(f"  ⚠️ 繪製 p 值分佈圖時發生錯誤: {e}")
@@ -622,7 +787,7 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
     執行 2D PCA 分析
     - 🔧 使用 Hotelling T² 檢測異常值（取代馬氏距離）
     - 使用 Hotelling T² 繪製橢圓（中心固定為原點）
-    - 顏色：控制組=藍色、暴露組=紅色、QC=紫色
+    - 🎨 不同組別使用不同形狀：控制組=方形（無邊框）、暴露組=三角形（無邊框）、QC=圓形（黑邊框）
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(script_dir, "ISTD_Correction_plots")
@@ -633,7 +798,7 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
     sample_meta = sample_info_df.set_index('Sample_Name')
 
-        # 識別 QC 樣本和樣本類型
+    # 識別 QC 樣本和樣本類型
     qc_columns = []
     control_columns = []
     exposed_columns = []
@@ -676,15 +841,20 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
     print(f"  - 暴露組: {len(exposed_columns)} 個")
     print(f"  - 總計: {len(sample_columns)} 個")
 
-    # 顏色映射
+    # 🎨 顏色和形狀映射
     color_map = {}
+    marker_map = {}
+    
     for col in sample_columns:
         if col in qc_columns:
             color_map[col] = '#9370DB'  # 紫色
+            marker_map[col] = 'o'        # 圓形
         elif col in exposed_columns:
             color_map[col] = '#DC143C'  # 紅色
-        else:
+            marker_map[col] = '^'        # 三角形
+        else:  # control
             color_map[col] = '#4169E1'  # 藍色
+            marker_map[col] = 's'        # 方形
 
     def prepare_matrix(df, cols, feature_col='FeatureID'):
         try:
@@ -733,12 +903,11 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         scores_right = pca_right.fit_transform(right_matrix)
         var_right = pca_right.explained_variance_ratio_
 
-        # 🔧 使用 Hotelling T² 檢測 QC 異常值（傳入所有樣本的分數）
+        # 🔧 使用 Hotelling T² 檢測 QC 異常值
         qc_indices = [i for i, col in enumerate(sample_columns) if col in qc_columns]
         qc_scores_left = scores_left[qc_indices]
         qc_scores_right = scores_right[qc_indices]
 
-        # 🔧 關鍵修正：傳入 all_scores
         t2_left, t2_threshold_left, outliers_left = calculate_hotelling_t2_outliers(
             qc_scores_left, scores_left, alpha=0.05
         )
@@ -762,48 +931,54 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         # ===== 左圖：校正前 =====
         for i, col in enumerate(sample_columns):
             color = color_map[col]
+            marker = marker_map[col]
             
-            # 🔧 判斷是否為異常值（使用 Hotelling T²）
+            # 🔧 判斷是否為異常值
             is_outlier = False
             if col in qc_columns:
                 qc_idx = qc_columns.index(col)
                 is_outlier = outliers_left[qc_idx]
             
-            # 設定標記樣式
-            if is_outlier:
-                edgecolor = 'red'
-                linewidth = 3
-                size = 150
-                alpha = 0.9
+            # 🎨 關鍵修改：只有 QC 樣本有邊框
+            if col in qc_columns:
+                # QC 樣本：帶邊框
+                if is_outlier:
+                    edgecolor = 'red'
+                    linewidth = 3
+                    size = 150
+                    alpha = 0.9
+                else:
+                    edgecolor = 'black'
+                    linewidth = 1.5
+                    size = 120
+                    alpha = 0.8
             else:
-                edgecolor = 'black'
-                linewidth = 1
-                size = 100
-                alpha = 0.7
+                # Control 和 Exposed：無邊框
+                edgecolor = 'none'  # 🎨 關鍵：無邊框
+                linewidth = 0
+                size = 120
+                alpha = 0.8
             
             ax_left.scatter(scores_left[i, 0], scores_left[i, 1],
-                          c=[color], marker='o', s=size, alpha=alpha,
+                          c=[color], marker=marker, s=size, alpha=alpha,
                           edgecolors=edgecolor, linewidths=linewidth)
 
         # 繪製兩個 Hotelling T² 橢圓
         all_bounds_left = []
 
-        # 1. 所有樣本的橢圓（灰色虛線）- 中心在原點
         bounds_all_left = draw_hotelling_t2_ellipse(ax_left, scores_left,
                                                     label='95% CI (All Samples)',
                                                     edgecolor='gray', linestyle='--', linewidth=2)
         if bounds_all_left:
             all_bounds_left.append(bounds_all_left)
 
-        # 2. QC 樣本的橢圓（紫色實線）- 中心在 QC 均值
         bounds_qc_left = draw_hotelling_t2_ellipse(ax_left, qc_scores_left,
                                                     label='95% CI (QC Only)',
                                                     edgecolor='#9370DB', linestyle='-', linewidth=3)
         if bounds_qc_left:
             all_bounds_left.append(bounds_qc_left)
 
-        
-        # 🔧 調整軸範圍（確保橢圓完整顯示 + 原點居中）
+        # 調整軸範圍
         if all_bounds_left:
             x_min = min([b[0] for b in all_bounds_left])
             x_max = max([b[1] for b in all_bounds_left])
@@ -813,7 +988,6 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
             x_min, x_max = np.min(scores_left[:, 0]), np.max(scores_left[:, 0])
             y_min, y_max = np.min(scores_left[:, 1]), np.max(scores_left[:, 1])
         
-        # 同時考慮數據點範圍
         data_x_min, data_x_max = np.min(scores_left[:, 0]), np.max(scores_left[:, 0])
         data_y_min, data_y_max = np.min(scores_left[:, 1]), np.max(scores_left[:, 1])
         
@@ -822,7 +996,6 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         y_min = min(y_min, data_y_min)
         y_max = max(y_max, data_y_max)
         
-        # 🔧 確保原點在圖中心（對稱軸範圍）
         x_abs_max = max(abs(x_min), abs(x_max))
         y_abs_max = max(abs(y_min), abs(y_max))
         
@@ -843,25 +1016,33 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         # ===== 右圖：校正後（相同邏輯）=====
         for i, col in enumerate(sample_columns):
             color = color_map[col]
+            marker = marker_map[col]
             
             is_outlier = False
             if col in qc_columns:
                 qc_idx = qc_columns.index(col)
                 is_outlier = outliers_right[qc_idx]
             
-            if is_outlier:
-                edgecolor = 'red'
-                linewidth = 3
-                size = 150
-                alpha = 0.9
+            # 🎨 關鍵修改：只有 QC 樣本有邊框
+            if col in qc_columns:
+                if is_outlier:
+                    edgecolor = 'red'
+                    linewidth = 3
+                    size = 150
+                    alpha = 0.9
+                else:
+                    edgecolor = 'black'
+                    linewidth = 1.5
+                    size = 120
+                    alpha = 0.8
             else:
-                edgecolor = 'black'
-                linewidth = 1
-                size = 100
-                alpha = 0.7
+                edgecolor = 'none'  # 🎨 無邊框
+                linewidth = 0
+                size = 120
+                alpha = 0.8
             
             ax_right.scatter(scores_right[i, 0], scores_right[i, 1],
-                           c=[color], marker='o', s=size, alpha=alpha,
+                           c=[color], marker=marker, s=size, alpha=alpha,
                            edgecolors=edgecolor, linewidths=linewidth)
 
         all_bounds_right = []
@@ -912,16 +1093,20 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         ax_right.axhline(y=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
         ax_right.axvline(x=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
 
-        # ===== 添加圖例 =====
+        # ===== 🎨 修改後的圖例（Control/Exposed 無邊框）=====
         sample_legend_elements = [
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#4169E1',
-                      markersize=10, label='Control', markeredgecolor='black', markeredgewidth=1),
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#DC143C',
-                      markersize=10, label='Exposed', markeredgecolor='black', markeredgewidth=1),
+            plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='#4169E1',
+                      markersize=12, label='Control', 
+                      markeredgecolor='none', markeredgewidth=0),  # 🎨 無邊框
+            plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='#DC143C',
+                      markersize=12, label='Exposed', 
+                      markeredgecolor='none', markeredgewidth=0),  # 🎨 無邊框
             plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
-                      markersize=10, label='QC', markeredgecolor='black', markeredgewidth=1),
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='gray',
-                      markersize=10, label='QC Outlier (T² > threshold)', markeredgecolor='red', markeredgewidth=3)
+                      markersize=12, label='QC', 
+                      markeredgecolor='black', markeredgewidth=1.5),  # 黑色邊框
+            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
+                      markersize=12, label='QC Outlier', 
+                      markeredgecolor='red', markeredgewidth=3)  # 紅色粗邊框
         ]
         
         ellipse_legend_elements = [
@@ -988,7 +1173,7 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
 # ========== 🔧 修改：save_results_to_excel==========
 def save_results_to_excel(original_df, results_df, sample_info_df, output_file, all_sheets, sample_columns, original_workbook):
     """
-    儲存結果到 Excel，使用配對 t 檢定 + Levene's test
+    儲存結果到 Excel，使用 Wilcoxon 配對符號等級檢定 + Levene's test
     """
     # 設定輸出目錄
     output_dir = os.path.join(os.path.dirname(output_file), "ISTD_Correction_plots")
@@ -1005,7 +1190,7 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file, 
     # ✅ 調整欄位順序
     cols_order = [
         'Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%',
-        'Mean_Shift_pvalue', 'Variance_Test_pvalue', 'Normality_pvalue',
+        'Wilcoxon_pvalue', 'Variance_Test_pvalue',  # 移除 Normality_pvalue
         'Significant_Improvement'
     ]
     other_cols = [col for col in results_with_cv.columns if col not in cols_order]
@@ -1041,7 +1226,6 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file, 
     green_fill = PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')
     yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
     light_blue_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')
-    light_purple_fill = PatternFill(start_color='E6E6FA', end_color='E6E6FA', fill_type='solid')
     light_pink_fill = PatternFill(start_color='FFB6C1', end_color='FFB6C1', fill_type='solid')
     
     if 'ISTD_Correction' in new_workbook.sheetnames:
@@ -1056,20 +1240,13 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file, 
                     for cell in row:
                         cell.fill = orange_fill
         
-        # ✅ 統計檢定欄位塗淡藍色
-        for col_name in ['Mean_Shift_pvalue', 'Variance_Test_pvalue']:
+        # ✅ 統計檢定欄位塗淡藍色（更新為 Wilcoxon_pvalue）
+        for col_name in ['Wilcoxon_pvalue', 'Variance_Test_pvalue']:
             if col_name in header:
                 col_idx = header.index(col_name) + 1
                 for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
                     for cell in row:
                         cell.fill = light_blue_fill
-        
-        # ✅ 正態性檢定塗淡紫色
-        if 'Normality_pvalue' in header:
-            col_idx = header.index('Normality_pvalue') + 1
-            for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
-                for cell in row:
-                    cell.fill = light_purple_fill
         
         # ✅ 顯著性標記
         if 'Significant_Improvement' in header:
