@@ -624,6 +624,10 @@ def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
 def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
     """繪製 p 值分佈圖（驗證統計檢定有效性）"""
     try:
+        # ✅ 修正：圖表儲存在 output/ISTD_Correction_plots/
+        plots_dir = os.path.join(output_dir, 'ISTD_Correction_plots')
+        os.makedirs(plots_dir, exist_ok=True)
+        
         variance_pvalues = cv_results_df['Variance_Test_pvalue'].dropna()
         
         if len(variance_pvalues) < 10:
@@ -678,7 +682,8 @@ def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
         
         plt.tight_layout()
         
-        pvalue_plot_path = os.path.join(output_dir, f'Pvalue_Distribution_{timestamp}.png')
+        # ✅ 儲存到 output/ISTD_Correction_plots/
+        pvalue_plot_path = os.path.join(plots_dir, f'Pvalue_Distribution_{timestamp}.png')
         plt.savefig(pvalue_plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
@@ -694,7 +699,7 @@ def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
         import traceback
         traceback.print_exc()
 
-# ========== Hotelling T² 橢圓繪製函數（固定原點）==========
+# ========== Hotelling T² 橢圓繪製函數 ==========
 def draw_hotelling_t2_ellipse(ax, scores, alpha=0.05, label=None, edgecolor='black', linestyle='-', linewidth=2.5):
     """
     在 2D PCA 圖上繪製 Hotelling T² 橢圓
@@ -782,15 +787,15 @@ def draw_hotelling_t2_ellipse(ax, scores, alpha=0.05, label=None, edgecolor='bla
 
 
 # ========== 修改：2D PCA 分析（Hotelling T² 異常值檢測 + 橢圓）==========
-def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sample_info_df):
+def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sample_info_df, output_base_dir):
     """
     執行 2D PCA 分析
-    - 🔧 使用 Hotelling T² 檢測異常值（取代馬氏距離）
+    - 🔧 使用 Hotelling T² 檢測異常值
     - 使用 Hotelling T² 繪製橢圓（中心固定為原點）
     - 🎨 不同組別使用不同形狀：控制組=方形（無邊框）、暴露組=三角形（無邊框）、QC=圓形（黑邊框）
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(script_dir, "ISTD_Correction_plots")
+    # ✅ 修正：圖表儲存在 output/ISTD_Correction_plots/
+    output_dir = os.path.join(output_base_dir, "ISTD_Correction_plots")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
         print(f"已建立 'ISTD_Correction_plots' 資料夾: {output_dir}")
@@ -894,7 +899,7 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         if left_matrix is None or right_matrix is None:
             continue
 
-        # 執行 PCA（2 個主成分）
+        # 執行 PCA（2 個主成分）        
         pca_left = PCA(n_components=2)
         scores_left = pca_left.fit_transform(left_matrix)
         var_left = pca_left.explained_variance_ratio_
@@ -924,7 +929,7 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         print(f"   - 異常值數量: {np.sum(outliers_right)}/{len(qc_columns)}")
 
         # 繪製 2D PCA 圖
-        fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(18, 7.5))
+        fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(16, 9))
         fig.suptitle(f'2D PCA Comparison: {left_name} vs {right_name}',
                      fontsize=18, y=0.98, fontweight='bold')
 
@@ -939,22 +944,22 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
                 qc_idx = qc_columns.index(col)
                 is_outlier = outliers_left[qc_idx]
             
-            # 🎨 關鍵修改：只有 QC 樣本有邊框
+            # 🎨 關鍵修改：只有 QC 樣本有邊框，且邊框變細
             if col in qc_columns:
-                # QC 樣本：帶邊框
+                # QC 樣本：帶邊框（變細）
                 if is_outlier:
                     edgecolor = 'red'
-                    linewidth = 3
+                    linewidth = 1.5  # 🔧 
                     size = 150
                     alpha = 0.9
                 else:
                     edgecolor = 'black'
-                    linewidth = 1.5
+                    linewidth = 0.8  # 🔧 
                     size = 120
                     alpha = 0.8
             else:
                 # Control 和 Exposed：無邊框
-                edgecolor = 'none'  # 🎨 關鍵：無邊框
+                edgecolor = 'none'
                 linewidth = 0
                 size = 120
                 alpha = 0.8
@@ -1023,20 +1028,20 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
                 qc_idx = qc_columns.index(col)
                 is_outlier = outliers_right[qc_idx]
             
-            # 🎨 關鍵修改：只有 QC 樣本有邊框
+            # 🎨 關鍵修改：只有 QC 樣本有邊框，且邊框變細
             if col in qc_columns:
                 if is_outlier:
                     edgecolor = 'red'
-                    linewidth = 3
+                    linewidth = 1.5  # 🔧 
                     size = 150
                     alpha = 0.9
                 else:
                     edgecolor = 'black'
-                    linewidth = 1.5
+                    linewidth = 0.8  # 🔧 
                     size = 120
                     alpha = 0.8
             else:
-                edgecolor = 'none'  # 🎨 無邊框
+                edgecolor = 'none'
                 linewidth = 0
                 size = 120
                 alpha = 0.8
@@ -1093,20 +1098,20 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         ax_right.axhline(y=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
         ax_right.axvline(x=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
 
-        # ===== 🎨 修改後的圖例（Control/Exposed 無邊框）=====
+        # ===== 🎨 修改後的圖例（更新邊框粗細說明）=====
         sample_legend_elements = [
             plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='#4169E1',
                       markersize=12, label='Control', 
-                      markeredgecolor='none', markeredgewidth=0),  # 🎨 無邊框
+                      markeredgecolor='none', markeredgewidth=0),
             plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='#DC143C',
                       markersize=12, label='Exposed', 
-                      markeredgecolor='none', markeredgewidth=0),  # 🎨 無邊框
+                      markeredgecolor='none', markeredgewidth=0),
             plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
                       markersize=12, label='QC', 
-                      markeredgecolor='black', markeredgewidth=1.5),  # 黑色邊框
+                      markeredgecolor='black', markeredgewidth=0.8),  # 🔧 更新為 0.8
             plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
                       markersize=12, label='QC Outlier', 
-                      markeredgecolor='red', markeredgewidth=3)  # 紅色粗邊框
+                      markeredgecolor='red', markeredgewidth=1.5)  # 🔧 更新為 1.5
         ]
         
         ellipse_legend_elements = [
@@ -1175,9 +1180,8 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file, 
     """
     儲存結果到 Excel，使用 Wilcoxon 配對符號等級檢定 + Levene's test
     """
-    # 設定輸出目錄
-    output_dir = os.path.join(os.path.dirname(output_file), "ISTD_Correction_plots")
-    os.makedirs(output_dir, exist_ok=True)
+    # ✅ 修正：使用輸出檔案所在的目錄作為基礎目錄
+    output_base_dir = os.path.dirname(output_file)
     
     # ✅ 使用新的統計檢定函數
     cv_results_df = calculate_qc_cv_with_statistical_test(
@@ -1273,9 +1277,9 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file, 
     print(f"  {output_file}")
     print(f"{'='*70}\n")
     
-    # ✅ 繪製 P 值分佈圖
+    # ✅ 繪製 P 值分佈圖（傳入 output 目錄）
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-    plot_pvalue_distribution(cv_results_df, output_dir, timestamp)
+    plot_pvalue_distribution(cv_results_df, output_base_dir, timestamp)
 
 # ========== main 函數 ==========
 def main(input_file=None):
@@ -1295,6 +1299,12 @@ def main(input_file=None):
         - dict: 執行成功，包含統計資訊
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # 🔧 建立 output 資料夾
+    output_dir = os.path.join(script_dir, "output")
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"已建立 'output' 資料夾: {output_dir}")
     
     # 🔧 關鍵修正：如果沒有提供 input_file，則顯示對話框
     if input_file is None:
@@ -1335,9 +1345,9 @@ def main(input_file=None):
         print("❌ 錯誤：校正計算失敗")
         raise Exception("校正計算失敗")
     
-    # 儲存結果
+    # 🔧 修改：儲存結果到 output 資料夾
     output_file = os.path.join(
-        script_dir, 
+        output_dir,
         f"ISTD_Results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     )
     save_results_to_excel(
@@ -1345,21 +1355,21 @@ def main(input_file=None):
         output_file, all_sheets, sample_columns, input_file
     )
     
-        # 執行 2D PCA 分析
+    # ✅ 執行 2D PCA 分析（傳入 output_dir）
     print("\n" + "="*70)
     print("📊 開始 2D PCA 分析（Hotelling T² 異常值檢測 + 橢圓 + 固定原點）")
     print("="*70 + "\n")
     perform_pca_analysis_2d(
         original_df, results_df, None, 
-        sample_columns, sample_info_df
+        sample_columns, sample_info_df, output_dir  # ✅ 傳入 output_dir
     )
     
     print("\n" + "="*70)
     print("✅ ISTD Correction 完成！")
     print("="*70)
     print("\n📁 輸出檔案:")
-    print(f"  1. Excel 結果: {os.path.basename(output_file)}")
-    print(f"  2. PCA 圖表: ISTD_Correction_plots/ 資料夾")
+    print(f"  1. Excel 結果: output/{os.path.basename(output_file)}")
+    print(f"  2. PCA 圖表: output/ISTD_Correction_plots/")  # ✅ 更新路徑說明
     print("\n💡 請使用輸出的檔案進行後續 QC LOWESS 處理。\n")
     
     # 🎯 返回統計資訊給 GUI

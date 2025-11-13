@@ -3,19 +3,27 @@ __pycache__/
 *.py[cod]
 *.spec
 
-# 本地生成的結果檔案
-/Combat_corrected_*.xlsx
-/ISTD_Results_*.xlsx
-/QC_LOWESS_*.xlsx
-/Normalization_Results_*/
-
-# 輸出圖表
+# 輸出資料夾
+/output/
 /Batch_Effect_plots/
 /ISTD_Correction_plots/
 /QC_LOWESS_plots/
+/Normalization_Results_*/
+
+# 所有 Excel 檔案（除了範例檔案）
+*.xlsx
+*.xls
+
+# 所有圖片檔案
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
 
 # 日誌
 /logs/
+*.log
 
 # 開發環境
 .vscode/
