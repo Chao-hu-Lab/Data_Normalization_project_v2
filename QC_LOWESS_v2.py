@@ -939,7 +939,11 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         
         print(f"\n{'='*70}\n")
         
-        output_dir = os.path.dirname(output_file)
+        # 🔧 修改：確保 output_dir 指向 QC_LOWESS_plots 資料夾
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, "QC_LOWESS_plots")
+        os.makedirs(output_dir, exist_ok=True)  # 確保資料夾存在
+        
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
         # ✅ 傳入主目錄，函數內部會自動建立 QC_LOWESS_plots 子資料夾
         script_dir = os.path.dirname(os.path.abspath(__file__))

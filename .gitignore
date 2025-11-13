@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 /Combat_corrected_20251017_041600.xlsx
 /Data_Normalization_program.spec
 /ISTD_Results_20251017_041415.xlsx
@@ -22,3 +23,32 @@
 *.tiff
 *.svg
 *.pdf
+=======
+# Python
+__pycache__/
+*.py[cod]
+*.spec
+
+# 本地生成的結果檔案
+/Combat_corrected_*.xlsx
+/ISTD_Results_*.xlsx
+/QC_LOWESS_*.xlsx
+/Normalization_Results_*/
+
+# 輸出圖表
+/Batch_Effect_plots/
+/ISTD_Correction_plots/
+/QC_LOWESS_plots/
+
+# 日誌
+/logs/
+
+# 開發環境
+.vscode/
+.idea/
+.github/
+/Data_Normalization_project_v2/
+
+# 其他
+/requirements.txt
+>>>>>>> 8563138277dae74b978401dcc3fe83ba731cf43e

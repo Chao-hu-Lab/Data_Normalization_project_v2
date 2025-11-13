@@ -300,6 +300,324 @@ def plot_permutation_distribution(null_distribution, observed_improvement, p_val
 
     return fig
 
+# ========== 🔧 新增：Cohen's d 效果量計算 ==========
+def calculate_cohens_d_batch_effect(data, batch_labels):
+    """
+    計算批次效應的 Cohen's d 效果量
+    
+    使用所有批次對的平均 Cohen's d 來量化批次間差異
+
+    """
+    from itertools import combinations
+    
+    print("\n📏 計算 Cohen's d 效果量...")
+    
+    unique_batches = sorted(list(set(batch_labels)))
+    batch_labels = np.array(batch_labels)
+    
+    if len(unique_batches) < 2:
+        print("   ⚠ 只有一個批次，無法計算 Cohen's d")
+        return {
+            'overall_cohens_d': 0.0,
+            'feature_cohens_d': np.zeros(data.shape[1]),
+            'pairwise_cohens_d': {}
+        }
+    
+    n_features = data.shape[1]
+    feature_cohens_d_list = []
+    pairwise_results = {}
+    
+    # 計算所有批次對的 Cohen's d
+    batch_pairs = list(combinations(unique_batches, 2))
+    
+    for batch1, batch2 in batch_pairs:
+        batch1_data = data[batch_labels == batch1]
+        batch2_data = data[batch_labels == batch2]
+        
+        n1 = len(batch1_data)
+        n2 = len(batch2_data)
+        
+        if n1 < 2 or n2 < 2:
+            continue
+        
+        # 計算每個特徵的 Cohen's d
+        mean1 = np.mean(batch1_data, axis=0)
+        mean2 = np.mean(batch2_data, axis=0)
+        std1 = np.std(batch1_data, axis=0, ddof=1)
+        std2 = np.std(batch2_data, axis=0, ddof=1)
+        
+        # Pooled standard deviation
+        pooled_std = np.sqrt(((n1 - 1) * std1**2 + (n2 - 1) * std2**2) / (n1 + n2 - 2))
+        
+        # 避免除以零
+        pooled_std = np.where(pooled_std == 0, 1e-10, pooled_std)
+        
+        # Cohen's d = (mean1 - mean2) / pooled_std
+        cohens_d = np.abs(mean1 - mean2) / pooled_std
+        
+        feature_cohens_d_list.append(cohens_d)
+        pairwise_results[f'Batch{batch1}_vs_Batch{batch2}'] = np.mean(cohens_d)
+    
+    if len(feature_cohens_d_list) == 0:
+        return {
+            'overall_cohens_d': 0.0,
+            'feature_cohens_d': np.zeros(n_features),
+            'pairwise_cohens_d': {}
+        }
+    
+    # 平均所有批次對的 Cohen's d
+    feature_cohens_d = np.mean(feature_cohens_d_list, axis=0)
+    overall_cohens_d = np.mean(feature_cohens_d)
+    
+    # 輸出統計摘要
+    print(f"   - 整體平均 Cohen's d: {overall_cohens_d:.4f}")
+    print(f"   - Cohen's d 解釋:")
+    if overall_cohens_d < 0.2:
+        print(f"     • 小效果 (d < 0.2) - 批次效應微弱")
+    elif overall_cohens_d < 0.5:
+        print(f"     • 小至中等效果 (0.2 ≤ d < 0.5) - 批次效應輕微")
+    elif overall_cohens_d < 0.8:
+        print(f"     • 中等效果 (0.5 ≤ d < 0.8) - 批次效應中等")
+    else:
+        print(f"     • 大效果 (d ≥ 0.8) - 批次效應強烈")
+    
+    print(f"\n   批次對之間的 Cohen's d:")
+    for pair, d_value in pairwise_results.items():
+        print(f"     • {pair}: {d_value:.4f}")
+    
+    return {
+        'overall_cohens_d': overall_cohens_d,
+        'feature_cohens_d': feature_cohens_d,
+        'pairwise_cohens_d': pairwise_results
+    }
+
+# ========= 🔧 新增：QC 樣本變異係數 (CV%) 計算 ==========
+def calculate_qc_cv(data, sample_info, sample_columns):
+    """
+    計算 QC 樣本的變異係數 (CV%)
+    
+    CV% = (標準差 / 平均值) × 100
+    CV% < 20% 表示技術重現性良好
+    
+    Parameters:
+    -----------
+    data : np.ndarray
+        數據矩陣 (特徵 x 樣本)
+    sample_info : pd.DataFrame
+        樣本資訊表
+    sample_columns : list
+        樣本列名稱
+    
+    Returns:
+    --------
+    dict:
+        'qc_cv': np.ndarray - 每個特徵的 QC CV%
+        'median_cv': float - QC CV% 中位數
+        'mean_cv': float - QC CV% 平均值
+        'cv_below_20': float - CV% < 20% 的特徵比例
+        'cv_below_30': float - CV% < 30% 的特徵比例
+    """
+    print("\n📊 計算 QC 樣本 CV%...")
+    
+    # 識別 QC 樣本
+    sample_meta = sample_info.set_index('Sample_Name')
+    qc_columns = []
+    
+    for col in sample_columns:
+        if col in sample_meta.index:
+            sample_type = sample_meta.loc[col].get('Sample_Type', 'Unknown')
+            sample_type_upper = str(sample_type).upper()
+            
+            if 'QC' in sample_type_upper:
+                qc_columns.append(col)
+        else:
+            col_upper = col.upper()
+            if 'QC' in col_upper:
+                qc_columns.append(col)
+    
+    if len(qc_columns) < 3:
+        print(f"   ⚠ QC 樣本數不足 ({len(qc_columns)})，無法計算可靠的 CV%")
+        return {
+            'qc_cv': np.array([]),
+            'median_cv': np.nan,
+            'mean_cv': np.nan,
+            'cv_below_20': 0.0,
+            'cv_below_30': 0.0
+        }
+    
+    print(f"   - 找到 {len(qc_columns)} 個 QC 樣本")
+    
+    # 提取 QC 數據
+    qc_indices = [sample_columns.index(col) for col in qc_columns]
+    qc_data = data[:, qc_indices]  # (特徵 x QC樣本)
+    
+    # 計算 CV%
+    qc_mean = np.mean(qc_data, axis=1)
+    qc_std = np.std(qc_data, axis=1, ddof=1)
+    
+    # 避免除以零
+    qc_mean = np.where(qc_mean == 0, 1e-10, qc_mean)
+    
+    qc_cv = (qc_std / qc_mean) * 100
+    
+    # 統計摘要
+    median_cv = np.median(qc_cv)
+    mean_cv = np.mean(qc_cv)
+    cv_below_20 = np.sum(qc_cv < 20) / len(qc_cv) * 100
+    cv_below_30 = np.sum(qc_cv < 30) / len(qc_cv) * 100
+    
+    print(f"   - QC CV% 中位數: {median_cv:.2f}%")
+    print(f"   - QC CV% 平均值: {mean_cv:.2f}%")
+    print(f"   - CV% < 20% 的特徵: {cv_below_20:.1f}%")
+    print(f"   - CV% < 30% 的特徵: {cv_below_30:.1f}%")
+    
+    if median_cv < 20:
+        print(f"   ✅ 技術重現性優良 (中位數 CV% < 20%)")
+    elif median_cv < 30:
+        print(f"   ⚠ 技術重現性可接受 (20% ≤ 中位數 CV% < 30%)")
+    else:
+        print(f"   ❌ 技術重現性較差 (中位數 CV% ≥ 30%)")
+    
+    return {
+        'qc_cv': qc_cv,
+        'median_cv': median_cv,
+        'mean_cv': mean_cv,
+        'cv_below_20': cv_below_20,
+        'cv_below_30': cv_below_30
+    }
+
+# ========== 🔧 新增：PCA 主成分 ANOVA 檢驗 ==========
+def calculate_pca_anova(data, batch_labels):
+    """
+    對 PCA 主成分進行 ANOVA 檢驗，評估批次對主成分的影響
+    
+    Parameters:
+    -----------
+    data : np.ndarray
+        標準化後的數據 (樣本 x 特徵)
+    batch_labels : list or np.ndarray
+        批次標籤
+    
+    Returns:
+    --------
+    dict:
+        'pc1_pvalue': float - PC1 的 ANOVA p-value
+        'pc2_pvalue': float - PC2 的 ANOVA p-value
+        'pc1_eta_squared': float - PC1 的效果量 (η²)
+        'pc2_eta_squared': float - PC2 的效果量 (η²)
+    """
+    from scipy.stats import f_oneway
+    
+    print("\n🔬 對 PCA 主成分進行 ANOVA 檢驗...")
+    
+    # PCA
+    pca = PCA(n_components=2)
+    scores = pca.fit_transform(data)
+    
+    unique_batches = sorted(list(set(batch_labels)))
+    batch_labels = np.array(batch_labels)
+    
+    # 為每個主成分進行 ANOVA
+    results = {}
+    
+    for pc_idx, pc_name in enumerate(['PC1', 'PC2']):
+        # 按批次分組
+        batch_groups = [scores[batch_labels == b, pc_idx] for b in unique_batches]
+        
+        # ANOVA
+        f_stat, p_value = f_oneway(*batch_groups)
+        
+        # 計算 eta-squared (η²)
+        # η² = SSB / SST
+        grand_mean = np.mean(scores[:, pc_idx])
+        
+        # SST (Total Sum of Squares)
+        sst = np.sum((scores[:, pc_idx] - grand_mean)**2)
+        
+        # SSB (Between-group Sum of Squares)
+        ssb = 0
+        for batch in unique_batches:
+            batch_data = scores[batch_labels == batch, pc_idx]
+            batch_mean = np.mean(batch_data)
+            ssb += len(batch_data) * (batch_mean - grand_mean)**2
+        
+        eta_squared = ssb / sst if sst > 0 else 0
+        
+        results[f'{pc_name.lower()}_pvalue'] = p_value
+        results[f'{pc_name.lower()}_eta_squared'] = eta_squared
+        
+        print(f"   - {pc_name}:")
+        print(f"     • F-statistic: {f_stat:.4f}")
+        print(f"     • p-value: {p_value:.4f}", end="")
+        
+        if p_value < 0.001:
+            print(f" *** (批次對 {pc_name} 有極顯著影響)")
+        elif p_value < 0.01:
+            print(f" ** (批次對 {pc_name} 有非常顯著影響)")
+        elif p_value < 0.05:
+            print(f" * (批次對 {pc_name} 有顯著影響)")
+        else:
+            print(f" n.s. (批次對 {pc_name} 無顯著影響)")
+        
+        print(f"     • η² = {eta_squared:.4f}", end="")
+        if eta_squared < 0.01:
+            print(f" (微弱效果)")
+        elif eta_squared < 0.06:
+            print(f" (小效果)")
+        elif eta_squared < 0.14:
+            print(f" (中等效果)")
+        else:
+            print(f" (大效果)")
+    
+    return results
+
+# ========== 🔧 新增：FDR 多重檢定校正 ==========
+def apply_fdr_correction(feature_pvalues, alpha=0.05):
+    """
+    對特徵層級的 p-values 進行 FDR (False Discovery Rate) 校正
+    
+    使用 Benjamini-Hochberg 方法
+    
+    """
+    from statsmodels.stats.multitest import multipletests
+    
+    print("\n🔧 進行 FDR 多重檢定校正 (Benjamini-Hochberg)...")
+    
+    # 移除 NaN 值
+    valid_mask = ~np.isnan(feature_pvalues)
+    valid_pvalues = feature_pvalues[valid_mask]
+    
+    if len(valid_pvalues) == 0:
+        print("   ⚠ 沒有有效的 p-values，跳過 FDR 校正")
+        return {
+            'fdr_corrected_pvalues': feature_pvalues,
+            'significant_features': np.zeros(len(feature_pvalues), dtype=bool),
+            'n_significant': 0
+        }
+    
+    # FDR 校正
+    reject, pvals_corrected, _, _ = multipletests(
+        valid_pvalues, alpha=alpha, method='fdr_bh'
+    )
+    
+    # 將校正後的 p-values 放回原位置
+    fdr_corrected = np.full(len(feature_pvalues), np.nan)
+    fdr_corrected[valid_mask] = pvals_corrected
+    
+    significant = np.zeros(len(feature_pvalues), dtype=bool)
+    significant[valid_mask] = reject
+    
+    n_significant = np.sum(significant)
+    
+    print(f"   - 原始 p-values 數量: {len(valid_pvalues)}")
+    print(f"   - FDR 校正後顯著特徵數: {n_significant} ({n_significant/len(valid_pvalues)*100:.1f}%)")
+    
+    return {
+        'fdr_corrected_pvalues': fdr_corrected,
+        'significant_features': significant,
+        'n_significant': n_significant
+    }
+
 # ========== 🔧 新增：Permutation Test for Silhouette Coefficient ==========
 def permutation_test_silhouette(data_scaled, batch_labels, observed_improvement, n_permutations=1000):
     """
@@ -364,10 +682,11 @@ def permutation_test_silhouette(data_scaled, batch_labels, observed_improvement,
     
     return p_value, null_improvements
 
-# ========== 🔧 改進：Silhouette Coefficient 計算 + Permutation Test ==========
 def calculate_silhouette_improvement(original_data, corrected_data, batch_info, n_permutations=1000):
     """
     計算 Silhouette Coefficient 改善情況，並使用 Permutation Test 評估顯著性
+    
+    ⚠️ 注意：Silhouette Score 越低 = 批次分離越差 = 批次效應越弱（好）
     
     Parameters:
     -----------
@@ -375,6 +694,7 @@ def calculate_silhouette_improvement(original_data, corrected_data, batch_info, 
         Permutation Test 的隨機排列次數（預設 1000）
     """
     print("\n🔬 計算 Silhouette Coefficient...")
+    print("   ⚠️ 注意：Silhouette Score 越低表示批次效應越弱（這是好的）")
     
     # 數據預處理
     original_data_log = np.log2(original_data + 1)
@@ -396,7 +716,13 @@ def calculate_silhouette_improvement(original_data, corrected_data, batch_info, 
         
         print(f"   - 校正前整體 Silhouette Score: {original_silhouette:.4f}")
         print(f"   - 校正後整體 Silhouette Score: {corrected_silhouette:.4f}")
-        print(f"   - 整體改善: {overall_improvement:.4f} (越大越好，表示批次效應減弱)")
+        print(f"   - 整體改善: {overall_improvement:.4f}", end="")
+        
+        if overall_improvement > 0:
+            print(f" (正向改善 ✓ - 批次分離減弱)")
+        else:
+            print(f" (負向改善 ✗ - 批次分離增強)")
+        
     except Exception as e:
         print(f"   ⚠ 整體 Silhouette Score 計算失敗: {e}")
         original_silhouette = np.nan
@@ -429,30 +755,29 @@ def calculate_silhouette_improvement(original_data, corrected_data, batch_info, 
     print(f"\n   計算 {n_features} 個特徵的 Silhouette Coefficient...")
     
     # 🔧 決定是否對每個特徵執行 Permutation Test
-    # 如果特徵數量太多，可以選擇性執行（例如只對前 100 個特徵）
-    run_feature_permutation = (n_features <= 500)  # 特徵數 <= 500 才執行
+    run_feature_permutation = (n_features <= 500)
     
     if not run_feature_permutation:
         print(f"   ⚠ 特徵數量過多 ({n_features})，跳過特徵層級 Permutation Test")
+    else:
+        print(f"   執行特徵層級 Permutation Test (每個特徵 1000 次)")
     
     for i in range(n_features):
-        # 提取單個特徵的所有樣本值
         original_feature = original_scaled[:, i].reshape(-1, 1)
         corrected_feature = corrected_scaled[:, i].reshape(-1, 1)
         
         try:
-            # 計算該特徵的 Silhouette Score
             original_sil = silhouette_score(original_feature, batch_labels)
             corrected_sil = silhouette_score(corrected_feature, batch_labels)
             
             original_feature_silhouettes.append(original_sil)
             corrected_feature_silhouettes.append(corrected_sil)
             
-            # 🔧 特徵層級 Permutation Test（可選）
+            # 🔧 特徵層級 Permutation Test（提高到 1000 次）
             if run_feature_permutation:
                 feature_improvement = original_sil - corrected_sil
                 feature_pvalue, _ = permutation_test_silhouette(
-                    corrected_feature, batch_labels, feature_improvement, n_permutations=100
+                    corrected_feature, batch_labels, feature_improvement, n_permutations=1000
                 )
                 feature_pvalues.append(feature_pvalue)
             else:
@@ -463,7 +788,6 @@ def calculate_silhouette_improvement(original_data, corrected_data, batch_info, 
             corrected_feature_silhouettes.append(np.nan)
             feature_pvalues.append(np.nan)
         
-        # 進度顯示
         if (i + 1) % 100 == 0:
             print(f"      處理進度: {i + 1}/{n_features} features")
     
@@ -471,7 +795,6 @@ def calculate_silhouette_improvement(original_data, corrected_data, batch_info, 
     corrected_feature_silhouettes = np.array(corrected_feature_silhouettes)
     feature_pvalues = np.array(feature_pvalues)
     
-    # 計算改善
     silhouette_improvement = original_feature_silhouettes - corrected_feature_silhouettes
     
     # 統計摘要
@@ -487,7 +810,6 @@ def calculate_silhouette_improvement(original_data, corrected_data, batch_info, 
             if len(valid_pvalues) > 0:
                 print(f"   - 顯著改善 (p<0.05): {np.sum(valid_pvalues < 0.05)}/{len(valid_pvalues)} ({np.sum(valid_pvalues < 0.05)/len(valid_pvalues)*100:.1f}%)")
     
-    # 返回結果字典
     return {
         'overall_original': original_silhouette,
         'overall_corrected': corrected_silhouette,
@@ -1105,46 +1427,86 @@ def copy_sheet_with_style(src_ws, tgt_ws):
 def color_silhouette_cells(ws):
     """
     根據欄位名稱對特定欄位上色
-    Silhouette 欄位塗深橘色，Permutation Test 欄位塗淺藍色
+    
+    上色規則：
+    - Silhouette 相關欄位：深橘色
+    - Cohen's d 相關欄位：淺粉色
+    - QC CV% 相關欄位：淺藍色
+    - Permutation p-value：根據顯著性上色（綠色=顯著，淺黃=不顯著）
+    - FDR p-value：根據顯著性上色（綠色=顯著，淺黃=不顯著）
+    - FDR significant：根據 True/False 上色（綠色=TRUE，淺黃=FALSE）
     """
-    orange_fill = PatternFill(start_color='FF8C00', end_color='FF8C00', fill_type='solid')
-    light_blue_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')
-    green_fill = PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')
-    light_yellow_fill = PatternFill(start_color='FFFF99', end_color='FFFF99', fill_type='solid')
+    # 定義顏色
+    orange_fill = PatternFill(start_color='FF8C00', end_color='FF8C00', fill_type='solid')  # 深橘色
+    light_blue_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')  # 淺藍色
+    green_fill = PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')  # 淺綠色（顯著）
+    light_yellow_fill = PatternFill(start_color='FFFF99', end_color='FFFF99', fill_type='solid')  # 淺黃色（不顯著）
+    purple_fill = PatternFill(start_color='DDA0DD', end_color='DDA0DD', fill_type='solid')  # 淺紫色
+    pink_fill = PatternFill(start_color='FFB6C1', end_color='FFB6C1', fill_type='solid')  # 淺粉色
     
+    # 取得欄位標題
     header = [cell.value for cell in ws[1]]
-    col_map = {name: idx+1 for idx, name in enumerate(header)}
+    col_map = {name: idx+1 for idx, name in enumerate(header) if name is not None}
     
-    silhouette_cols = ['Original_Silhouette', 'Corrected_Silhouette', 'Silhouette_Improvement']
-    permutation_cols = ['Permutation_pvalue']
+    # 定義欄位分組
+    silhouette_cols = ['Original_Silhouette', 'Corrected_Silhouette', 'Improvement_Silhouette']
+    cohens_d_cols = ['Original_Cohens_d', 'Corrected_Cohens_d', 'Improvement_Cohens_d']
+    qc_cv_cols = ['Original_QC_CV%', 'Corrected_QC_CV%', 'Improvement_QC_CV%']
     
-    for col_name in silhouette_cols:
-        if col_name in col_map:
-            col_idx = col_map[col_name]
-            for row in range(2, ws.max_row + 1):
-                cell = ws.cell(row=row, column=col_idx)
-                cell.fill = orange_fill
-    
-    for col_name in permutation_cols:
-        if col_name in col_map:
-            col_idx = col_map[col_name]
-            for row in range(2, ws.max_row + 1):
-                cell = ws.cell(row=row, column=col_idx)
-                cell.fill = light_blue_fill
-    
-    # 根據 p-value 上色
-    if 'Permutation_pvalue' in col_map:
-        col_idx = col_map['Permutation_pvalue']
-        for row in range(2, ws.max_row + 1):
+    # 🔧 關鍵修正：對每個儲存格進行分類，避免重複上色
+    for row in range(2, ws.max_row + 1):
+        for col_name, col_idx in col_map.items():
             cell = ws.cell(row=row, column=col_idx)
-            try:
-                p_val = float(cell.value)
-                if p_val < 0.05:
-                    cell.fill = green_fill  # 顯著
-                else:
-                    cell.fill = light_yellow_fill  # 不顯著
-            except:
-                pass
+            
+            # 1️⃣ Silhouette 相關欄位 - 深橘色
+            if col_name in silhouette_cols:
+                cell.fill = orange_fill
+            
+            # 2️⃣ Cohen's d 相關欄位 - 淺粉色
+            elif col_name in cohens_d_cols:
+                cell.fill = pink_fill
+            
+            # 3️⃣ QC CV% 相關欄位 - 淺藍色
+            elif col_name in qc_cv_cols:
+                cell.fill = light_blue_fill
+            
+            # 4️⃣ Permutation p-value - 根據顯著性上色
+            elif col_name == 'Permutation_pvalue':
+                try:
+                    p_val = float(cell.value)
+                    if p_val < 0.05:
+                        cell.fill = green_fill  # 顯著
+                    else:
+                        cell.fill = light_yellow_fill  # 不顯著
+                except (ValueError, TypeError):
+                    cell.fill = light_blue_fill  # 無法解析的值
+            
+            # 5️⃣ FDR corrected p-value - 根據顯著性上色
+            elif col_name == 'FDR_corrected_pvalue':
+                try:
+                    p_val = float(cell.value)
+                    if p_val < 0.05:
+                        cell.fill = green_fill  # 顯著
+                    else:
+                        cell.fill = light_yellow_fill  # 不顯著
+                except (ValueError, TypeError):
+                    cell.fill = purple_fill  # 無法解析的值
+            
+            # 6️⃣ FDR significant - 根據 True/False 上色
+            elif col_name == 'FDR_significant':
+                try:
+                    # 處理多種可能的布林值格式
+                    cell_value = str(cell.value).strip().upper()
+                    if cell_value in ['TRUE', '1', '1.0', 'YES']:
+                        cell.fill = green_fill  # 顯著
+                    elif cell_value in ['FALSE', '0', '0.0', 'NO']:
+                        cell.fill = light_yellow_fill  # 不顯著
+                    else:
+                        cell.fill = purple_fill  # 其他值
+                except (ValueError, TypeError):
+                    cell.fill = purple_fill  # 無法解析的值
+    
+    print(f"   ✓ 已對 Excel 工作表進行條件格式化上色")
 
 def copy_all_sheets(input_file, output_file, data_sheet_name, data, sample_info, corrected_df):
     """
@@ -1184,48 +1546,34 @@ def copy_all_sheets(input_file, output_file, data_sheet_name, data, sample_info,
 def main(input_file=None):
     """
     主函數 - 支援 GUI 和獨立運行
-    
-    Parameters:
-    -----------
-    input_file : str, optional
-        輸入檔案路徑（由 GUI 傳入）
-        如果為 None，則顯示檔案選擇對話框
-    
-    Returns:
-    --------
-    dict or None
-        - None: 用戶取消檔案選擇
-        - dict: 執行成功，包含統計資訊
     """
     print("="*70)
-    print("  批次效應校正程式 v3.0 (使用 pycombat)")
+    print("  批次效應校正程式 v4.0 (使用 pycombat)")
     print("  - Silhouette Coefficient 評估批次效應")
     print("  - Permutation Test 顯著性檢定")
-    print("  - 前後對比 PCA 圖（左右並排）")
+    print("  - Cohen's d 效果量")
+    print("  - QC CV% 技術重現性")
+    print("  - PCA-ANOVA 批次影響檢驗")
+    print("  - FDR 多重檢定校正")
     print("="*70)
     
-    # 🔧 關鍵修正：如果沒有提供 input_file，則顯示對話框
     if input_file is None:
         print("\n請選擇要處理的Excel檔案...")
         input_file = select_file()
         
-        # 如果用戶取消選擇，返回 None
         if not input_file:
             print("❌ 未選擇檔案，程式結束。")
             return None
     
-    # 驗證檔案是否存在
     if not os.path.exists(input_file):
         raise FileNotFoundError(f"找不到檔案: {input_file}")
     
     print(f"\n✓ 選擇的檔案: {os.path.basename(input_file)}")
     
     output_dir = os.path.dirname(input_file)
-    base_name = os.path.basename(input_file)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.normpath(os.path.join(output_dir,f'Combat_corrected_{timestamp}.xlsx'))
+    output_file = os.path.normpath(os.path.join(output_dir, f'Combat_corrected_{timestamp}.xlsx'))
     
-    # 🔧 創建 Batch_Effect_plots 資料夾
     plots_dir = os.path.join(output_dir, 'Batch_Effect_plots')
     if not os.path.exists(plots_dir):
         os.makedirs(plots_dir)
@@ -1243,20 +1591,6 @@ def main(input_file=None):
             if 'batch' in str(column_d).lower():
                 print(f"✓ column D 確認為 Batch 列，使用它來二次驗證批次資訊")
                 sample_info['Batch'] = sample_info[column_d]
-            else:
-                print(f"警告: column D ('{column_d}') 不像是 Batch 資訊，未進行更新")
-        else:
-            print("警告: SampleInfo 列數不足4，無法檢查 column D")
-        
-        if 'Batch' in sample_info.columns:
-            unique_batches_info = sample_info['Batch'].unique()
-            print(f"二次檢查後的 Batch 分組: {unique_batches_info}")
-            if len(unique_batches_info) < 2:
-                print("警告: 二次檢查後 Batch 分組不足2個，無法進行校正")
-                raise Exception("Batch 分組不足2個")
-        else:
-            print("錯誤: 無法找到 Batch 列，無法進行二次檢查")
-            raise Exception("無法找到 Batch 列")
         
         print("\n準備數據格式...")
         data_matrix, batch_info, sample_columns, feature_ids = prepare_data_for_combat(data, sample_info)
@@ -1269,29 +1603,150 @@ def main(input_file=None):
             print("\n警告：只有一個批次，無需進行批次效應校正")
             raise Exception("只有一個批次")
         
-        print("\n執行Combat批次效應校正...")
+        # ========== 🆕 校正前評估 ==========
+        print("\n" + "="*70)
+        print("📊 校正前批次效應評估")
+        print("="*70)
+        
+        original_data_for_eval = data_matrix.T
+        
+        # 1. QC CV%
+        qc_cv_before = calculate_qc_cv(data_matrix, sample_info, sample_columns)
+        
+        # 2. Cohen's d
+        original_data_log = np.log2(original_data_for_eval + 1)
+        scaler_before = StandardScaler()
+        original_scaled = scaler_before.fit_transform(original_data_log)
+        cohens_d_before = calculate_cohens_d_batch_effect(original_scaled, batch_info)
+        
+        # 3. PCA-ANOVA
+        pca_anova_before = calculate_pca_anova(original_scaled, batch_info)
+        
+        # ========== Combat 校正 ==========
+        print("\n" + "="*70)
+        print("⚙️ 執行 Combat 批次效應校正")
+        print("="*70)
         corrected_data = perform_combat_correction(data_matrix, batch_info)
         print("✓ 批次效應校正完成")
         
         if corrected_data.shape[1] != len(sample_columns):
-            print(f"轉置校正後的數據矩陣: 從 {corrected_data.shape} 到 {corrected_data.T.shape}")
             corrected_data = corrected_data.T
         
-        # 🔧 計算 Silhouette Coefficient 並執行 Permutation Test
-        print("\n計算 Silhouette Coefficient 並執行 Permutation Test...")
-        original_data_for_eval = data_matrix.T
+        # ========== 🆕 校正後評估 ==========
+        print("\n" + "="*70)
+        print("📊 校正後批次效應評估")
+        print("="*70)
+        
         corrected_data_for_eval = corrected_data.T
         
-        # 設定 Permutation 次數
-        n_permutations = 1000
-        print(f"   Permutation Test 次數: {n_permutations}")
+        # 1. QC CV%
+        qc_cv_after = calculate_qc_cv(corrected_data, sample_info, sample_columns)
         
+        # 2. Cohen's d
+        corrected_data_log = np.log2(corrected_data_for_eval + 1)
+        scaler_after = StandardScaler()
+        corrected_scaled = scaler_after.fit_transform(corrected_data_log)
+        cohens_d_after = calculate_cohens_d_batch_effect(corrected_scaled, batch_info)
+        
+        # 3. PCA-ANOVA
+        pca_anova_after = calculate_pca_anova(corrected_scaled, batch_info)
+        
+        # 4. Silhouette Coefficient + Permutation Test
+        n_permutations = 1000
         silhouette_results = calculate_silhouette_improvement(
             original_data_for_eval, corrected_data_for_eval, batch_info, 
             n_permutations=n_permutations
         )
         
-        # 🔧 生成 2 張前後對比 PCA 圖（左右並排）
+        # 5. FDR 校正
+        fdr_results = apply_fdr_correction(silhouette_results['feature_pvalues'], alpha=0.05)
+        
+        # ========== 🆕 計算 QC CV% Improvement ==========
+        # 確保兩個 CV 陣列長度相同
+        if len(qc_cv_before['qc_cv']) > 0 and len(qc_cv_after['qc_cv']) > 0:
+            if len(qc_cv_before['qc_cv']) == len(qc_cv_after['qc_cv']):
+                qc_cv_improvement = qc_cv_before['qc_cv'] - qc_cv_after['qc_cv']
+            else:
+                print(f"   ⚠ QC CV% 陣列長度不一致，無法計算 Improvement")
+                qc_cv_improvement = np.array([])
+        else:
+            qc_cv_improvement = np.array([])
+        
+        # ========== 🆕 前後對比統計摘要 ==========
+        print("\n" + "="*70)
+        print("📈 批次效應校正前後對比統計摘要")
+        print("="*70)
+        
+        print("\n1️⃣ QC CV% (技術重現性):")
+        print(f"   校正前 (Original): 中位數 = {qc_cv_before['median_cv']:.2f}%, CV<20% = {qc_cv_before['cv_below_20']:.1f}%")
+        print(f"   校正後 (Corrected): 中位數 = {qc_cv_after['median_cv']:.2f}%, CV<20% = {qc_cv_after['cv_below_20']:.1f}%")
+        
+        cv_change = qc_cv_after['median_cv'] - qc_cv_before['median_cv']
+        print(f"   改善 (Improvement): {-cv_change:+.2f}%", end="")  # 注意：負號表示改善
+        
+        if abs(cv_change) < 2:
+            print(f" (基本不變 ✓)")
+        elif cv_change < 0:
+            print(f" (改善 ✓)")
+        else:
+            print(f" (惡化 ⚠)")
+        
+        # 🆕 CV% Improvement 統計
+        if len(qc_cv_improvement) > 0:
+            improvement_median = np.median(qc_cv_improvement)
+            improvement_positive_ratio = np.sum(qc_cv_improvement > 0) / len(qc_cv_improvement) * 100
+            print(f"   - CV% 改善中位數: {improvement_median:+.2f}%")
+            print(f"   - CV% 改善特徵比例: {improvement_positive_ratio:.1f}%")
+        
+        print("\n2️⃣ Cohen's d (批次效應大小):")
+        print(f"   校正前: {cohens_d_before['overall_cohens_d']:.4f}")
+        print(f"   校正後: {cohens_d_after['overall_cohens_d']:.4f}")
+        
+        if cohens_d_before['overall_cohens_d'] > 0:
+            d_reduction = (cohens_d_before['overall_cohens_d'] - cohens_d_after['overall_cohens_d']) / cohens_d_before['overall_cohens_d'] * 100
+            print(f"   減少: {d_reduction:.1f}%", end="")
+            if d_reduction > 50:
+                print(f" (大幅改善 ✓✓)")
+            elif d_reduction > 20:
+                print(f" (顯著改善 ✓)")
+            elif d_reduction > 0:
+                print(f" (輕微改善)")
+            else:
+                print(f" (未改善 ⚠)")
+        
+        print("\n3️⃣ PCA-ANOVA (批次對主成分的影響):")
+        print(f"   PC1:")
+        print(f"     校正前: p = {pca_anova_before['pc1_pvalue']:.4f}, η² = {pca_anova_before['pc1_eta_squared']:.4f}")
+        print(f"     校正後: p = {pca_anova_after['pc1_pvalue']:.4f}, η² = {pca_anova_after['pc1_eta_squared']:.4f}")
+        
+        print(f"   PC2:")
+        print(f"     校正前: p = {pca_anova_before['pc2_pvalue']:.4f}, η² = {pca_anova_before['pc2_eta_squared']:.4f}")
+        print(f"     校正後: p = {pca_anova_after['pc2_pvalue']:.4f}, η² = {pca_anova_after['pc2_eta_squared']:.4f}")
+        
+        print("\n4️⃣ Silhouette Coefficient (批次分離程度):")
+        print(f"   校正前: {silhouette_results['overall_original']:.4f}")
+        print(f"   校正後: {silhouette_results['overall_corrected']:.4f}")
+        print(f"   改善值: {silhouette_results['overall_improvement']:.4f}")
+        
+        if not np.isnan(silhouette_results['overall_pvalue']):
+            print(f"   Permutation Test p-value: {silhouette_results['overall_pvalue']:.4f}", end="")
+            if silhouette_results['overall_pvalue'] < 0.001:
+                print(f" *** (極顯著)")
+            elif silhouette_results['overall_pvalue'] < 0.01:
+                print(f" ** (非常顯著)")
+            elif silhouette_results['overall_pvalue'] < 0.05:
+                print(f" * (顯著)")
+            else:
+                print(f" n.s. (不顯著)")
+        
+        print(f"\n5️⃣ FDR 多重檢定校正:")
+        print(f"   顯著改善特徵數 (FDR < 0.05): {fdr_results['n_significant']}/{len(fdr_results['significant_features'])}")
+        
+        
+        # ========== 生成圖表 ==========
+        print("\n" + "="*70)
+        print("🎨 生成視覺化圖表")
+        print("="*70)
         
         # 1. 按 Batch 分組
         print("\n生成 PCA 前後對比圖（按 Batch 分組）...")
@@ -1321,7 +1776,7 @@ def main(input_file=None):
             plt.close(fig_type)
             print(f"✓ 已儲存: {os.path.basename(pca_type_file)}")
         
-        # 🔧 生成 Permutation Test 分佈圖
+        # 3. Permutation Test 分佈圖
         if len(silhouette_results['null_distribution']) > 0:
             print("\n生成 Permutation Test 分佈圖...")
             fig_perm = plot_permutation_distribution(
@@ -1336,19 +1791,37 @@ def main(input_file=None):
                 plt.close(fig_perm)
                 print(f"✓ 已儲存: {os.path.basename(perm_file)}")
         
+        # ========== 準備輸出 Excel ==========
         print("\n準備輸出結果...")
         corrected_df = pd.DataFrame(corrected_data, columns=sample_columns)
         corrected_df.insert(0, data.columns[0], feature_ids)
         
-        # 🔧 添加 Silhouette Coefficient 和 Permutation Test 結果
+        # 🆕 修改：使用新的命名方式
         corrected_df['Original_Silhouette'] = silhouette_results['feature_original']
         corrected_df['Corrected_Silhouette'] = silhouette_results['feature_corrected']
-        corrected_df['Silhouette_Improvement'] = silhouette_results['feature_improvement']
+        corrected_df['Improvement_Silhouette'] = silhouette_results['feature_improvement']
         corrected_df['Permutation_pvalue'] = silhouette_results['feature_pvalues']
+        corrected_df['FDR_corrected_pvalue'] = fdr_results['fdr_corrected_pvalues']
+        corrected_df['FDR_significant'] = fdr_results['significant_features']
+        
+        # 🆕 添加 Cohen's d
+        corrected_df['Original_Cohens_d'] = cohens_d_before['feature_cohens_d']
+        corrected_df['Corrected_Cohens_d'] = cohens_d_after['feature_cohens_d']
+        corrected_df['Improvement_Cohens_d'] = cohens_d_before['feature_cohens_d'] - cohens_d_after['feature_cohens_d']
+        
+        # 🆕 修改：使用新的 CV% 命名方式
+        if len(qc_cv_before['qc_cv']) > 0:
+            corrected_df['Original_QC_CV%'] = qc_cv_before['qc_cv']
+            corrected_df['Corrected_QC_CV%'] = qc_cv_after['qc_cv']
+            
+            # 🆕 添加 CV% Improvement
+            if len(qc_cv_improvement) > 0:
+                corrected_df['Improvement_QC_CV%'] = qc_cv_improvement
         
         print(f"\n保存結果到: {os.path.basename(output_file)}")
         copy_all_sheets(input_file, output_file, sheet_name, data, sample_info, corrected_df)
-        
+
+        # ========== 最終輸出摘要 ==========
         print("\n" + "="*70)
         print("✅ 批次效應校正完成！")
         print("="*70)
@@ -1361,35 +1834,6 @@ def main(input_file=None):
         if len(silhouette_results['null_distribution']) > 0:
             print(f"  3. Permutation Test 分佈圖: Permutation_Test_Distribution_{timestamp}.png")
         
-        # 輸出統計摘要
-        print(f"\n📊 Silhouette Coefficient 統計摘要:")
-        print(f"  - 整體校正前: {silhouette_results['overall_original']:.4f}")
-        print(f"  - 整體校正後: {silhouette_results['overall_corrected']:.4f}")
-        print(f"  - 整體改善: {silhouette_results['overall_improvement']:.4f}")
-        
-        if not np.isnan(silhouette_results['overall_pvalue']):
-            print(f"\n🎲 Permutation Test 結果:")
-            print(f"  - p-value: {silhouette_results['overall_pvalue']:.4f}")
-            if silhouette_results['overall_pvalue'] < 0.001:
-                print(f"  - 顯著性: *** (p < 0.001) - 批次效應校正極顯著有效")
-            elif silhouette_results['overall_pvalue'] < 0.01:
-                print(f"  - 顯著性: ** (p < 0.01) - 批次效應校正非常顯著")
-            elif silhouette_results['overall_pvalue'] < 0.05:
-                print(f"  - 顯著性: * (p < 0.05) - 批次效應校正顯著有效")
-            else:
-                print(f"  - 顯著性: n.s. (p >= 0.05) - 批次效應校正效果不顯著")
-        
-        valid_improvements = silhouette_results['feature_improvement'][~np.isnan(silhouette_results['feature_improvement'])]
-        if len(valid_improvements) > 0:
-            print(f"\n  特徵層級統計:")
-            print(f"  - 平均改善: {np.mean(valid_improvements):.4f}")
-            print(f"  - 中位數改善: {np.median(valid_improvements):.4f}")
-            print(f"  - 改善特徵數: {np.sum(valid_improvements > 0)}/{len(valid_improvements)} ({np.sum(valid_improvements > 0)/len(valid_improvements)*100:.1f}%)")
-            
-            valid_pvalues = silhouette_results['feature_pvalues'][~np.isnan(silhouette_results['feature_pvalues'])]
-            if len(valid_pvalues) > 0:
-                print(f"  - 顯著改善特徵 (p<0.05): {np.sum(valid_pvalues < 0.05)}/{len(valid_pvalues)} ({np.sum(valid_pvalues < 0.05)/len(valid_pvalues)*100:.1f}%)")
-        
         print("\n" + "="*70 + "\n")
         
         # 🎯 返回統計資訊給 GUI
@@ -1397,7 +1841,14 @@ def main(input_file=None):
             'file_path': input_file,
             'metabolites': len(feature_ids),
             'samples': len(sample_columns),
-            'output_path': output_file
+            'output_path': output_file,
+            'qc_cv_before': qc_cv_before['median_cv'],
+            'qc_cv_after': qc_cv_after['median_cv'],
+            'qc_cv_improvement': qc_cv_before['median_cv'] - qc_cv_after['median_cv'],  # 🆕
+            'cohens_d_before': cohens_d_before['overall_cohens_d'],
+            'cohens_d_after': cohens_d_after['overall_cohens_d'],
+            'silhouette_improvement': silhouette_results['overall_improvement'],
+            'permutation_pvalue': silhouette_results['overall_pvalue']
         }
         
     except Exception as e:
@@ -1405,10 +1856,8 @@ def main(input_file=None):
         import traceback
         traceback.print_exc()
         print("\n請檢查輸入檔案格式是否正確")
-        raise  # 🔧 重新拋出異常，讓 GUI 可以捕獲
+        raise
 
 
 if __name__ == "__main__":
-    # 🔧 獨立運行時不傳入 input_file，會顯示對話框
     main()
-
