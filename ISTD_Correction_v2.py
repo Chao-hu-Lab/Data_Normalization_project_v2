@@ -1010,21 +1010,15 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
                    fontsize=16, fontweight='bold', va='top',
                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
-        # 繪製左圖
-        plot_pca_subplot(ax_left, scores_left, qc_scores_left, var_left, 
-                        t2_threshold_left, outliers_left, 
-                        f'{left_name} (Before Correction)', 
-                        is_right=False)
+        plot_pca_subplot(ax_left, scores_left, qc_scores_left, var_left, t2_threshold_left, 
+                        outliers_left, left_name)
         
-        # 繪製右圖（包含實際變化數值）
-        outlier_info = f'QC Outliers: {np.sum(outliers_right)}/{len(qc_columns)} (↓{outlier_reduction})'
-        plot_pca_subplot(ax_right, scores_right, qc_scores_right, var_right,
-                        t2_threshold_right, outliers_right, 
-                        f'{right_name} (After Correction)', 
-                        is_right=True, pc1_change=pc1_change, pc2_change=pc2_change, 
-                        outlier_info=outlier_info)
+        plot_pca_subplot(ax_right, scores_right, qc_scores_right, var_right, t2_threshold_right, 
+                        outliers_right, right_name, is_right=True, 
+                        pc1_change=pc1_change, pc2_change=pc2_change,
+                        outlier_info=f'QC Outliers: {np.sum(outliers_left)} → {np.sum(outliers_right)}')
 
-        # ===== 🎨 修改後的圖例（Control/Exposed 無邊框）=====
+        # ===== 添加圖例 =====
         sample_legend_elements = [
             plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#1E88E5',
                       markersize=11, label='Control', markeredgecolor='black', markeredgewidth=1.5),
