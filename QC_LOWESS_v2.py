@@ -5,7 +5,7 @@ from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 import statsmodels.api as sm
-from scipy.stats import ttest_rel, levene, shapiro, kendalltau
+from scipy.stats import levene, kendalltau, wilcoxon
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from scipy.stats import chi2
@@ -34,9 +34,9 @@ def optimize_lowess_frac_dynamic(qc_count):
         return 0.5
 
 
-# ========== ✅ 新增：趨勢顯著性檢驗 ==========
+# ========== ✅ 趨勢顯著性檢驗 ==========
 def validate_lowess_trend(qc_orders, qc_intensities, fitted_values):
-    """驗證 LOWESS 是否捕捉到顯著趨勢"""
+    """驗證 LOWESS 擬合品質（僅用於記錄）"""
     try:
         tau, mk_pvalue = kendalltau(qc_orders, qc_intensities)
         
@@ -71,10 +71,10 @@ def validate_lowess_trend(qc_orders, qc_intensities, fitted_values):
         }
 
 
-# ========== 🔧 改進：LOWESS 校正（添加趨勢驗證）==========
+# ========== ✅ 簡化版 LOWESS 校正 ==========
 def robust_lowess_correction_v7(qc_orders, qc_intensities, all_orders, all_intensities, feature_id):
     """
-    改進的 LOWESS 校正（簡化版）
+    簡化版 LOWESS 校正
     
     決策邏輯：
     1. QC 樣本數 < 5 → 跳過
@@ -192,8 +192,8 @@ def robust_lowess_correction_v7(qc_orders, qc_intensities, all_orders, all_inten
             print(f"     預測校正 CV: {corrected_cv:.2f}%")
             print(f"     改善: {cv_improvement:.2f}%")
         
-        # ========== 步驟 7：簡單判斷 - CV% 改善是否足夠 ==========
-        MIN_IMPROVEMENT = 2.0  # 至少改善 2%
+        # ========== 步驟 7：CV% 改善判斷 ==========
+        MIN_IMPROVEMENT = 2.0
         
         if cv_improvement < MIN_IMPROVEMENT:
             if debug_mode:
@@ -358,7 +358,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         
         if len(qc_samples) < 5:
             print(f"❌ QC 樣本不足 ({len(qc_samples)} < 5)，無法進行校正")
-            return None, None, None, None
+            return None, None, None, None, None
         
         print(f"\n📊 數據概覽:")
         print(f"  - 總樣本數: {len(sample_columns)}")
@@ -413,7 +413,17 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         all_results = []
         correction_stats = []
         qc_corrected_values = {}
-        trend_stats = []  # ✅ 收集趨勢驗證統計
+        trend_stats = []
+        
+        # ✅ 收集決策統計
+        decision_stats = {
+            'success': 0,
+            'insufficient_qc': 0,
+            'insufficient_improvement': 0,
+            'unstable_correction_factors': 0,
+            'overcorrection_detected': 0,
+            'failed': 0
+        }
         
         corrected_count = 0
         failed_count = 0
@@ -431,6 +441,8 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             
             if len(qc_data) < 5:
                 failed_count += 1
+                decision_stats['insufficient_qc'] += 1
+                
                 result_row = {'FeatureID': feature_id}
                 for sample in all_samples:
                     result_row[sample] = row[sample]
@@ -442,7 +454,6 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                         qc_corrected_dict[qc] = row[qc]
                 qc_corrected_values[feature_id] = qc_corrected_dict
                 
-                # ✅ 添加空的趨勢統計
                 trend_stats.append({
                     'FeatureID': feature_id,
                     'MK_Trend_pvalue': np.nan,
@@ -463,10 +474,16 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             
             all_sample_names, all_orders, all_intensities = zip(*all_data)
             
+            # ✅ 使用 v7 版本
             corrected_intensities, info = robust_lowess_correction_v7(
                 qc_orders, qc_intensities, all_orders, all_intensities, 
                 feature_id if feature_id in debug_features else None
             )
+            
+            # ✅ 收集決策統計
+            status = info.get('status', 'unknown')
+            if status in decision_stats:
+                decision_stats[status] += 1
             
             if info['status'] == 'success':
                 corrected_count += 1
@@ -485,7 +502,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                     qc_corrected_dict[sample] = corrected_val
             qc_corrected_values[feature_id] = qc_corrected_dict
             
-            # ✅ 收集趨勢驗證統計
+            # 收集趨勢驗證統計
             trend_val = info.get('trend_validation', {})
             trend_stats.append({
                 'FeatureID': feature_id,
@@ -498,25 +515,32 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             if (idx + 1) % 500 == 0:
                 print(f"  進度: {idx + 1}/{len(istd_df)} features")
         
-        print(f"  ✓ 完成: {corrected_count} 成功, {failed_count} 失敗")
+        print(f"  ✓ 完成: {corrected_count} 成功, {failed_count} 跳過")
+        
+        # ✅ 顯示詳細決策統計
+        print(f"\n  📊 詳細決策統計:")
+        print(f"     ✅ 成功校正: {decision_stats['success']} ({decision_stats['success']/len(istd_df)*100:.1f}%)")
+        print(f"     • QC 樣本不足: {decision_stats['insufficient_qc']} ({decision_stats['insufficient_qc']/len(istd_df)*100:.1f}%)")
+        print(f"     • CV% 改善不足: {decision_stats['insufficient_improvement']} ({decision_stats['insufficient_improvement']/len(istd_df)*100:.1f}%)")
+        print(f"     • 校正因子不穩定: {decision_stats['unstable_correction_factors']} ({decision_stats['unstable_correction_factors']/len(istd_df)*100:.1f}%)")
+        print(f"     • 檢測到過度校正: {decision_stats['overcorrection_detected']} ({decision_stats['overcorrection_detected']/len(istd_df)*100:.1f}%)")
+        print(f"     • 其他失敗: {decision_stats['failed']} ({decision_stats['failed']/len(istd_df)*100:.1f}%)")
         
         lowess_df = pd.DataFrame(all_results)
         trend_stats_df = pd.DataFrame(trend_stats)
         
-        return lowess_df, sample_columns, qc_corrected_values, trend_stats_df
+        return lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats
         
     except Exception as e:
         print(f"❌ LOWESS 校正失敗: {e}")
         import traceback
         traceback.print_exc()
-        return None, None, None, None
+        return None, None, None, None, None
 
 
-
-# ========== ✅ 修正：統計檢定（Wilcoxon 配對符號等級檢定 + Levene's test）==========
+# ========== ✅ 修正：統計檢定（Levene's test + 整體 Wilcoxon test）==========
 def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sample_info_df, qc_corrected_values):
-    """計算 QC CV% 並進行無母數統計檢定"""
-    from scipy.stats import wilcoxon  # ✅ 新增 Wilcoxon 檢定
+    """計算 QC CV% 並進行正確的統計檢定"""
     
     istd_df = istd_df.reset_index(drop=True)
     lowess_df = lowess_df.reset_index(drop=True)
@@ -526,9 +550,10 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
     lowess_df = lowess_df.iloc[:min_length]
     
     print(f"\n{'='*70}")
-    print(f"🔬 識別 QC 樣本")
+    print(f"🔬 統計檢定")
     print(f"{'='*70}")
     
+    # 識別 QC 樣本
     if 'Sample_Type' in sample_info_df.columns:
         qc_samples = sample_info_df[
             sample_info_df['Sample_Type'].str.upper().str.contains('QC', na=False)
@@ -544,10 +569,11 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
         return pd.DataFrame()
     
     cv_results = []
+    all_cv_improvements = []  # ✅ 收集所有 CV% 改善值（用於整體評估）
     
-    print(f"\n🔬 開始統計檢定（Wilcoxon 符號等級檢定 + Levene's test）...")
-    print(f"  - 特徵總數: {len(istd_df)}")
-    print(f"  💡 使用無母數統計方法（適用於質譜數據）")
+    print(f"\n  💡 統計方法:")
+    print(f"     • Levene's test: 檢測方差是否顯著改變（單一特徵）")
+    print(f"     • Wilcoxon test: 檢測 CV% 是否整體顯著降低（所有特徵）")
     
     for idx in range(len(istd_df)):
         try:
@@ -569,61 +595,40 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
                 qc_values_lowess = get_valid_values(lowess_row, qc_columns)
             
             min_len = min(len(qc_values_istd), len(qc_values_lowess))
-            if min_len < 3:  # Wilcoxon 需要至少 3 個配對樣本
+            if min_len < 3:
                 cv_results.append({
                     'FeatureID': feature_id,
                     'Original_QC_CV%': np.nan,
                     'Corrected_QC_CV%': np.nan,
                     'CV_Improvement%': np.nan,
-                    'Wilcoxon_pvalue': np.nan,
-                    'Variance_Test_pvalue': np.nan,
-                    'Significant_Improvement': 'N/A'
+                    'Variance_Test_pvalue': np.nan
                 })
                 continue
             
             qc_values_istd = np.array(qc_values_istd[:min_len])
             qc_values_lowess = np.array(qc_values_lowess[:min_len])
             
-            # 計算 CV%
+            # ========== 計算 CV% ==========
             original_cv = (np.std(qc_values_istd, ddof=1) / np.mean(qc_values_istd)) * 100
             corrected_cv = (np.std(qc_values_lowess, ddof=1) / np.mean(qc_values_lowess)) * 100
             cv_improvement = original_cv - corrected_cv
             
-            # ✅ Wilcoxon 配對符號等級檢定（替代配對 t 檢定）
-            try:
-                # Wilcoxon 檢定差異是否顯著不為零
-                wilcoxon_stat, wilcoxon_pvalue = wilcoxon(qc_values_istd, qc_values_lowess, 
-                                                           alternative='two-sided',
-                                                           zero_method='wilcox')
-            except Exception as e:
-                # 如果所有配對差異都為零，會拋出異常
-                wilcoxon_pvalue = np.nan
+            # ✅ 收集 CV% 改善值（用於整體評估）
+            if not np.isnan(cv_improvement):
+                all_cv_improvements.append(cv_improvement)
             
-            # Levene's test（方差齊性檢驗）
+            # ========== ✅ Levene's test（單一特徵）==========
             try:
-                levene_stat, variance_test_pvalue = levene(qc_values_istd, qc_values_lowess)
+                levene_stat, levene_pvalue = levene(qc_values_istd, qc_values_lowess)
             except Exception:
-                variance_test_pvalue = np.nan
-            
-            # ✅ 判斷顯著性改善（基於 Wilcoxon 和 Levene's test）
-            if not np.isnan(variance_test_pvalue) and cv_improvement > 5:
-                if variance_test_pvalue < 0.05:
-                    significant = 'Yes'
-                else:
-                    significant = 'Marginal'
-            elif cv_improvement > 10:
-                significant = 'Yes (CV% only)'
-            else:
-                significant = 'No'
+                levene_pvalue = np.nan
             
             cv_results.append({
                 'FeatureID': feature_id,
                 'Original_QC_CV%': original_cv,
                 'Corrected_QC_CV%': corrected_cv,
                 'CV_Improvement%': cv_improvement,
-                'Wilcoxon_pvalue': wilcoxon_pvalue,  # ✅ 替換為 Wilcoxon p 值
-                'Variance_Test_pvalue': variance_test_pvalue,
-                'Significant_Improvement': significant
+                'Variance_Test_pvalue': levene_pvalue
             })
             
             if (idx + 1) % 100 == 0:
@@ -633,30 +638,71 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
             print(f"  ⚠️ 處理特徵 {idx} 時發生錯誤: {e}")
             continue
     
-    print(f"  ✓ 統計檢定完成！")
+    cv_results_df = pd.DataFrame(cv_results)
     
-    return pd.DataFrame(cv_results)
+    # ========== ✅ 整體評估：Wilcoxon test ==========
+    print(f"\n{'='*70}")
+    print(f"📊 整體校正效果評估")
+    print(f"{'='*70}")
+    
+    if len(all_cv_improvements) >= 10:
+        try:
+            # 檢測 CV% 改善是否整體 > 0
+            w_stat, w_pvalue = wilcoxon(all_cv_improvements, alternative='greater')
+            
+            print(f"\n  ✅ Wilcoxon Signed-Rank Test (整體評估):")
+            print(f"     H₀: CV% 改善的中位數 = 0")
+            print(f"     H₁: CV% 改善的中位數 > 0")
+            print(f"     統計量: {w_stat:.2f}")
+            print(f"     P-value: {w_pvalue:.4e}")
+            
+            if w_pvalue < 0.001:
+                print(f"     結論: LOWESS 校正顯著降低了 QC CV% (p < 0.001) ✅✅✅")
+            elif w_pvalue < 0.01:
+                print(f"     結論: LOWESS 校正顯著降低了 QC CV% (p < 0.01) ✅✅")
+            elif w_pvalue < 0.05:
+                print(f"     結論: LOWESS 校正顯著降低了 QC CV% (p < 0.05) ✅")
+            else:
+                print(f"     結論: LOWESS 校正未顯著降低 QC CV% (p ≥ 0.05) ❌")
+            
+            # 描述性統計
+            median_improvement = np.median(all_cv_improvements)
+            mean_improvement = np.mean(all_cv_improvements)
+            positive_improvements = np.sum(np.array(all_cv_improvements) > 0)
+            
+            print(f"\n  📊 CV% 改善的描述性統計:")
+            print(f"     中位數改善: {median_improvement:.2f}%")
+            print(f"     平均改善: {mean_improvement:.2f}%")
+            print(f"     改善特徵比例: {positive_improvements}/{len(all_cv_improvements)} ({positive_improvements/len(all_cv_improvements)*100:.1f}%)")
+            
+        except Exception as e:
+            print(f"  ⚠️ 整體評估失敗: {e}")
+    else:
+        print(f"  ⚠️ 有效特徵數不足 ({len(all_cv_improvements)} < 10)，跳過整體評估")
+    
+    print(f"{'='*70}\n")
+    
+    return cv_results_df
 
 
-# ========== ✅ 修正：P 值分佈圖（儲存在 output/QC_LOWESS_plots）==========
+# ========== ✅ 修正：P 值分佈圖（只繪製 Levene's test）==========
 def plot_pvalue_distribution(cv_results_df, output_base_dir, timestamp):
-    """繪製 p 值分佈圖（儲存在 output/QC_LOWESS_plots）"""
+    """繪製 Levene's test p 值分佈圖"""
     try:
-        # ✅ 修正：儲存到 output/QC_LOWESS_plots 子資料夾
         plots_dir = os.path.join(output_base_dir, 'QC_LOWESS_plots')
         os.makedirs(plots_dir, exist_ok=True)
         
-        variance_pvalues = cv_results_df['Variance_Test_pvalue'].dropna()
+        levene_pvalues = cv_results_df['Variance_Test_pvalue'].dropna()
         
-        if len(variance_pvalues) < 10:
+        if len(levene_pvalues) < 10:
             print("  ⚠️ 有效 p 值數量不足，跳過 p 值分佈圖")
             return
         
-        # 只繪製直方圖
-        fig, ax = plt.subplots(1, 1, figsize=(16, 9))
+        # 只繪製 Levene's test 的 p 值分佈
+        fig, ax = plt.subplots(1, 1, figsize=(10, 7))
         
-        ax.hist(variance_pvalues, bins=20, color='steelblue', edgecolor='black', alpha=0.7)
-        ax.axhline(y=len(variance_pvalues)/20, color='red', linestyle='--', linewidth=2,
+        ax.hist(levene_pvalues, bins=20, color='steelblue', edgecolor='black', alpha=0.7)
+        ax.axhline(y=len(levene_pvalues)/20, color='red', linestyle='--', linewidth=2,
                    label='Uniform Distribution Expected')
         ax.set_xlabel('P-value (Levene\'s Test)', fontsize=12, fontweight='bold')
         ax.set_ylabel('Frequency', fontsize=12, fontweight='bold')
@@ -667,7 +713,7 @@ def plot_pvalue_distribution(cv_results_df, output_base_dir, timestamp):
         
         # Kolmogorov-Smirnov 檢定
         from scipy.stats import kstest
-        ks_stat, ks_pvalue = kstest(variance_pvalues, 'uniform')
+        ks_stat, ks_pvalue = kstest(levene_pvalues, 'uniform')
         
         textstr = f'Kolmogorov-Smirnov Test:\n'
         textstr += f'Statistic = {ks_stat:.4f}\n'
@@ -683,8 +729,7 @@ def plot_pvalue_distribution(cv_results_df, output_base_dir, timestamp):
         
         plt.tight_layout()
         
-        # ✅ 儲存到 output/QC_LOWESS/plots 資料夾
-        pvalue_plot_path = os.path.join(plots_dir, f'Pvalue_Distribution_{timestamp}.png')
+        pvalue_plot_path = os.path.join(plots_dir, f'Pvalue_Distribution_Levene_{timestamp}.png')
         plt.savefig(pvalue_plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
@@ -733,9 +778,9 @@ def copy_sheet_with_full_format(source_sheet, target_sheet):
         return False
 
 
-# ========== ✅ 修正：保存結果到 Excel ==========
+# ========== ✅ 修正：保存結果到 Excel（移除 Wilcoxon_pvalue）==========
 def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_columns, 
-                          output_file, input_file, qc_corrected_values, trend_stats_df):
+                          output_file, input_file, qc_corrected_values, trend_stats_df, decision_stats):
     try:
         cv_results_df = calculate_qc_cv_with_statistical_test(
             istd_df, 
@@ -745,22 +790,20 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             qc_corrected_values
         )
         
-        # ✅ 主表：只保留核心統計（Wilcoxon、Levene's test、CV%）
+        # ✅ 主表：只保留 Levene's test 和 CV%
         lowess_with_cv = lowess_df.merge(cv_results_df, on='FeatureID', how='left')
         
-        # ✅ 主表欄位順序（移除進階統計）
+        # ✅ 主表欄位順序（移除 Wilcoxon_pvalue 和 Significant_Improvement）
         cols_order = [
             'Original_QC_CV%', 
             'Corrected_QC_CV%', 
             'CV_Improvement%',
-            'Wilcoxon_pvalue',
-            'Variance_Test_pvalue',
-            'Significant_Improvement'
+            'Variance_Test_pvalue'  # 只保留 Levene's test
         ]
         other_cols = [col for col in lowess_with_cv.columns if col not in cols_order]
         lowess_with_cv = lowess_with_cv[other_cols + cols_order]
         
-        # ✅ 副表：進階統計指標（R²/RMSE、Mann-Kendall）
+        # ✅ 副表：進階統計指標
         advanced_stats_df = lowess_df[['FeatureID']].merge(
             trend_stats_df, on='FeatureID', how='left'
         )
@@ -771,8 +814,8 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         input_workbook = load_workbook(input_file)
         workbook = input_workbook
         
-        # ✅ 刪除舊工作表
-        sheets_to_update = ['QC LOWESS result', 'QC LOWESS Advanced Stats', 'SampleInfo']
+        # 刪除舊工作表
+        sheets_to_update = ['QC LOWESS result', 'Advanced Statistics', 'SampleInfo']
         
         for sheet_name in sheets_to_update:
             if sheet_name in workbook.sheetnames:
@@ -800,12 +843,12 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         istd_row_heights = {row: dim.height for row, dim in istd_sheet_original.row_dimensions.items()}
         istd_merged_cells = [str(merged) for merged in istd_sheet_original.merged_cells.ranges]
         
-        # ✅ 寫入臨時檔案
+        # 寫入臨時檔案
         temp_file = output_file.replace('.xlsx', '_temp.xlsx')
         with pd.ExcelWriter(temp_file, engine='openpyxl') as writer:
             istd_df.to_excel(writer, sheet_name='ISTD_Correction', index=False)
             lowess_with_cv.to_excel(writer, sheet_name='QC LOWESS result', index=False)
-            advanced_stats_df.to_excel(writer, sheet_name='QC LOWESS Advanced Stats', index=False)
+            advanced_stats_df.to_excel(writer, sheet_name='Advanced Statistics', index=False)
             sample_info_df.to_excel(writer, sheet_name='SampleInfo', index=False)
         
         temp_workbook = load_workbook(temp_file)
@@ -849,8 +892,8 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         
         print(f"  ✓ ISTD_Correction 格式已完整保留")
         
-        # ✅ 複製其他工作表
-        for sheet_name in ['QC LOWESS result', 'QC LOWESS Advanced Stats', 'SampleInfo']:
+        # 複製其他工作表
+        for sheet_name in ['QC LOWESS result', 'Advanced Statistics', 'SampleInfo']:
             if sheet_name in temp_workbook.sheetnames:
                 source_sheet = temp_workbook[sheet_name]
                 target_sheet = workbook.create_sheet(sheet_name)
@@ -865,7 +908,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         # 科學記號格式
         scientific_format = '0.00E+00'
         
-        for sheet_name in ['ISTD_Correction', 'QC LOWESS result', 'QC LOWESS Advanced Stats', 'SampleInfo']:
+        for sheet_name in ['ISTD_Correction', 'QC LOWESS result', 'Advanced Statistics', 'SampleInfo']:
             if sheet_name in workbook.sheetnames:
                 worksheet = workbook[sheet_name]
                 for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=1, max_col=worksheet.max_column):
@@ -874,15 +917,12 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
                             if cell.number_format == 'General' or cell.number_format == '0':
                                 cell.number_format = scientific_format
 
-        # ✅ 顏色標記
+        # ✅ 顏色標記（簡化版）
         orange_fill = PatternFill(start_color='FFA500', end_color='FFA500', fill_type='solid')
-        green_fill = PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')
-        yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
         light_blue_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')
         light_green_fill = PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')
-        light_pink_fill = PatternFill(start_color='FFB6C1', end_color='FFB6C1', fill_type='solid')
 
-        # ✅ 主表顏色標記
+        # 主表顏色標記
         if 'QC LOWESS result' in workbook.sheetnames:
             worksheet = workbook['QC LOWESS result']
             header = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1))]
@@ -895,32 +935,19 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
                         for cell in row:
                             cell.fill = orange_fill
             
-            # Wilcoxon 和 Levene's test - 淺藍色
-            for col_name in ['Wilcoxon_pvalue', 'Variance_Test_pvalue']:
-                if col_name in header:
-                    col_idx = header.index(col_name) + 1
-                    for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
-                        for cell in row:
-                            cell.fill = light_blue_fill
-            
-            # 顯著性改善標記
-            if 'Significant_Improvement' in header:
-                col_idx = header.index('Significant_Improvement') + 1
+            # Levene's test - 淺藍色
+            if 'Variance_Test_pvalue' in header:
+                col_idx = header.index('Variance_Test_pvalue') + 1
                 for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
                     for cell in row:
-                        if cell.value == 'Yes' or cell.value == 'Yes (CV% only)':
-                            cell.fill = green_fill
-                        elif cell.value == 'Marginal':
-                            cell.fill = yellow_fill
-                        elif cell.value == 'No':
-                            cell.fill = light_pink_fill
+                        cell.fill = light_blue_fill
         
-        # ✅ 副表顏色標記（進階統計）
-        if 'QC LOWESS Advanced Stats' in workbook.sheetnames:
-            worksheet = workbook['QC LOWESS Advanced Stats']
+        # 副表顏色標記
+        if 'Advanced Statistics' in workbook.sheetnames:
+            worksheet = workbook['Advanced Statistics']
             header = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1))]
             
-            # 趨勢驗證欄位 - 淺綠色
+            # 所有進階指標 - 淺綠色
             for col_name in ['MK_Trend_pvalue', 'Kendall_Tau', 'LOWESS_R2', 'LOWESS_RMSE']:
                 if col_name in header:
                     col_idx = header.index(col_name) + 1
@@ -937,65 +964,75 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         print(f"  {output_file}")
         print(f"{'='*70}")
         
-        sig_yes = (cv_results_df['Significant_Improvement'] == 'Yes').sum()
-        sig_marginal = (cv_results_df['Significant_Improvement'] == 'Marginal').sum()
-        sig_cv_only = (cv_results_df['Significant_Improvement'] == 'Yes (CV% only)').sum()
-        sig_no = (cv_results_df['Significant_Improvement'] == 'No').sum()
         total_count = len(cv_results_df)
         
-        print(f"\n📊 統計檢定摘要:")
+        print(f"\n📊 核心統計摘要（主表）:")
         print(f"  - 總特徵數: {total_count}")
-        print(f"  - 顯著改善 (Yes): {sig_yes} ({sig_yes/total_count*100:.1f}%)")
-        print(f"  - 邊緣顯著 (Marginal): {sig_marginal} ({sig_marginal/total_count*100:.1f}%)")
-        print(f"  - 僅 CV% 改善: {sig_cv_only} ({sig_cv_only/total_count*100:.1f}%)")
-        print(f"  - 無顯著改善 (No): {sig_no} ({sig_no/total_count*100:.1f}%)")
         
-        # Wilcoxon 檢定統計
-        wilcoxon_valid = cv_results_df['Wilcoxon_pvalue'].notna().sum()
-        wilcoxon_sig = ((cv_results_df['Wilcoxon_pvalue'] < 0.05) & 
-                        (cv_results_df['Wilcoxon_pvalue'].notna())).sum()
+        # CV% 改善統計
+        cv_improvements = cv_results_df['CV_Improvement%'].dropna()
+        if len(cv_improvements) > 0:
+            print(f"\n  📈 CV% 改善:")
+            print(f"     平均: {cv_improvements.mean():.2f}%")
+            print(f"     中位數: {cv_improvements.median():.2f}%")
+            print(f"     範圍: {cv_improvements.min():.2f}% ~ {cv_improvements.max():.2f}%")
+            
+            improved = (cv_improvements > 5).sum()
+            similar = ((cv_improvements >= -5) & (cv_improvements <= 5)).sum()
+            worse = (cv_improvements < -5).sum()
+            
+            print(f"\n  分類:")
+            print(f"     顯著改善 (>5%): {improved} ({improved/len(cv_improvements)*100:.1f}%)")
+            print(f"     持平 (±5%): {similar} ({similar/len(cv_improvements)*100:.1f}%)")
+            print(f"     變差 (<-5%): {worse} ({worse/len(cv_improvements)*100:.1f}%)")
         
-        print(f"\n🔬 Wilcoxon 符號等級檢定（主表）:")
-        print(f"  - 成功執行: {wilcoxon_valid}/{total_count} ({wilcoxon_valid/total_count*100:.1f}%)")
-        if wilcoxon_valid > 0:
-            print(f"  - 分布顯著改變 (p < 0.05): {wilcoxon_sig}/{wilcoxon_valid} ({wilcoxon_sig/wilcoxon_valid*100:.1f}%)")
+        # Levene's test 統計
+        levene_valid = cv_results_df['Variance_Test_pvalue'].notna().sum()
+        levene_sig = ((cv_results_df['Variance_Test_pvalue'] < 0.05) & 
+                      (cv_results_df['Variance_Test_pvalue'].notna())).sum()
         
-        variance_valid = cv_results_df['Variance_Test_pvalue'].notna().sum()
-        variance_sig = ((cv_results_df['Variance_Test_pvalue'] < 0.05) & 
-                        (cv_results_df['Variance_Test_pvalue'].notna())).sum()
+        print(f"\n  🔬 Levene's Test（方差齊性）:")
+        print(f"     成功執行: {levene_valid}/{total_count} ({levene_valid/total_count*100:.1f}%)")
+        if levene_valid > 0:
+            print(f"     方差顯著改變 (p < 0.05): {levene_sig}/{levene_valid} ({levene_sig/levene_valid*100:.1f}%)")
         
-        print(f"\n🔬 Levene's Test（主表）:")
-        print(f"  - 成功執行: {variance_valid}/{total_count} ({variance_valid/total_count*100:.1f}%)")
-        if variance_valid > 0:
-            print(f"  - 方差顯著改變 (p < 0.05): {variance_sig}/{variance_valid} ({variance_sig/variance_valid*100:.1f}%)")
+        # 校正決策統計
+        print(f"\n📊 校正決策統計:")
+        print(f"  ✅ 成功校正: {decision_stats['success']} ({decision_stats['success']/total_count*100:.1f}%)")
+        print(f"  ❌ 跳過校正: {total_count - decision_stats['success']} ({(total_count - decision_stats['success'])/total_count*100:.1f}%)")
+        print(f"\n  跳過原因:")
+        print(f"    • QC 樣本不足: {decision_stats['insufficient_qc']}")
+        print(f"    • CV% 改善不足 (<2%): {decision_stats['insufficient_improvement']}")
+        print(f"    • 校正因子不穩定: {decision_stats['unstable_correction_factors']}")
+        print(f"    • 檢測到過度校正: {decision_stats['overcorrection_detected']}")
+        print(f"    • 其他錯誤: {decision_stats['failed']}")
         
         # Mann-Kendall 趨勢統計（副表）
         mk_valid = trend_stats_df['MK_Trend_pvalue'].notna().sum()
         mk_sig = ((trend_stats_df['MK_Trend_pvalue'] < 0.05) & 
                   (trend_stats_df['MK_Trend_pvalue'].notna())).sum()
         
-        print(f"\n🔬 Mann-Kendall 趨勢檢驗（副表）:")
-        print(f"  - 成功執行: {mk_valid}/{total_count} ({mk_valid/total_count*100:.1f}%)")
+        print(f"\n📊 進階統計（副表）:")
+        print(f"  Mann-Kendall 趨勢檢驗:")
+        print(f"    成功執行: {mk_valid}/{total_count} ({mk_valid/total_count*100:.1f}%)")
         if mk_valid > 0:
-            print(f"  - 檢測到顯著趨勢 (p < 0.05): {mk_sig}/{mk_valid} ({mk_sig/mk_valid*100:.1f}%)")
+            print(f"    檢測到顯著趨勢 (p < 0.05): {mk_sig}/{mk_valid} ({mk_sig/mk_valid*100:.1f}%)")
         
-        # R² 統計（副表）
+        # R² 統計
         r2_valid = trend_stats_df['LOWESS_R2'].notna().sum()
         if r2_valid > 0:
             r2_values = trend_stats_df['LOWESS_R2'].dropna()
-            r2_median = np.median(r2_values)
-            r2_mean = np.mean(r2_values)
-            
-            print(f"\n📊 LOWESS 擬合優度 R²（副表）:")
-            print(f"  - 中位數: {r2_median:.4f}")
-            print(f"  - 平均值: {r2_mean:.4f}")
+            print(f"\n  LOWESS 擬合優度 R²:")
+            print(f"    中位數: {np.median(r2_values):.4f}")
+            print(f"    平均值: {np.mean(r2_values):.4f}")
         
         print(f"\n💡 提示:")
-        print(f"  - 主表 (QC LOWESS result): 核心統計（Wilcoxon、Levene's test、CV%）")
-        print(f"  - 副表 (QC LOWESS Advanced Stats): 進階統計（R²、RMSE、Mann-Kendall）")
+        print(f"  - 主表 (QC LOWESS result): Levene's test + CV%（單一特徵）")
+        print(f"  - 副表 (Advanced Statistics): Mann-Kendall + R²/RMSE（進階評估）")
+        print(f"  - 整體評估: Wilcoxon test 已在終端機顯示")
         print(f"\n{'='*70}\n")
         
-        # ✅ 修正：傳入 output 目錄
+        # P 值分佈圖
         output_base_dir = os.path.dirname(output_file)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
         plot_pvalue_distribution(cv_results_df, output_base_dir, timestamp)
@@ -1015,24 +1052,6 @@ def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
     使用 Hotelling T² 檢測 QC 樣本中的異常值
     
     ✅ 正確邏輯：計算每個 QC 樣本與 QC 群組中心的偏離
-    
-    Parameters:
-    -----------
-    qc_scores : ndarray
-        QC 樣本的 PCA 分數 (n_qc, n_components)
-    all_scores : ndarray, optional
-        所有樣本的 PCA 分數（此參數保留以兼容舊代碼，但不使用）
-    alpha : float
-        顯著水平（預設 0.05）
-    
-    Returns:
-    --------
-    t2_values : ndarray
-        每個 QC 樣本的 Hotelling T² 值
-    threshold : float
-        T² 閾值
-    outliers : ndarray (bool)
-        異常值標記
     """
     n_qc, p = qc_scores.shape
     
@@ -1040,11 +1059,11 @@ def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
         print(f"   ⚠️ QC 樣本數不足 ({n_qc} < 3)，無法進行異常值檢測")
         return np.zeros(n_qc), 0, np.zeros(n_qc, dtype=bool)
     
-    # ✅ 關鍵修正：只使用 QC 群組的統計量
+    # ✅ 只使用 QC 群組的統計量
     qc_mean = np.mean(qc_scores, axis=0)
     qc_cov = np.cov(qc_scores, rowvar=False)
     
-    # 正則化協方差矩陣（防止奇異矩陣）
+    # 正則化協方差矩陣
     qc_cov_reg = qc_cov + np.eye(p) * 1e-6
     
     try:
@@ -1056,18 +1075,16 @@ def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
     # ✅ 計算每個 QC 樣本與 QC 中心的 Hotelling T² 值
     t2_values = np.zeros(n_qc)
     for i in range(n_qc):
-        diff = qc_scores[i] - qc_mean  # ✅ 與 QC 中心比較
+        diff = qc_scores[i] - qc_mean
         t2_values[i] = np.dot(np.dot(diff, qc_cov_inv), diff.T)
     
-    # ✅ 使用 F 分佈計算閾值（考慮樣本數）
+    # 計算閾值
     if n_qc - p - 1 > 0:
         f_critical = stats.f.ppf(1 - alpha, p, n_qc - p - 1)
         threshold = (p * (n_qc + 1) * (n_qc - 1)) / (n_qc * (n_qc - p - 1)) * f_critical
     else:
-        # 樣本數太少，使用卡方分布
         threshold = chi2.ppf(1 - alpha, p)
     
-    # 識別異常值
     outliers = t2_values > threshold
     
     return t2_values, threshold, outliers
@@ -1075,90 +1092,61 @@ def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
 
 # ========== Hotelling T² 橢圓繪製 ==========
 def draw_hotelling_t2_ellipse(ax, scores, alpha=0.05, label=None, edgecolor='black', linestyle='-', linewidth=2.5):
-    """
-    在 2D PCA 圖上繪製 Hotelling T² 橢圓
-    
-    
-    """
+    """在 2D PCA 圖上繪製 Hotelling T² 橢圓"""
     n, p = scores.shape
     
-    # 檢查樣本數量
     if n < 3:
         print(f"   ⚠️ 樣本數不足 ({n})，無法繪製 Hotelling T² 橢圓")
         return None
     
-    # 計算均值
     mean = np.mean(scores, axis=0)
-    
-    # 計算協方差矩陣
     cov = np.cov(scores, rowvar=False)
     
-    # 計算特徵值和特徵向量
     eigenvalues, eigenvectors = np.linalg.eigh(cov)
     
-    # 按特徵值降序排序
     idx = eigenvalues.argsort()[::-1]
     eigenvalues = eigenvalues[idx]
     eigenvectors = eigenvectors[:, idx]
     
-    # 防止負值或零值
     eigenvalues = np.maximum(eigenvalues, 1e-10)
     
-    # 計算 F 臨界值
     f_critical = stats.f.ppf(1 - alpha, p, n - p)
-    
-    # 計算橢圓的縮放因子
     scale_factor = np.sqrt((p * (n - 1) * (n + 1)) / (n * (n - p)) * f_critical)
     
-    # 計算橢圓的寬度和高度
     width = 2 * scale_factor * np.sqrt(eigenvalues[0])
     height = 2 * scale_factor * np.sqrt(eigenvalues[1])
     
-    # 計算旋轉角度（度數）
     angle = np.degrees(np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0]))
     
-    # 創建並添加橢圓
     ellipse = Ellipse(mean, width, height, angle=angle,
                      facecolor='none', edgecolor=edgecolor,
                      linewidth=linewidth, linestyle=linestyle, label=label)
     ax.add_patch(ellipse)
     
-    # 計算橢圓邊界（用於調整軸範圍）
     t = np.linspace(0, 2*np.pi, 100)
     ellipse_x = (width/2) * np.cos(t)
     ellipse_y = (height/2) * np.sin(t)
     
-    # 旋轉橢圓點
     cos_angle = np.cos(np.radians(angle))
     sin_angle = np.sin(np.radians(angle))
     x_rot = ellipse_x * cos_angle - ellipse_y * sin_angle + mean[0]
     y_rot = ellipse_x * sin_angle + ellipse_y * cos_angle + mean[1]
     
-    # 返回邊界
     bounds = (np.min(x_rot), np.max(x_rot), np.min(y_rot), np.max(y_rot))
     
     return bounds
 
 
-
-# ========== ✅ 修正：PCA 分析（正確標記 QC 異常值）==========
+# ========== PCA 分析 ==========
 def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, output_base_dir=None):
-    """
-    完整的 PCA 分析
-    - 使用參考圖片的視覺化風格
-    - 正確標記 QC 異常值的紅色邊框
-    - 改進圖例設計
-    - 不再生成 Scree Plot
-    """
+    """完整的 PCA 分析"""
     try:
-        # ✅ 修正：圖表儲存在 output/QC_LOWESS_plots/
         if output_base_dir is None:
             script_dir = os.path.dirname(os.path.abspath(__file__))
             output_base_dir = os.path.join(script_dir, "output")
         
         output_dir = os.path.join(output_base_dir, "QC_LOWESS_plots")
         os.makedirs(output_dir, exist_ok=True)
-        print(f"已建立 'QC_LOWESS_plots' 資料夾: {output_dir}")
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
         sample_meta = sample_info_df.set_index('Sample_Name')
@@ -1168,8 +1156,7 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
             'FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference', 
             'ISTD_Median', 'QC_CV%',
             'Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%',
-            'Wilcoxon_pvalue', 'Variance_Test_pvalue',
-            'Significant_Improvement', 'MK_Trend_pvalue', 'Kendall_Tau',
+            'Variance_Test_pvalue', 'MK_Trend_pvalue', 'Kendall_Tau',
             'LOWESS_R2', 'LOWESS_RMSE'
         ]
         
@@ -1179,7 +1166,6 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
                                 and col in lowess_df.columns]
         
         print(f"\n📊 PCA 數據準備:")
-        print(f"   - 原始樣本欄位數: {len(sample_columns)}")
         print(f"   - 用於 PCA 的樣本數: {len(sample_columns_clean)}")
         
         if len(sample_columns_clean) < 3:
@@ -1190,39 +1176,27 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
         qc_columns = []
         control_columns = []
         exposed_columns = []
-        sample_type_map = {}
         
         for col in sample_columns_clean:
             if col in sample_meta.index:
                 sample_type = sample_meta.loc[col].get('Sample_Type', 'Unknown')
-                sample_type_map[col] = sample_type
                 sample_type_upper = str(sample_type).upper()
                 
                 if 'QC' in sample_type_upper:
                     qc_columns.append(col)
-                elif 'CONTROL' in sample_type_upper or 'CTL' in sample_type_upper or 'CON' in sample_type_upper:
+                elif 'CONTROL' in sample_type_upper or 'CTL' in sample_type_upper:
                     control_columns.append(col)
-                elif 'EXPOSED' in sample_type_upper or 'EXP' in sample_type_upper or 'TREAT' in sample_type_upper:
+                elif 'EXPOSED' in sample_type_upper or 'EXP' in sample_type_upper:
                     exposed_columns.append(col)
                 else:
-                    col_upper = col.upper()
-                    if 'QC' in col_upper:
-                        qc_columns.append(col)
-                    elif any(x in col_upper for x in ['CONTROL', 'CTL', 'CON']):
-                        control_columns.append(col)
-                    elif any(x in col_upper for x in ['EXPOSED', 'EXP', 'TREAT']):
-                        exposed_columns.append(col)
-                    else:
-                        control_columns.append(col)
+                    control_columns.append(col)
             else:
-                sample_type_map[col] = 'Unknown'
                 control_columns.append(col)
         
         print(f"\n📋 樣本分類:")
         print(f"   - QC: {len(qc_columns)}")
         print(f"   - Control: {len(control_columns)}")
         print(f"   - Exposed: {len(exposed_columns)}")
-        print(f"   - Total: {len(sample_columns_clean)}")
 
         if len(qc_columns) < 3:
             print("⚠️ 警告：QC 樣本不足 (<3)，跳過 PCA 分析")
@@ -1242,15 +1216,11 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
         istd_matrix, _ = prepare_data_matrix(istd_df, sample_columns_clean)
         lowess_matrix, _ = prepare_data_matrix(lowess_df, sample_columns_clean)
         
-        print(f"\n📊 數據矩陣:")
-        print(f"   - ISTD: {istd_matrix.shape} (樣本 × 特徵)")
-        print(f"   - LOWESS: {lowess_matrix.shape} (樣本 × 特徵)")
-        
         if istd_matrix.shape[1] < 2 or lowess_matrix.shape[1] < 2:
             print("❌ 錯誤：有效特徵數不足 (<2)，無法進行 PCA 分析")
             return
 
-        # 標準化並執行 PCA（只計算前 2 個主成分用於繪圖）
+        # PCA
         scaler_istd = StandardScaler()
         scaler_lowess = StandardScaler()
         
@@ -1265,10 +1235,6 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
 
         var_istd = pca_istd.explained_variance_ratio_
         var_lowess = pca_lowess.explained_variance_ratio_
-        
-        print(f"\n📈 PCA 結果:")
-        print(f"   - ISTD PC1: {var_istd[0]*100:.2f}%, PC2: {var_istd[1]*100:.2f}%")
-        print(f"   - LOWESS PC1: {var_lowess[0]*100:.2f}%, PC2: {var_lowess[1]*100:.2f}%")
 
         # Hotelling T² 異常值檢測
         qc_indices = [i for i, col in enumerate(sample_columns_clean) if col in qc_columns]
@@ -1282,53 +1248,41 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
             qc_scores_lowess, scores_lowess, alpha=0.05
         )
 
-        print(f"\n🔬 Hotelling T² 異常值檢測:")
-        print(f"   ISTD Correction:")
-        print(f"   - T² 閾值: {t2_threshold_istd:.2f}")
-        print(f"   - 異常值數量: {np.sum(outliers_istd)}/{len(qc_columns)}")
-        print(f"   QC-LOWESS Correction:")
-        print(f"   - T² 閾值: {t2_threshold_lowess:.2f}")
-        print(f"   - 異常值數量: {np.sum(outliers_lowess)}/{len(qc_columns)}")
-
-        # ✅ 建立 QC 樣本的異常值映射表（用於正確標記）
+        # 建立 QC 異常值映射表
         qc_outlier_map_istd = {}
         qc_outlier_map_lowess = {}
         for i, qc_sample in enumerate(qc_columns):
             qc_outlier_map_istd[qc_sample] = outliers_istd[i]
             qc_outlier_map_lowess[qc_sample] = outliers_lowess[i]
 
-        # ========== 繪製 2D PCA 圖（修正異常值標記邏輯）==========
+        # 繪製 2D PCA 圖
         print(f"\n🎨 繪製 2D PCA Score Plot...")
         
         fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(16, 9))
         fig.suptitle('2D PCA Comparison: ISTD Corrected vs QC-LOWESS Normalized',
                      fontsize=18, y=0.98, fontweight='bold')
 
-        # ✅ 修正：繪圖函數（正確判斷 QC 異常值）
         def plot_pca_subplot(ax, scores, qc_scores, var, t2_threshold, qc_outlier_map, title):
-            # 繪製樣本點（根據類型使用不同形狀和顏色）
             for i, col in enumerate(sample_columns_clean):
-                # ✅ 修正：只檢查 QC 樣本的異常值
                 is_outlier = False
                 if col in qc_columns:
-                    is_outlier = qc_outlier_map[col]  # ✅ 使用異常值映射表
-                    color = '#9370DB'  # 紫色
+                    is_outlier = qc_outlier_map[col]
+                    color = '#9370DB'
                     marker = 'o'
                 elif col in exposed_columns:
-                    color = '#DC143C'  # 紅色
+                    color = '#DC143C'
                     marker = '^'
                 else:
-                    color = '#4169E1'  # 藍色
+                    color = '#4169E1'
                     marker = 's'
                 
-                # ✅ 只有異常值才有紅色邊框，其他樣本無邊框
                 if is_outlier:
                     edgecolor = 'red'
                     linewidth = 3
                     size = 150
                     alpha = 0.9
                 else:
-                    edgecolor = 'none'  # 移除邊框
+                    edgecolor = 'none'
                     linewidth = 0
                     size = 100
                     alpha = 0.7
@@ -1338,48 +1292,10 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
                           edgecolors=edgecolor, linewidths=linewidth)
             
             # 繪製橢圓
-            all_bounds = []
-            
-            # 所有樣本的橢圓（灰色虛線）
-            bounds_all = draw_hotelling_t2_ellipse(ax, scores,
-                                                    label='95% CI (All Samples)',
-                                                    edgecolor='gray', linestyle='--', linewidth=2)
-            if bounds_all:
-                all_bounds.append(bounds_all)
-            
-            # QC 樣本的橢圓（紫色實線）
-            bounds_qc = draw_hotelling_t2_ellipse(ax, qc_scores,
-                                                   label='95% CI (QC Only)',
-                                                   edgecolor='#9370DB', linestyle='-', linewidth=3)
-            if bounds_qc:
-                all_bounds.append(bounds_qc)
-            
-            # 調整軸範圍
-            if all_bounds:
-                x_min = min([b[0] for b in all_bounds])
-                x_max = max([b[1] for b in all_bounds])
-                y_min = min([b[2] for b in all_bounds])
-                y_max = max([b[3] for b in all_bounds])
-            else:
-                x_min, x_max = np.min(scores[:, 0]), np.max(scores[:, 0])
-                y_min, y_max = np.min(scores[:, 1]), np.max(scores[:, 1])
-            
-            data_x_min, data_x_max = np.min(scores[:, 0]), np.max(scores[:, 0])
-            data_y_min, data_y_max = np.min(scores[:, 1]), np.max(scores[:, 1])
-            
-            x_min = min(x_min, data_x_min)
-            x_max = max(x_max, data_x_max)
-            y_min = min(y_min, data_y_min)
-            y_max = max(y_max, data_y_max)
-            
-            x_abs_max = max(abs(x_min), abs(x_max))
-            y_abs_max = max(abs(y_min), abs(y_max))
-            
-            x_margin = x_abs_max * 0.2
-            y_margin = y_abs_max * 0.2
-            
-            ax.set_xlim(-x_abs_max - x_margin, x_abs_max + x_margin)
-            ax.set_ylim(-y_abs_max - y_margin, y_abs_max + y_margin)
+            draw_hotelling_t2_ellipse(ax, scores, label='95% CI (All Samples)',
+                                     edgecolor='gray', linestyle='--', linewidth=2)
+            draw_hotelling_t2_ellipse(ax, qc_scores, label='95% CI (QC Only)',
+                                     edgecolor='#9370DB', linestyle='-', linewidth=3)
             
             ax.set_title(f'{title}\nPC1: {var[0]:.1%}, PC2: {var[1]:.1%}\nHotelling T² Threshold: {t2_threshold:.2f}',
                          fontsize=13, fontweight='bold', pad=10)
@@ -1389,14 +1305,13 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
             ax.axhline(y=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
             ax.axvline(x=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
 
-        # ✅ 繪製左右圖（傳入異常值映射表）
         plot_pca_subplot(ax_left, scores_istd, qc_scores_istd, var_istd, 
                         t2_threshold_istd, qc_outlier_map_istd, 'ISTD Corrected')
         
         plot_pca_subplot(ax_right, scores_lowess, qc_scores_lowess, var_lowess,
                         t2_threshold_lowess, qc_outlier_map_lowess, 'QC-LOWESS Normalized')
 
-        # 改進圖例設計
+        # 圖例
         sample_legend_elements = [
             plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='#4169E1',
                       markersize=10, label='Control', markeredgecolor='none'),
@@ -1415,92 +1330,32 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
                       linewidth=3, label='95% CI (QC Only)')
         ]
         
-        legend1 = fig.legend(handles=sample_legend_elements, 
-                            loc='center left', 
-                            bbox_to_anchor=(1.01, 0.7),
-                            fontsize=11,
-                            title='Sample Type', 
-                            title_fontsize=12,
-                            frameon=True, 
-                            fancybox=True, 
-                            shadow=True)
+        fig.legend(handles=sample_legend_elements, loc='center left', 
+                  bbox_to_anchor=(1.01, 0.7), fontsize=11,
+                  title='Sample Type', title_fontsize=12,
+                  frameon=True, fancybox=True, shadow=True)
         
-        legend2 = fig.legend(handles=ellipse_legend_elements, 
-                            loc='center left', 
-                            bbox_to_anchor=(1.01, 0.3),
-                            fontsize=11,
-                            title='Confidence Ellipse', 
-                            title_fontsize=12,
-                            frameon=True, 
-                            fancybox=True, 
-                            shadow=True)
+        fig.legend(handles=ellipse_legend_elements, loc='center left', 
+                  bbox_to_anchor=(1.01, 0.3), fontsize=11,
+                  title='Confidence Ellipse', title_fontsize=12,
+                  frameon=True, fancybox=True, shadow=True)
 
         plt.tight_layout(rect=[0, 0, 0.88, 0.96])
 
-        # 保存 2D PCA 圖
         pca_plot_path = os.path.join(output_dir, f'2D_PCA_ISTD_vs_LOWESS_{timestamp}.png')
         plt.savefig(pca_plot_path, dpi=300, bbox_inches='tight')
         print(f"   ✓ 2D PCA 圖表已保存: {pca_plot_path}")
         
         plt.close()
 
-        # ========== 統計摘要 ==========
+        # 統計摘要
         print(f"\n{'='*70}")
-        print(f"📊 PCA 分析完成摘要")
+        print(f"📊 PCA 分析完成")
         print(f"{'='*70}")
-        
-        print(f"\n📈 解釋變異量:")
-        print(f"   ISTD Correction:")
-        print(f"     - PC1: {var_istd[0]*100:.2f}%")
-        print(f"     - PC2: {var_istd[1]*100:.2f}%")
-        print(f"     - PC1+PC2: {(var_istd[0] + var_istd[1])*100:.2f}%")
-        
-        print(f"\n   QC-LOWESS Correction:")
-        print(f"     - PC1: {var_lowess[0]*100:.2f}%")
-        print(f"     - PC2: {var_lowess[1]*100:.2f}%")
-        print(f"     - PC1+PC2: {(var_lowess[0] + var_lowess[1])*100:.2f}%")
-        
-        print(f"\n🔬 Hotelling T² 異常值檢測結果:")
-        print(f"\n   ISTD Correction:")
-        print(f"     - T² 閾值: {t2_threshold_istd:.2f}")
-        print(f"     - 異常值數量: {np.sum(outliers_istd)}/{len(qc_columns)} ({np.sum(outliers_istd)/len(qc_columns)*100:.1f}%)")
-        
-        if np.sum(outliers_istd) > 0:
-            outlier_samples_istd = [qc_columns[i] for i in range(len(outliers_istd)) if outliers_istd[i]]
-            outlier_t2_values_istd = [t2_istd[i] for i in range(len(outliers_istd)) if outliers_istd[i]]
-            print(f"     - 異常樣本:")
-            for sample, t2_val in zip(outlier_samples_istd, outlier_t2_values_istd):
-                print(f"       • {sample}: T² = {t2_val:.2f}")
-        else:
-            print(f"     - 無異常樣本")
-        
-        print(f"\n   QC-LOWESS Correction:")
-        print(f"     - T² 閾值: {t2_threshold_lowess:.2f}")
-        print(f"     - 異常值數量: {np.sum(outliers_lowess)}/{len(qc_columns)} ({np.sum(outliers_lowess)/len(qc_columns)*100:.1f}%)")
-        
-        if np.sum(outliers_lowess) > 0:
-            outlier_samples_lowess = [qc_columns[i] for i in range(len(outliers_lowess)) if outliers_lowess[i]]
-            outlier_t2_values_lowess = [t2_lowess[i] for i in range(len(outliers_lowess)) if outliers_lowess[i]]
-            print(f"     - 異常樣本:")
-            for sample, t2_val in zip(outlier_samples_lowess, outlier_t2_values_lowess):
-                print(f"       • {sample}: T² = {t2_val:.2f}")
-        else:
-            print(f"     - 無異常樣本")
-        
-        # 計算改善效果
-        improvement = np.sum(outliers_istd) - np.sum(outliers_lowess)
-        print(f"\n   📊 校正效果:")
-        if improvement > 0:
-            print(f"     ✅ LOWESS 校正減少了 {improvement} 個異常值 ({improvement/len(qc_columns)*100:.1f}%)")
-        elif improvement < 0:
-            print(f"     ⚠️  LOWESS 校正增加了 {abs(improvement)} 個異常值 ({abs(improvement)/len(qc_columns)*100:.1f}%)")
-        else:
-            print(f"     ➖ LOWESS 校正未改變異常值數量")
-        
-        print(f"\n📁 輸出檔案:")
-        print(f"   - 2D PCA 圖表: {pca_plot_path}")
-        
-        print(f"\n{'='*70}\n")
+        print(f"  解釋變異量:")
+        print(f"    ISTD: PC1={var_istd[0]*100:.2f}%, PC2={var_istd[1]*100:.2f}%")
+        print(f"    LOWESS: PC1={var_lowess[0]*100:.2f}%, PC2={var_lowess[1]*100:.2f}%")
+        print(f"  異常值: ISTD={np.sum(outliers_istd)}, LOWESS={np.sum(outliers_lowess)}")
 
     except Exception as e:
         print(f"❌ PCA 分析失敗: {e}")
@@ -1512,26 +1367,22 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
 def main(input_file=None):
     """主程式入口"""
     print("="*70)
-    print("🔬 QC-LOWESS 批次效應校正工具 v2")
-    print("   ✅ 主表：Wilcoxon 配對檢定 + Levene's test + CV%")
-    print("   ✅ 副表：Mann-Kendall 趨勢檢驗 + R²/RMSE")
-    print("   ✅ P 值分佈圖")
-    print("   ✅ 完整的 2D-PCA 圖")
+    print("🔬 QC-LOWESS 批次效應校正工具 v3")
+    print("   ✅ 簡化校正邏輯：CV% 改善 ≥ 2%")
+    print("   ✅ 統計方法：Levene's test（單一特徵）+ Wilcoxon test（整體評估）")
+    print("   ✅ 進階統計：Mann-Kendall + R²/RMSE（副表）")
     print("="*70)
     
-    # 🔧 建立 output 資料夾
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(script_dir, "output")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
         print(f"\n✓ 已建立 'output' 資料夾: {output_dir}")
     
-    # 如果有傳入 input_file 參數，直接使用它
     if input_file:
         file_path = input_file
         print(f"\n📂 使用傳入的檔案: {os.path.basename(file_path)}")
     else:
-        # 如果沒有傳入參數，則開啟檔案選擇對話框
         root = tk.Tk()
         root.withdraw()
         
@@ -1560,23 +1411,24 @@ def main(input_file=None):
     print(f"🔧 執行 QC-LOWESS 校正...")
     print(f"{'='*70}")
     
-    lowess_df, sample_columns, qc_corrected_values, trend_stats_df = perform_lowess_normalization(istd_df, sample_info_df)
+    result = perform_lowess_normalization(istd_df, sample_info_df)
     
-    if lowess_df is None:
+    if result[0] is None:
         print("❌ LOWESS 校正失敗,程式結束")
         return
+    
+    lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats = result
     
     print(f"\n{'='*70}")
     print(f"💾 保存結果...")
     print(f"{'='*70}")
     
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    # 🔧 修改：輸出到 output 資料夾
     output_file = os.path.join(output_dir, f'QC_LOWESS_{timestamp}.xlsx')
     
     success = save_results_to_excel(
         raw_df, istd_df, lowess_df, sample_info_df, 
-        sample_columns, output_file, file_path, qc_corrected_values, trend_stats_df
+        sample_columns, output_file, file_path, qc_corrected_values, trend_stats_df, decision_stats
     )
     
     if not success:
@@ -1587,7 +1439,6 @@ def main(input_file=None):
     print(f"📊 執行 PCA 分析...")
     print(f"{'='*70}")
     
-    # ✅ 修正：傳入 output_dir
     perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, output_dir)
     
     print(f"\n{'='*70}")
@@ -1595,19 +1446,18 @@ def main(input_file=None):
     print(f"{'='*70}")
     print(f"\n📁 輸出內容:")
     print(f"  - Excel 結果: output/{os.path.basename(output_file)}")
-    print(f"    ├── ISTD_Correction (保留原格式)")
-    print(f"    ├── QC LOWESS result (主表：Wilcoxon + Levene's test + CV%)")
-    print(f"    ├── QC LOWESS Advanced Stats (副表：R²/RMSE + Mann-Kendall)")
+    print(f"    ├── ISTD_Correction（保留原格式）")
+    print(f"    ├── QC LOWESS result（主表：Levene's test + CV%）")
+    print(f"    ├── Advanced Statistics（副表：Mann-Kendall + R²/RMSE）")
     print(f"    └── SampleInfo")
-    print(f"\n  - 圖表輸出: output/QC_LOWESS_plots/")  # ✅ 更新路徑說明
+    print(f"\n  - 圖表輸出: output/QC_LOWESS_plots/")
     print(f"    ├── 2D_PCA_ISTD_vs_LOWESS_*.png")
-    print(f"    └── Pvalue_Distribution_*.png")
-    print(f"\n  💡 提示：")
-    print(f"    - 主表：核心統計檢定（適合一般使用者）")
-    print(f"    - 副表：進階評估指標（適合專業使用者）")
+    print(f"    └── Pvalue_Distribution_Levene_*.png")
+    print(f"\n  💡 統計方法:")
+    print(f"    - Levene's test: 檢測單一特徵方差變化")
+    print(f"    - Wilcoxon test: 檢測整體 CV% 是否顯著降低（終端機顯示）")
     print(f"\n{'='*70}\n")
     
-    # 返回結果資訊
     output_file_abs = os.path.abspath(output_file)
     metabolites_count = len(lowess_df)
     samples_count = len(sample_columns)
