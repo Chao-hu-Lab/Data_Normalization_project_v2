@@ -315,49 +315,277 @@ def get_valid_values(row, columns):
 
 
 def load_and_process_data(file_path):
-    """載入並驗證數據"""
+    """載入並驗證數據（含完整防呆檢查）"""
     try:
-        excel_file = pd.ExcelFile(file_path)
-        required_sheets = ['ISTD_Correction', 'SampleInfo']
-        
-        if not all(sheet in excel_file.sheet_names for sheet in required_sheets):
-            print(f"❌ 錯誤：缺少必要工作表")
+        # ===== 防呆1: 文件存在性檢查 =====
+        if not os.path.exists(file_path):
+            print(f"❌ 錯誤：找不到檔案 '{file_path}'")
             return None, None, None
-        
+
+        # ===== 防呆2: 文件格式檢查 =====
+        if not (file_path.endswith('.xlsx') or file_path.endswith('.xls')):
+            print(f"❌ 錯誤：輸入檔案必須是 Excel 格式 (.xlsx 或 .xls)，但提供了 {file_path}")
+            return None, None, None
+
+        # ===== 防呆3: 文件大小檢查 =====
+        file_size = os.path.getsize(file_path)
+        if file_size == 0:
+            print(f"❌ 錯誤：檔案大小為 0 bytes，可能是空檔案")
+            return None, None, None
+        elif file_size < 1024:  # 小於 1KB
+            print(f"⚠️  警告：檔案大小僅 {file_size} bytes，可能不是有效的 Excel 檔案")
+
+        print(f"📄 檔案大小: {file_size / 1024:.2f} KB")
+
+        # ===== 防呆4: Excel 文件有效性檢查 =====
+        try:
+            excel_file = pd.ExcelFile(file_path)
+        except Exception as e:
+            print(f"❌ 錯誤：無法讀取 Excel 檔案，可能已損壞或格式不正確")
+            print(f"   詳細錯誤: {e}")
+            return None, None, None
+
+        # ===== 防呆5: 必要工作表檢查 =====
+        print(f"📋 找到的工作表: {', '.join(excel_file.sheet_names)}")
+
+        required_sheets = ['ISTD_Correction', 'SampleInfo']
+        missing_sheets = [sheet for sheet in required_sheets if sheet not in excel_file.sheet_names]
+
+        if missing_sheets:
+            print(f"❌ 錯誤：輸入檔案缺少必要的工作表: {', '.join(missing_sheets)}")
+            print(f"   找到的工作表: {', '.join(excel_file.sheet_names)}")
+            print(f"   提示：QC-LOWESS 校正需要先執行 ISTD_Correction")
+            return None, None, None
+
+        # ===== 防呆6: SampleInfo 完整性檢查 =====
         sample_info_df = pd.read_excel(excel_file, sheet_name='SampleInfo')
+        print(f"✓ 成功讀取 'SampleInfo' 工作表，包含 {len(sample_info_df)} 筆樣本資訊")
+
+        if sample_info_df.empty:
+            print(f"❌ 錯誤：'SampleInfo' 工作表為空")
+            return None, None, None
+
+        required_columns = ['Sample_Name', 'Sample_Type', 'Injection_Order']
+        missing_cols = [col for col in required_columns if col not in sample_info_df.columns]
+
+        if missing_cols:
+            print(f"❌ 錯誤：'SampleInfo' 缺少必要欄位: {', '.join(missing_cols)}")
+            print(f"   找到的欄位: {', '.join(sample_info_df.columns.tolist())}")
+            return None, None, None
+
+        # ===== 防呆7: 樣本名稱重複檢查 =====
+        duplicate_samples = sample_info_df[sample_info_df['Sample_Name'].duplicated()]
+        if not duplicate_samples.empty:
+            print(f"⚠️  警告：'SampleInfo' 中發現重複的樣本名稱:")
+            for idx, row in duplicate_samples.iterrows():
+                print(f"     - {row['Sample_Name']}")
+            print(f"   建議：請檢查樣本名稱是否正確")
+
+        # ===== 防呆8: 樣本類型檢查 =====
+        sample_types = sample_info_df['Sample_Type'].unique()
+        print(f"📊 樣本類型: {', '.join([str(t) for t in sample_types])}")
+
+        qc_count = sample_info_df[sample_info_df['Sample_Type'].str.upper().str.contains('QC', na=False)].shape[0]
+        if qc_count == 0:
+            print(f"❌ 錯誤：未找到 QC 樣本（Sample_Type 中無 'QC' 字樣）")
+            print(f"   提示：QC-LOWESS 校正需要至少 5 個 QC 樣本")
+            return None, None, None
+        elif qc_count < 5:
+            print(f"⚠️  警告：QC 樣本數量不足 ({qc_count} < 5)")
+            print(f"   提示：建議至少有 5 個 QC 樣本以確保校正準確性")
+        else:
+            print(f"✓ 找到 {qc_count} 個 QC 樣本")
+
+        # ===== 防呆9: Injection_Order 有效性檢查 =====
+        if 'Injection_Order' in sample_info_df.columns:
+            invalid_orders = sample_info_df[pd.isna(sample_info_df['Injection_Order'])]
+            if not invalid_orders.empty:
+                print(f"⚠️  警告：發現 {len(invalid_orders)} 個樣本缺少 Injection_Order:")
+                for idx, row in invalid_orders.head(5).iterrows():
+                    print(f"     - {row['Sample_Name']}")
+                if len(invalid_orders) > 5:
+                    print(f"     ... 還有 {len(invalid_orders) - 5} 個樣本")
+
+            # 檢查 Injection_Order 是否為數值
+            try:
+                sample_info_df['Injection_Order'] = pd.to_numeric(sample_info_df['Injection_Order'], errors='coerce')
+                invalid_count = sample_info_df['Injection_Order'].isna().sum()
+                if invalid_count > 0:
+                    print(f"⚠️  警告：{invalid_count} 個樣本的 Injection_Order 無法轉換為數值")
+            except Exception as e:
+                print(f"⚠️  警告：Injection_Order 數據類型檢查失敗: {e}")
+
+        # ===== 防呆10: ISTD_Correction 基本檢查 =====
         istd_df = pd.read_excel(excel_file, sheet_name='ISTD_Correction')
-        raw_df = pd.read_excel(excel_file, sheet_name='RawIntensity') if 'RawIntensity' in excel_file.sheet_names else None
-        
-        print(f"✓ 成功載入數據")
+        print(f"✓ 成功讀取 'ISTD_Correction' 工作表，包含 {len(istd_df)} 個特徵")
+
+        if istd_df.empty:
+            print(f"❌ 錯誤：'ISTD_Correction' 工作表為空")
+            return None, None, None
+
+        if 'FeatureID' not in istd_df.columns:
+            print(f"❌ 錯誤：'ISTD_Correction' 缺少 'FeatureID' 欄位")
+            print(f"   找到的欄位: {', '.join(istd_df.columns.tolist())}")
+            return None, None, None
+
+        # ===== 防呆11: FeatureID 重複檢查 =====
+        duplicate_features = istd_df[istd_df['FeatureID'].duplicated(keep=False)]
+        if not duplicate_features.empty:
+            print(f"⚠️  警告：'ISTD_Correction' 中發現重複的 FeatureID:")
+            dup_ids = duplicate_features['FeatureID'].unique()
+            for fid in dup_ids[:5]:
+                print(f"     - {fid}")
+            if len(dup_ids) > 5:
+                print(f"     ... 還有 {len(dup_ids) - 5} 個重複的 FeatureID")
+            print(f"   建議：請檢查數據是否正確，腳本將保留第一次出現的記錄")
+
+        # ===== 防呆12: 樣本欄位檢查 =====
+        exclude_cols = ['FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference',
+                       'ISTD_Median', 'QC_CV%']
+        sample_columns = [col for col in istd_df.columns if col not in exclude_cols]
+
+        if len(sample_columns) == 0:
+            print(f"❌ 錯誤：'ISTD_Correction' 中沒有樣本欄位")
+            return None, None, None
+
+        print(f"✓ 找到 {len(sample_columns)} 個樣本欄位")
+
+        # ===== 防呆13: 樣本名稱匹配檢查 =====
+        sample_names_in_info = set(sample_info_df['Sample_Name'].astype(str).str.strip().str.lower())
+        sample_names_in_istd = set([str(col).strip().lower() for col in sample_columns])
+
+        missing_in_istd = sample_names_in_info - sample_names_in_istd
+        missing_in_info = sample_names_in_istd - sample_names_in_info
+
+        if missing_in_istd:
+            print(f"⚠️  警告：以下樣本在 SampleInfo 中有記錄，但在 ISTD_Correction 中找不到:")
+            for name in list(missing_in_istd)[:5]:
+                print(f"     - {name}")
+            if len(missing_in_istd) > 5:
+                print(f"     ... 還有 {len(missing_in_istd) - 5} 個樣本")
+
+        if missing_in_info:
+            print(f"⚠️  警告：以下樣本在 ISTD_Correction 中有數據，但在 SampleInfo 中找不到:")
+            for name in list(missing_in_info)[:5]:
+                print(f"     - {name}")
+            if len(missing_in_info) > 5:
+                print(f"     ... 還有 {len(missing_in_info) - 5} 個樣本")
+
+        # ===== 防呆14: 強制轉換樣本欄位為數值 =====
+        for col in sample_columns:
+            istd_df[col] = pd.to_numeric(istd_df[col], errors='coerce')
+
+        # ===== 防呆15: 全為 NaN 或 0 的列檢查 =====
+        empty_columns = []
+        for col in sample_columns:
+            non_zero_count = (istd_df[col] > 0).sum()
+            if non_zero_count == 0:
+                empty_columns.append(col)
+
+        if empty_columns:
+            print(f"⚠️  警告：以下樣本的所有數值都是 0 或 NaN:")
+            for col in empty_columns[:5]:
+                print(f"     - {col}")
+            if len(empty_columns) > 5:
+                print(f"     ... 還有 {len(empty_columns) - 5} 個樣本")
+
+        # 填充 NaN 為 0
+        istd_df = istd_df.fillna(0)
+        print(f"✓ ISTD_Correction 數據類型檢查：樣本欄位已轉換為數值型")
+
+        # ===== 防呆16: 數值範圍檢查 =====
+        negative_count = 0
+        extreme_high_count = 0
+
+        for col in sample_columns:
+            negative_values = (istd_df[col] < 0).sum()
+            if negative_values > 0:
+                negative_count += 1
+                print(f"⚠️  警告：樣本 '{col}' 包含 {negative_values} 個負值")
+
+            # 檢查極端高值（> 1e12）
+            extreme_values = (istd_df[col] > 1e12).sum()
+            if extreme_values > 0:
+                extreme_high_count += 1
+                print(f"⚠️  警告：樣本 '{col}' 包含 {extreme_values} 個極端高值 (> 1e12)")
+
+        if negative_count > 0:
+            print(f"   提示：已將負值設為 0")
+            for col in sample_columns:
+                istd_df[col] = istd_df[col].clip(lower=0)
+
+        # 載入 RawIntensity（可選）
+        raw_df = None
+        if 'RawIntensity' in excel_file.sheet_names:
+            try:
+                raw_df = pd.read_excel(excel_file, sheet_name='RawIntensity')
+                print(f"✓ 已載入 'RawIntensity' 工作表（可選）")
+            except Exception as e:
+                print(f"⚠️  警告：無法載入 'RawIntensity' 工作表: {e}")
+
+        print(f"\n{'='*70}")
+        print(f"✓ 數據載入完成")
         print(f"  - 特徵數: {len(istd_df)}")
         print(f"  - 樣本數: {len(sample_info_df)}")
-        
+        print(f"  - QC 樣本數: {qc_count}")
+        print(f"{'='*70}\n")
+
         return raw_df, istd_df, sample_info_df
-        
+
     except Exception as e:
-        print(f"❌ 載入數據失敗: {e}")
+        print(f"❌ 載入數據失敗（未預期的錯誤）: {e}")
+        import traceback
+        traceback.print_exc()
         return None, None, None
 
 
 # ========== LOWESS 正規化 ==========
 def perform_lowess_normalization(istd_df, sample_info_df):
-    """簡化的 LOWESS 正規化（所有樣本視為單一批次）"""
+    """簡化的 LOWESS 正規化（所有樣本視為單一批次）（含防呆檢查）"""
     try:
-        exclude_cols = ['FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference', 
+        # ===== 防呆1: 輸入數據有效性檢查 =====
+        if istd_df is None or istd_df.empty:
+            print(f"❌ 錯誤：ISTD_Correction 數據為空")
+            return None, None, None, None, None
+
+        if sample_info_df is None or sample_info_df.empty:
+            print(f"❌ 錯誤：SampleInfo 數據為空")
+            return None, None, None, None, None
+
+        # ===== 防呆2: 必要欄位檢查 =====
+        if 'FeatureID' not in istd_df.columns:
+            print(f"❌ 錯誤：ISTD_Correction 缺少 'FeatureID' 欄位")
+            return None, None, None, None, None
+
+        if 'Sample_Name' not in sample_info_df.columns or 'Sample_Type' not in sample_info_df.columns:
+            print(f"❌ 錯誤：SampleInfo 缺少必要欄位")
+            return None, None, None, None, None
+
+        exclude_cols = ['FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference',
                        'ISTD_Median', 'QC_CV%']
         sample_columns = [col for col in istd_df.columns if col not in exclude_cols]
-        
+
+        # ===== 防呆3: 樣本欄位檢查 =====
+        if len(sample_columns) == 0:
+            print(f"❌ 錯誤：找不到任何樣本欄位")
+            return None, None, None, None, None
+
+        print(f"✓ 找到 {len(sample_columns)} 個樣本欄位")
+
+        # ===== 防呆4: QC 樣本識別 =====
         if 'Sample_Type' in sample_info_df.columns:
             qc_samples = sample_info_df[
                 sample_info_df['Sample_Type'].str.upper().str.contains('QC', na=False)
             ]['Sample_Name'].tolist()
         else:
             qc_samples = [col for col in sample_columns if 'QC' in col.upper()]
-        
+
         qc_samples = [s for s in qc_samples if s in sample_columns]
-        
+
+        # ===== 防呆5: QC 樣本數量檢查 =====
         if len(qc_samples) < 5:
-            print(f"❌ QC 樣本不足 ({len(qc_samples)} < 5)，無法進行校正")
+            print(f"❌ 錯誤：QC 樣本不足 ({len(qc_samples)} < 5)，無法進行校正")
+            print(f"   提示：LOWESS 校正需要至少 5 個 QC 樣本以確保擬合準確性")
             return None, None, None, None, None
         
         print(f"\n📊 數據概覽:")
@@ -687,10 +915,29 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
 
 # ========== ✅ 修正：P 值分佈圖（只繪製 Levene's test）==========
 def plot_pvalue_distribution(cv_results_df, output_base_dir, timestamp):
-    """繪製 Levene's test p 值分佈圖"""
+    """繪製 Levene's test p 值分佈圖（含防呆檢查）"""
     try:
+        # ===== 防呆1: 輸入數據檢查 =====
+        if cv_results_df is None or cv_results_df.empty:
+            print("  ⚠️  警告：CV 結果數據為空，無法繪製 p 值分佈圖")
+            return
+
+        if 'Variance_Test_pvalue' not in cv_results_df.columns:
+            print("  ⚠️  警告：找不到 Variance_Test_pvalue 欄位，無法繪製 p 值分佈圖")
+            return
+
+        # ===== 防呆2: 輸出目錄檢查 =====
         plots_dir = os.path.join(output_base_dir, 'QC_LOWESS_plots')
-        os.makedirs(plots_dir, exist_ok=True)
+
+        try:
+            os.makedirs(plots_dir, exist_ok=True)
+        except Exception as e:
+            print(f"  ⚠️  警告：無法創建輸出目錄: {e}")
+            return
+
+        if not os.access(plots_dir, os.W_OK):
+            print(f"  ⚠️  警告：沒有寫入權限到目錄: {plots_dir}")
+            return
         
         levene_pvalues = cv_results_df['Variance_Test_pvalue'].dropna()
         
@@ -730,10 +977,28 @@ def plot_pvalue_distribution(cv_results_df, output_base_dir, timestamp):
         plt.tight_layout()
         
         pvalue_plot_path = os.path.join(plots_dir, f'Pvalue_Distribution_Levene_{timestamp}.png')
-        plt.savefig(pvalue_plot_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f"\n✓ P 值分佈圖已儲存: {pvalue_plot_path}")
+
+        # ===== 防呆: 圖表保存檢查 =====
+        try:
+            plt.savefig(pvalue_plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+
+            # 驗證文件是否成功保存
+            if not os.path.exists(pvalue_plot_path):
+                print(f"\n⚠️  警告：P 值分佈圖保存失敗，找不到輸出檔案")
+                return
+            else:
+                plot_size = os.path.getsize(pvalue_plot_path)
+                if plot_size == 0:
+                    print(f"\n⚠️  警告：P 值分佈圖大小為 0 bytes")
+                    return
+
+            print(f"\n✓ P 值分佈圖已儲存: {pvalue_plot_path}")
+            print(f"  - 圖表大小: {plot_size / 1024:.2f} KB")
+        except Exception as e:
+            plt.close()
+            print(f"\n⚠️  警告：保存 P 值分佈圖時發生錯誤: {e}")
+            return
         print(f"  - Kolmogorov-Smirnov 檢定: KS={ks_stat:.4f}, p={ks_pvalue:.4f}")
         if ks_pvalue > 0.05:
             print(f"  - 結論: p 值分佈接近均勻分佈 ✓")
@@ -779,9 +1044,43 @@ def copy_sheet_with_full_format(source_sheet, target_sheet):
 
 
 # ========== ✅ 修正：保存結果到 Excel（移除 Wilcoxon_pvalue）==========
-def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_columns, 
+def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_columns,
                           output_file, input_file, qc_corrected_values, trend_stats_df, decision_stats):
+    """保存結果到 Excel（含完整防呆檢查）"""
     try:
+        # ===== 防呆1: 輸入數據有效性檢查 =====
+        if istd_df is None or istd_df.empty:
+            print(f"❌ 錯誤：ISTD_Correction 數據為空，無法保存")
+            return False
+
+        if lowess_df is None or lowess_df.empty:
+            print(f"❌ 錯誤：LOWESS 校正結果為空，無法保存")
+            return False
+
+        if sample_info_df is None or sample_info_df.empty:
+            print(f"❌ 錯誤：SampleInfo 數據為空，無法保存")
+            return False
+
+        # ===== 防呆2: 輸出路徑有效性檢查 =====
+        output_dir = os.path.dirname(output_file)
+        if not os.path.exists(output_dir):
+            print(f"⚠️  警告：輸出目錄不存在，嘗試創建: {output_dir}")
+            try:
+                os.makedirs(output_dir, exist_ok=True)
+                print(f"✓ 成功創建輸出目錄")
+            except Exception as e:
+                print(f"❌ 錯誤：無法創建輸出目錄: {e}")
+                return False
+
+        # ===== 防呆3: 輸出目錄可寫性檢查 =====
+        if not os.access(output_dir, os.W_OK):
+            print(f"❌ 錯誤：沒有寫入權限到目錄: {output_dir}")
+            return False
+
+        # ===== 防呆4: 輸入文件有效性檢查 =====
+        if not os.path.exists(input_file):
+            print(f"❌ 錯誤：找不到輸入檔案: {input_file}")
+            return False
         cv_results_df = calculate_qc_cv_with_statistical_test(
             istd_df, 
             lowess_df, 
@@ -955,9 +1254,37 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
                         for cell in row:
                             cell.fill = light_green_fill
 
-        workbook.save(output_file)
+        # ===== 防呆5: 文件保存檢查 =====
+        try:
+            workbook.save(output_file)
+            print(f"✓ 成功保存 Excel 檔案")
+        except PermissionError:
+            print(f"❌ 錯誤：無法保存檔案，可能檔案已被其他程式開啟")
+            print(f"   請關閉檔案後重試: {output_file}")
+            workbook.close()
+            return False
+        except Exception as e:
+            print(f"❌ 錯誤：保存檔案時發生錯誤: {e}")
+            workbook.close()
+            return False
+
         workbook.close()
-        
+
+        # ===== 防呆6: 文件保存驗證 =====
+        if not os.path.exists(output_file):
+            print(f"❌ 錯誤：檔案保存失敗，找不到輸出檔案: {output_file}")
+            return False
+
+        # 檢查文件大小
+        output_size = os.path.getsize(output_file)
+        if output_size == 0:
+            print(f"❌ 錯誤：輸出檔案大小為 0 bytes")
+            return False
+        elif output_size < 1024:
+            print(f"⚠️  警告：輸出檔案大小異常小 ({output_size} bytes)")
+
+        print(f"✓ 輸出檔案大小: {output_size / 1024:.2f} KB")
+
         # ✅ 統計報告
         print(f"\n{'='*70}")
         print(f"✓ QC LOWESS 結果已保存:")
@@ -1139,14 +1466,41 @@ def draw_hotelling_t2_ellipse(ax, scores, alpha=0.05, label=None, edgecolor='bla
 
 # ========== PCA 分析 ==========
 def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, output_base_dir=None):
-    """完整的 PCA 分析"""
+    """完整的 PCA 分析（含防呆檢查）"""
     try:
+        # ===== 防呆1: 輸入數據有效性檢查 =====
+        if istd_df is None or istd_df.empty:
+            print(f"❌ 錯誤：ISTD_Correction 數據為空，無法進行 PCA 分析")
+            return
+
+        if lowess_df is None or lowess_df.empty:
+            print(f"❌ 錯誤：LOWESS 校正結果為空，無法進行 PCA 分析")
+            return
+
+        if sample_info_df is None or sample_info_df.empty:
+            print(f"❌ 錯誤：SampleInfo 數據為空，無法進行 PCA 分析")
+            return
+
+        if not sample_columns or len(sample_columns) == 0:
+            print(f"❌ 錯誤：樣本欄位為空，無法進行 PCA 分析")
+            return
+        # ===== 防呆2: 輸出目錄設置和檢查 =====
         if output_base_dir is None:
             script_dir = os.path.dirname(os.path.abspath(__file__))
             output_base_dir = os.path.join(script_dir, "output")
-        
+
         output_dir = os.path.join(output_base_dir, "QC_LOWESS_plots")
-        os.makedirs(output_dir, exist_ok=True)
+
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except Exception as e:
+            print(f"❌ 錯誤：無法創建輸出目錄: {e}")
+            return
+
+        # 檢查目錄可寫性
+        if not os.access(output_dir, os.W_OK):
+            print(f"❌ 錯誤：沒有寫入權限到目錄: {output_dir}")
+            return
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
         sample_meta = sample_info_df.set_index('Sample_Name')
@@ -1343,9 +1697,25 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
         plt.tight_layout(rect=[0, 0, 0.88, 0.96])
 
         pca_plot_path = os.path.join(output_dir, f'2D_PCA_ISTD_vs_LOWESS_{timestamp}.png')
-        plt.savefig(pca_plot_path, dpi=300, bbox_inches='tight')
-        print(f"   ✓ 2D PCA 圖表已保存: {pca_plot_path}")
-        
+
+        # ===== 防呆3: 圖表保存檢查 =====
+        try:
+            plt.savefig(pca_plot_path, dpi=300, bbox_inches='tight')
+            print(f"   ✓ 2D PCA 圖表已保存: {pca_plot_path}")
+
+            # 驗證文件是否成功保存
+            if not os.path.exists(pca_plot_path):
+                print(f"   ⚠️  警告：PCA 圖表保存失敗，找不到輸出檔案")
+            else:
+                plot_size = os.path.getsize(pca_plot_path)
+                if plot_size == 0:
+                    print(f"   ⚠️  警告：PCA 圖表大小為 0 bytes")
+                else:
+                    print(f"   ✓ PCA 圖表大小: {plot_size / 1024:.2f} KB")
+
+        except Exception as e:
+            print(f"   ⚠️  警告：保存 PCA 圖表時發生錯誤: {e}")
+
         plt.close()
 
         # 統計摘要
