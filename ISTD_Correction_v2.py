@@ -35,24 +35,79 @@ def get_valid_values(row, columns):
 
 def load_and_process_data(file_path):
     try:
+        # ===== 防呆1: 文件存在性检查 =====
+        if not os.path.exists(file_path):
+            print(f"錯誤：找不到檔案 '{file_path}'")
+            return None, None, None
+
+        # ===== 防呆2: 文件格式检查 =====
         if not (file_path.endswith('.xlsx') or file_path.endswith('.xls')):
             print(f"錯誤：輸入檔案必須是Excel格式 (.xlsx 或 .xls)，但提供了 {file_path}")
             return None, None, None
-        
-        excel_file = pd.ExcelFile(file_path)
+
+        # ===== 防呆3: 文件大小检查 =====
+        file_size = os.path.getsize(file_path)
+        if file_size == 0:
+            print(f"錯誤：檔案大小為 0 bytes，可能是空檔案")
+            return None, None, None
+        elif file_size < 1024:  # 小于 1KB
+            print(f"警告：檔案大小僅 {file_size} bytes，可能不是有效的 Excel 檔案")
+
+        print(f"檔案大小: {file_size / 1024:.2f} KB")
+
+        # ===== 防呆4: Excel 文件有效性检查 =====
+        try:
+            excel_file = pd.ExcelFile(file_path)
+        except Exception as e:
+            print(f"錯誤：無法讀取 Excel 檔案，可能已損壞或格式不正確")
+            print(f"詳細錯誤: {e}")
+            return None, None, None
         
         # 讀取所有工作表，儲存為字典 {sheet_name: df}
         all_sheets = {sheet: pd.read_excel(excel_file, sheet_name=sheet) for sheet in excel_file.sheet_names}
         print(f"讀取輸入檔案的所有工作表: {list(all_sheets.keys())}")
         
+        # ===== 防呆5: 必要工作表检查 =====
         required_sheets = ['RawIntensity', 'SampleInfo']
         missing_sheets = [sheet for sheet in required_sheets if sheet not in all_sheets]
         if missing_sheets:
             print(f"錯誤：輸入檔案缺少必要的工作表: {', '.join(missing_sheets)}")
+            print(f"找到的工作表: {', '.join(all_sheets.keys())}")
             return None, None, None
-        
+
+        # ===== 防呆6: SampleInfo 完整性检查 =====
         sample_info_df = all_sheets['SampleInfo']
         print(f"成功讀取 'SampleInfo' 工作表，包含 {len(sample_info_df)} 筆樣本資訊")
+
+        if sample_info_df.empty:
+            print(f"錯誤：'SampleInfo' 工作表為空")
+            return None, None, None
+
+        required_columns = ['Sample_Name', 'Sample_Type']
+        missing_cols = [col for col in required_columns if col not in sample_info_df.columns]
+        if missing_cols:
+            print(f"錯誤：'SampleInfo' 缺少必要欄位: {', '.join(missing_cols)}")
+            print(f"找到的欄位: {', '.join(sample_info_df.columns.tolist())}")
+            return None, None, None
+
+        # ===== 防呆7: 样本名称重复检查 =====
+        duplicate_samples = sample_info_df[sample_info_df['Sample_Name'].duplicated()]
+        if not duplicate_samples.empty:
+            print(f"警告：'SampleInfo' 中發現重複的樣本名稱:")
+            for idx, row in duplicate_samples.iterrows():
+                print(f"  - {row['Sample_Name']}")
+            print(f"  建議：請檢查樣本名稱是否正確")
+
+        # ===== 防呆8: 样本类型检查 =====
+        sample_types = sample_info_df['Sample_Type'].unique()
+        print(f"樣本類型: {', '.join([str(t) for t in sample_types])}")
+
+        qc_count = sample_info_df[sample_info_df['Sample_Type'].str.upper().str.contains('QC', na=False)].shape[0]
+        if qc_count == 0:
+            print(f"警告：未找到 QC 樣本（Sample_Type 中無 'QC' 字樣）")
+            print(f"  部分統計分析可能無法執行")
+        else:
+            print(f"找到 {qc_count} 個 QC 樣本")
         
         workbook = load_workbook(file_path)
         worksheet = workbook['RawIntensity']
@@ -68,18 +123,93 @@ def load_and_process_data(file_path):
         workbook.close()
         
         raw_df = all_sheets['RawIntensity']
-        
+
+        # ===== 防呆9: RawIntensity 基本检查 =====
+        if raw_df.empty:
+            print(f"錯誤：'RawIntensity' 工作表為空")
+            return None, None, None
+
+        if 'FeatureID' not in raw_df.columns:
+            print(f"錯誤：'RawIntensity' 缺少 'FeatureID' 欄位")
+            print(f"找到的欄位: {', '.join(raw_df.columns.tolist())}")
+            return None, None, None
+
+        # ===== 防呆10: FeatureID 重复检查 =====
+        duplicate_features = raw_df[raw_df['FeatureID'].duplicated(keep=False)]
+        if not duplicate_features.empty:
+            print(f"警告：'RawIntensity' 中發現重複的 FeatureID:")
+            dup_ids = duplicate_features['FeatureID'].unique()
+            for fid in dup_ids[:5]:  # 只显示前5个
+                print(f"  - {fid}")
+            if len(dup_ids) > 5:
+                print(f"  ... 還有 {len(dup_ids) - 5} 個重複的 FeatureID")
+            print(f"  建議：請檢查數據是否正確，腳本將保留第一次出現的記錄")
+
+        # ===== 防呆11: 样本列检查 =====
+        sample_columns = [col for col in raw_df.columns if col != 'FeatureID']
+        if len(sample_columns) == 0:
+            print(f"錯誤：'RawIntensity' 中沒有樣本欄位")
+            return None, None, None
+
+        print(f"找到 {len(sample_columns)} 個樣本欄位")
+
         # 修改：不要自動跳過 'sample_type'，改為檢查並保留
         if not raw_df.empty and str(raw_df.iloc[0]['FeatureID']).strip().lower() == 'sample_type':
             print("偵測到 'Sample_Type' 資訊行，已保留作為元數據。")
-        
+
+        # ===== 防呆12: 样本名称匹配检查 =====
+        sample_names_in_info = set(sample_info_df['Sample_Name'].str.strip().str.lower())
+        sample_names_in_raw = set([col.strip().lower() for col in sample_columns])
+
+        missing_in_raw = sample_names_in_info - sample_names_in_raw
+        missing_in_info = sample_names_in_raw - sample_names_in_info
+
+        if missing_in_raw:
+            print(f"警告：以下樣本在 SampleInfo 中有記錄，但在 RawIntensity 中找不到:")
+            for name in list(missing_in_raw)[:5]:
+                print(f"  - {name}")
+            if len(missing_in_raw) > 5:
+                print(f"  ... 還有 {len(missing_in_raw) - 5} 個樣本")
+
+        if missing_in_info:
+            print(f"警告：以下樣本在 RawIntensity 中有數據，但在 SampleInfo 中找不到:")
+            for name in list(missing_in_info)[:5]:
+                print(f"  - {name}")
+            if len(missing_in_info) > 5:
+                print(f"  ... 還有 {len(missing_in_info) - 5} 個樣本")
+
         # 防呆：強制轉換 RawIntensity 的樣本欄位為數值
-        sample_columns = [col for col in raw_df.columns if col != 'FeatureID']
         for col in sample_columns:
             raw_df[col] = pd.to_numeric(raw_df[col], errors='coerce')
+
+        # ===== 防呆13: 全为 NaN 或 0 的列检查 =====
+        for col in sample_columns:
+            non_zero_count = (raw_df[col] > 0).sum()
+            if non_zero_count == 0:
+                print(f"警告：樣本 '{col}' 的所有數值都是 0 或 NaN")
+
         raw_df = raw_df.fillna(0)  # 填充 NaN 為 0
-        print(f"RawIntensity 數據類型檢查：{raw_df.dtypes}")
-        
+        print(f"RawIntensity 數據類型檢查：樣本欄位已轉換為數值型")
+
+        # ===== 防呆16: 数值范围检查 =====
+        negative_count = 0
+        extreme_high_count = 0
+        for col in sample_columns:
+            negative_values = (raw_df[col] < 0).sum()
+            if negative_values > 0:
+                negative_count += negative_values
+                print(f"⚠️ 警告：樣本 '{col}' 有 {negative_values} 個負值，已設為 0")
+                raw_df[col] = raw_df[col].clip(lower=0)
+
+            # 检查极端高值（可能是数据错误）
+            max_val = raw_df[col].max()
+            if max_val > 1e15:
+                extreme_high_count += 1
+                print(f"⚠️ 警告：樣本 '{col}' 有極端高值 ({max_val:.2e})，請檢查數據是否正確")
+
+        if negative_count > 0:
+            print(f"總計修正了 {negative_count} 個負值")
+
         if 'FeatureID' in raw_df.columns:
             def parse_feature_id(fid):
                 if isinstance(fid, str) and '/' in fid:
@@ -98,8 +228,55 @@ def load_and_process_data(file_path):
         
         # 基於 FeatureID 值設定 is_ISTD（避免索引偏移）
         raw_df['is_ISTD'] = raw_df['FeatureID'].astype(str).str.strip().isin(istd_feature_ids)
-        
-        print(f"識別到 {len(istd_feature_ids)} 個ISTD: {istd_feature_ids}")
+
+        # ===== 防呆14: ISTD 识别验证 =====
+        print(f"\n{'='*70}")
+        print(f"ISTD 識別結果:")
+        print(f"{'='*70}")
+        print(f"識別到 {len(istd_feature_ids)} 個ISTD（紅色標記的 FeatureID）")
+
+        if len(istd_feature_ids) == 0:
+            print(f"❌ 錯誤：未找到任何 ISTD（請在 RawIntensity 工作表的 FeatureID 欄位中，")
+            print(f"   將內標物質的 FeatureID 標記為紅色字體）")
+            return None, None, None
+        elif len(istd_feature_ids) < 3:
+            print(f"⚠️ 警告：ISTD 數量較少（{len(istd_feature_ids)} 個），建議至少使用 3 個以上的 ISTD")
+            print(f"   以確保校正效果的穩定性")
+
+        # 验证 ISTD 是否存在于 raw_df 中
+        istd_in_df = raw_df[raw_df['is_ISTD']]
+        if len(istd_in_df) != len(istd_feature_ids):
+            print(f"⚠️ 警告：部分 ISTD 在 RawIntensity 中找不到對應的 FeatureID")
+            print(f"   標記的 ISTD: {len(istd_feature_ids)} 個")
+            print(f"   實際找到: {len(istd_in_df)} 個")
+
+        # ===== 防呆15: ISTD 强度验证 =====
+        print(f"\nISTD 強度驗證:")
+        for idx, row in istd_in_df.iterrows():
+            fid = row['FeatureID']
+            values = get_valid_values(row, sample_columns)
+
+            if len(values) == 0:
+                print(f"❌ 錯誤：ISTD '{fid}' 的所有樣本強度都是 0 或 NaN")
+                print(f"   無法進行校正，請檢查數據")
+                return None, None, None
+            elif len(values) < len(sample_columns) * 0.5:
+                print(f"⚠️ 警告：ISTD '{fid}' 有效值比例較低 ({len(values)}/{len(sample_columns)})")
+
+            # 计算 CV%
+            if len(values) >= 2:
+                mean_val = np.mean(values)
+                std_val = np.std(values, ddof=1)
+                cv_percent = (std_val / mean_val) * 100 if mean_val != 0 else np.nan
+
+                if cv_percent > 30:
+                    print(f"⚠️ 警告：ISTD '{fid}' 的 CV% 較高 ({cv_percent:.1f}%)，可能影響校正品質")
+
+        print(f"ISTD 列表: {', '.join(istd_feature_ids[:5])}")
+        if len(istd_feature_ids) > 5:
+            print(f"           ... 還有 {len(istd_feature_ids) - 5} 個")
+        print(f"{'='*70}\n")
+
         return raw_df, sample_info_df, all_sheets
     except Exception as e:
         print(f"載入數據時發生錯誤: {e}")
@@ -158,6 +335,15 @@ def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv,
     rt_diff : float
         RT 差異
     """
+    # ===== 防呆21: 权重参数验证 =====
+    # 检查权重是否为负
+    if rt_weight < 0 or cv_weight < 0 or intensity_weight < 0 or mz_weight < 0:
+        raise ValueError(
+            f"❌ 錯誤：權重不能為負值\n"
+            f"   rt_weight={rt_weight}, cv_weight={cv_weight}, "
+            f"intensity_weight={intensity_weight}, mz_weight={mz_weight}"
+        )
+
     # ✅ 權重總和檢查
     total_weight = rt_weight + cv_weight + intensity_weight + mz_weight
     if not np.isclose(total_weight, 1.0, atol=1e-6):
@@ -286,12 +472,37 @@ def calculate_istd_medians(istd_signals, sample_columns):
     return istd_medians
 
 def calculate_corrected_ratios(df, sample_info_df):
-    istd_signals, analyte_signals = identify_istd_signals(df)
-    if len(istd_signals) == 0: 
+    """
+    计算 ISTD 校正后的比值
+
+    增强了多层防呆检查
+    """
+    # ===== 防呆19: 基本输入验证 =====
+    if df is None or df.empty:
+        print("❌ 錯誤：輸入數據為空")
         return None, None
-    
+
+    if sample_info_df is None or sample_info_df.empty:
+        print("❌ 錯誤：樣本資訊為空")
+        return None, None
+
+    istd_signals, analyte_signals = identify_istd_signals(df)
+
+    # ===== 防呆20: ISTD 信号检查 =====
+    if len(istd_signals) == 0:
+        print("❌ 錯誤：未找到 ISTD 信號")
+        return None, None
+
+    if len(analyte_signals) == 0:
+        print("❌ 錯誤：未找到代謝物信號（所有 FeatureID 都被標記為 ISTD）")
+        return None, None
+
+    print(f"\n校正統計:")
+    print(f"  - ISTD 數量: {len(istd_signals)}")
+    print(f"  - 代謝物數量: {len(analyte_signals)}")
+
     if 'Sample_Name' not in sample_info_df.columns:
-        print("錯誤：'SampleInfo' 缺少 'Sample_Name' 欄位")
+        print("❌ 錯誤：'SampleInfo' 缺少 'Sample_Name' 欄位")
         return None, None
     
     sample_names = sample_info_df['Sample_Name'].tolist()
@@ -562,9 +773,9 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
 def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
     """
     使用 Hotelling T² 檢測 QC 樣本中的異常值
-    
+
     ✅ 正確邏輯：計算每個 QC 樣本與 QC 群組中心的偏離
-    
+
     Parameters:
     -----------
     qc_scores : ndarray
@@ -573,7 +784,7 @@ def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
         所有樣本的 PCA 分數（此參數保留以兼容舊代碼，但不使用）
     alpha : float
         顯著水平（預設 0.05）
-    
+
     Returns:
     --------
     t2_values : ndarray
@@ -583,6 +794,10 @@ def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
     outliers : ndarray (bool)
         異常值標記
     """
+    # ===== 防呆23: alpha 参数验证 =====
+    if not (0 < alpha < 1):
+        raise ValueError(f"❌ 錯誤：alpha 必須在 (0, 1) 範圍內，當前值: {alpha}")
+
     n_qc, p = qc_scores.shape
     
     if n_qc < 3:
@@ -1180,6 +1395,26 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file, 
     """
     儲存結果到 Excel，使用 Wilcoxon 配對符號等級檢定 + Levene's test
     """
+    # ===== 防呆22: 结果数据验证 =====
+    if results_df is None or results_df.empty:
+        print("❌ 錯誤：校正結果為空，無法儲存")
+        raise ValueError("校正結果為空")
+
+    if len(results_df) == 0:
+        print("❌ 錯誤：沒有成功校正的代謝物")
+        raise ValueError("沒有成功校正的代謝物")
+
+    print(f"\n準備儲存結果:")
+    print(f"  - 校正成功的代謝物數量: {len(results_df)}")
+    print(f"  - 樣本數量: {len(sample_columns)}")
+
+    # 检查必要欄位
+    required_columns = ['FeatureID', 'ISTD']
+    missing_cols = [col for col in required_columns if col not in results_df.columns]
+    if missing_cols:
+        print(f"❌ 錯誤：結果缺少必要欄位: {', '.join(missing_cols)}")
+        raise ValueError(f"結果缺少必要欄位: {missing_cols}")
+
     # ✅ 修正：使用輸出檔案所在的目錄作為基礎目錄
     output_base_dir = os.path.dirname(output_file)
     
@@ -1350,8 +1585,27 @@ def main(input_file=None):
         output_dir,
         f"ISTD_Results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     )
+
+    # ===== 防呆17: 输出目录权限检查 =====
+    try:
+        # 测试写入权限
+        test_file = os.path.join(output_dir, '.write_test')
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+    except Exception as e:
+        print(f"❌ 錯誤：無法寫入 output 目錄")
+        print(f"   請檢查目錄權限: {output_dir}")
+        print(f"   詳細錯誤: {e}")
+        raise Exception(f"輸出目錄無寫入權限: {output_dir}")
+
+    # ===== 防呆18: 输出文件检查 =====
+    if os.path.exists(output_file):
+        print(f"⚠️ 警告：輸出檔案已存在，將被覆蓋")
+        print(f"   {output_file}")
+
     save_results_to_excel(
-        original_df, results_df, sample_info_df, 
+        original_df, results_df, sample_info_df,
         output_file, all_sheets, sample_columns, input_file
     )
     
