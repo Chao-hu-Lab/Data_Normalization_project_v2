@@ -51,105 +51,458 @@ def select_file():
     return file_path
 
 def read_excel_data(file_path):
-    """讀取Excel檔案"""
-    xl_file = pd.ExcelFile(file_path)
+    """
+    讀取Excel檔案
+
+    包含完整的防呆措施
+    """
+    # ===== 防呆1: 文件存在性檢查 =====
+    if not os.path.exists(file_path):
+        print(f"❌ 錯誤：找不到檔案 '{file_path}'")
+        raise FileNotFoundError(f"找不到檔案: {file_path}")
+
+    # ===== 防呆2: 文件格式檢查 =====
+    if not (file_path.endswith('.xlsx') or file_path.endswith('.xls')):
+        print(f"❌ 錯誤：輸入檔案必須是Excel格式 (.xlsx 或 .xls)，但提供了 {file_path}")
+        raise ValueError(f"不支援的檔案格式: {file_path}")
+
+    # ===== 防呆3: 文件大小檢查 =====
+    file_size = os.path.getsize(file_path)
+    if file_size == 0:
+        print(f"❌ 錯誤：檔案大小為 0 bytes，可能是空檔案")
+        raise ValueError("檔案大小為 0 bytes")
+    elif file_size < 1024:  # 小於 1KB
+        print(f"⚠️ 警告：檔案大小僅 {file_size} bytes，可能不是有效的 Excel 檔案")
+
+    print(f"✓ 檔案大小: {file_size / 1024:.2f} KB")
+
+    # ===== 防呆4: Excel 文件有效性檢查 =====
+    try:
+        xl_file = pd.ExcelFile(file_path)
+    except Exception as e:
+        print(f"❌ 錯誤：無法讀取 Excel 檔案，可能已損壞或格式不正確")
+        print(f"詳細錯誤: {e}")
+        raise ValueError(f"無法讀取 Excel 檔案: {e}")
+
     sheet_names = xl_file.sheet_names
-    
+    print(f"✓ 找到工作表: {', '.join(sheet_names)}")
+
+    # ===== 防呆5: 必要工作表檢查 =====
     if 'SampleInfo' not in sheet_names:
-        raise ValueError("找不到'SampleInfo'工作表")
-    
-    sample_info = pd.read_excel(file_path, sheet_name='SampleInfo')
-    
+        print(f"❌ 錯誤：找不到 'SampleInfo' 工作表")
+        print(f"可用的工作表: {', '.join(sheet_names)}")
+        raise ValueError("找不到 'SampleInfo' 工作表")
+
+    # ===== 防呆6: 讀取 SampleInfo =====
+    try:
+        sample_info = pd.read_excel(file_path, sheet_name='SampleInfo')
+    except Exception as e:
+        print(f"❌ 錯誤：讀取 'SampleInfo' 工作表失敗")
+        print(f"詳細錯誤: {e}")
+        raise ValueError(f"讀取 'SampleInfo' 失敗: {e}")
+
+    # ===== 防呆7: SampleInfo 完整性檢查 =====
+    if sample_info.empty:
+        print(f"❌ 錯誤：'SampleInfo' 工作表為空")
+        raise ValueError("'SampleInfo' 工作表為空")
+
+    required_columns = ['Sample_Name']
+    missing_cols = [col for col in required_columns if col not in sample_info.columns]
+    if missing_cols:
+        print(f"❌ 錯誤：'SampleInfo' 缺少必要欄位: {', '.join(missing_cols)}")
+        print(f"找到的欄位: {', '.join(sample_info.columns.tolist())}")
+        raise ValueError(f"'SampleInfo' 缺少必要欄位: {missing_cols}")
+
+    print(f"✓ SampleInfo 包含 {len(sample_info)} 筆樣本資訊")
+
     # 選擇數據工作表
-    sheet_priority = ['QC LOWESS result', 'ISTD_Correction', 'RawIntensity']
+    sheet_priority = ['QC LOWESS result', 'ISTD_Correction', 'Batch_effect_result', 'RawIntensity']
     data_sheet = None
-    
+
     for sheet in sheet_priority:
         if sheet in sheet_names:
             data_sheet = sheet
             break
-    
+
     if data_sheet is None:
         for sheet in sheet_names:
             if sheet != 'SampleInfo':
                 data_sheet = sheet
                 break
-    
+
+    # ===== 防呆8: 數據工作表檢查 =====
     if data_sheet is None:
+        print(f"❌ 錯誤：找不到數據工作表")
+        print(f"可用的工作表: {', '.join(sheet_names)}")
         raise ValueError("找不到數據工作表")
-    
-    data = pd.read_excel(file_path, sheet_name=data_sheet)
-    
+
+    print(f"✓ 選擇數據工作表: '{data_sheet}'")
+
+    # ===== 防呆9: 讀取數據工作表 =====
+    try:
+        data = pd.read_excel(file_path, sheet_name=data_sheet)
+    except Exception as e:
+        print(f"❌ 錯誤：讀取 '{data_sheet}' 工作表失敗")
+        print(f"詳細錯誤: {e}")
+        raise ValueError(f"讀取 '{data_sheet}' 失敗: {e}")
+
+    # ===== 防呆10: 數據基本檢查 =====
+    if data.empty:
+        print(f"❌ 錯誤：'{data_sheet}' 工作表為空")
+        raise ValueError(f"'{data_sheet}' 工作表為空")
+
+    if data.shape[1] < 2:
+        print(f"❌ 錯誤：'{data_sheet}' 欄位數不足（至少需要 2 欄）")
+        raise ValueError(f"'{data_sheet}' 欄位數不足")
+
+    print(f"✓ 數據維度: {data.shape[0]} 列 × {data.shape[1]} 欄")
+
     return data, sample_info, data_sheet
 
 def prepare_data_for_combat(data, sample_info):
-    """準備Combat所需的數據格式"""
+    """
+    準備Combat所需的數據格式
+
+    包含完整的防呆措施
+    """
+    # ===== 防呆11: 輸入數據驗證 =====
+    if data is None or data.empty:
+        print(f"❌ 錯誤：輸入數據為空")
+        raise ValueError("輸入數據為空")
+
+    if sample_info is None or sample_info.empty:
+        print(f"❌ 錯誤：樣本資訊為空")
+        raise ValueError("樣本資訊為空")
+
     data_columns = data.columns.tolist()
+    if len(data_columns) < 2:
+        print(f"❌ 錯誤：數據欄位數不足（至少需要 2 欄）")
+        raise ValueError("數據欄位數不足")
+
     feature_col = data_columns[0]
     sample_columns = data_columns[1:]
-    
-    # 確保必要列存在
-    if 'Sample_Name' not in sample_info.columns or 'Batch' not in sample_info.columns:
-        print("警告: SampleInfo工作表缺少必要的列")
-        # ... (保持原有的列名推測邏輯)
-    
+
+    print(f"\n準備 Combat 數據格式...")
+    print(f"  - 特徵欄位: '{feature_col}'")
+    print(f"  - 樣本數量: {len(sample_columns)}")
+
+    # ===== 防呆12: Batch 欄位檢查 =====
+    if 'Batch' not in sample_info.columns:
+        print(f"⚠️ 警告: SampleInfo 缺少 'Batch' 欄位，嘗試推測...")
+
+        # 嘗試從第 4 欄（Column D）推測
+        if sample_info.shape[1] >= 4:
+            column_d = sample_info.columns[3]
+            if 'batch' in str(column_d).lower():
+                sample_info['Batch'] = sample_info[column_d]
+                print(f"  ✓ 使用 '{column_d}' 作為 Batch 欄位")
+            else:
+                print(f"❌ 錯誤：無法找到 Batch 資訊")
+                print(f"  SampleInfo 欄位: {', '.join(sample_info.columns.tolist())}")
+                raise ValueError("SampleInfo 缺少 'Batch' 欄位")
+        else:
+            print(f"❌ 錯誤：SampleInfo 欄位數不足")
+            raise ValueError("SampleInfo 缺少 'Batch' 欄位")
+
+    # ===== 防呆13: Sample_Name 欄位檢查 =====
+    if 'Sample_Name' not in sample_info.columns:
+        print(f"❌ 錯誤：SampleInfo 缺少 'Sample_Name' 欄位")
+        print(f"  SampleInfo 欄位: {', '.join(sample_info.columns.tolist())}")
+        raise ValueError("SampleInfo 缺少 'Sample_Name' 欄位")
+
     # 匹配樣本
     sample_to_batch = {}
+    batch_na_count = 0
+
     for _, row in sample_info.iterrows():
         sample_name = str(row['Sample_Name']).strip()
         if pd.notna(row['Batch']):
             sample_to_batch[sample_name] = row['Batch']
-    
+        else:
+            batch_na_count += 1
+
+    if batch_na_count > 0:
+        print(f"⚠️ 警告：{batch_na_count} 個樣本的 Batch 資訊為空")
+
+    # ===== 防呆14: 樣本匹配檢查 =====
+    if len(sample_to_batch) == 0:
+        print(f"❌ 錯誤：所有樣本的 Batch 資訊都為空")
+        raise ValueError("無有效的 Batch 資訊")
+
     valid_samples = []
     valid_batches = []
-    
+
     for col in sample_columns:
         col_str = str(col).strip()
         if col_str in sample_to_batch:
             valid_samples.append(col)
             valid_batches.append(sample_to_batch[col_str])
-    
+
+    # ===== 防呆15: 有效樣本數檢查 =====
     if len(valid_samples) < 2:
-        # 嘗試部分匹配...
-        # (保持原有邏輯)
-        pass
-    
-    data_matrix = data[valid_samples].values
-    
-    return data_matrix, valid_batches, valid_samples, data[feature_col].values
+        print(f"⚠️ 警告：直接匹配的樣本數不足 ({len(valid_samples)})，嘗試部分匹配...")
+
+        # 嘗試部分匹配（大小寫不敏感）
+        sample_to_batch_lower = {k.lower(): (k, v) for k, v in sample_to_batch.items()}
+
+        for col in sample_columns:
+            col_lower = str(col).strip().lower()
+            if col_lower in sample_to_batch_lower and col not in valid_samples:
+                original_name, batch = sample_to_batch_lower[col_lower]
+                valid_samples.append(col)
+                valid_batches.append(batch)
+                print(f"  ✓ 部分匹配: '{col}' → '{original_name}'")
+
+        if len(valid_samples) < 2:
+            print(f"❌ 錯誤：有效樣本數不足 ({len(valid_samples)} < 2)")
+            print(f"  數據欄位: {', '.join(sample_columns[:5])}...")
+            print(f"  SampleInfo 樣本: {', '.join(list(sample_to_batch.keys())[:5])}...")
+            raise ValueError(f"有效樣本數不足: {len(valid_samples)}")
+
+    print(f"  ✓ 成功匹配 {len(valid_samples)} 個樣本")
+
+    # ===== 防呆16: 批次數量檢查 =====
+    unique_batches = list(set(valid_batches))
+    if len(unique_batches) < 2:
+        print(f"❌ 錯誤：批次數量不足 ({len(unique_batches)} < 2)")
+        print(f"  唯一批次: {unique_batches}")
+        raise ValueError(f"批次數量不足，需要至少 2 個批次")
+
+    print(f"  ✓ 批次資訊: {unique_batches} (共 {len(unique_batches)} 個批次)")
+
+    # 統計每個批次的樣本數
+    from collections import Counter
+    batch_counts = Counter(valid_batches)
+    print(f"\n  批次樣本分佈:")
+    for batch, count in sorted(batch_counts.items()):
+        print(f"    - Batch {batch}: {count} 個樣本")
+        if count < 2:
+            print(f"      ⚠️ 警告：樣本數過少，可能影響校正效果")
+
+    # ===== 防呆17: 數據矩陣提取 =====
+    try:
+        data_matrix = data[valid_samples].values
+    except Exception as e:
+        print(f"❌ 錯誤：提取數據矩陣失敗")
+        print(f"詳細錯誤: {e}")
+        raise ValueError(f"提取數據矩陣失敗: {e}")
+
+    # ===== 防呆18: 數據矩陣驗證 =====
+    if data_matrix.shape[0] == 0:
+        print(f"❌ 錯誤：數據矩陣為空（特徵數為 0）")
+        raise ValueError("數據矩陣為空")
+
+    if data_matrix.shape[1] != len(valid_samples):
+        print(f"❌ 錯誤：數據矩陣維度不一致")
+        print(f"  預期樣本數: {len(valid_samples)}")
+        print(f"  實際樣本數: {data_matrix.shape[1]}")
+        raise ValueError("數據矩陣維度不一致")
+
+    print(f"  ✓ 數據矩陣維度: {data_matrix.shape[0]} 特徵 × {data_matrix.shape[1]} 樣本")
+
+    # ===== 防呆19: NaN 值檢查 =====
+    nan_count = np.isnan(data_matrix).sum()
+    if nan_count > 0:
+        nan_percentage = nan_count / data_matrix.size * 100
+        print(f"  ⚠️ 警告：數據包含 {nan_count} 個 NaN 值 ({nan_percentage:.2f}%)")
+        print(f"  這些值將在 Combat 校正前被填充為最小非零值的一半")
+
+    # ===== 防呆20: 負值檢查 =====
+    negative_count = (data_matrix < 0).sum()
+    if negative_count > 0:
+        print(f"  ⚠️ 警告：數據包含 {negative_count} 個負值")
+        print(f"  這些值將在 Combat 校正前被設為 0")
+
+    feature_ids = data[feature_col].values
+
+    return data_matrix, valid_batches, valid_samples, feature_ids
 
 def perform_combat_correction(data_matrix, batch_info):
-    """執行Combat批次效應校正"""
-    # (保持原有邏輯)
-    data_matrix = data_matrix.astype(float)
+    """
+    執行Combat批次效應校正
+
+    包含完整的防呆措施
+    """
+    # ===== 防呆21: 輸入驗證 =====
+    if data_matrix is None or data_matrix.size == 0:
+        print(f"❌ 錯誤：數據矩陣為空")
+        raise ValueError("數據矩陣為空")
+
+    if batch_info is None or len(batch_info) == 0:
+        print(f"❌ 錯誤：批次資訊為空")
+        raise ValueError("批次資訊為空")
+
+    # ===== 防呆22: 維度一致性檢查 =====
+    if data_matrix.shape[1] != len(batch_info):
+        print(f"❌ 錯誤：數據矩陣樣本數與批次資訊數量不一致")
+        print(f"  數據矩陣樣本數: {data_matrix.shape[1]}")
+        print(f"  批次資訊數量: {len(batch_info)}")
+        raise ValueError("數據矩陣與批次資訊維度不一致")
+
+    print(f"\n執行 Combat 批次效應校正...")
+    print(f"  - 輸入維度: {data_matrix.shape[0]} 特徵 × {data_matrix.shape[1]} 樣本")
+
+    # ===== 防呆23: 數據類型轉換 =====
+    try:
+        data_matrix = data_matrix.astype(float)
+    except Exception as e:
+        print(f"❌ 錯誤：無法將數據轉換為 float 類型")
+        print(f"詳細錯誤: {e}")
+        raise ValueError(f"數據類型轉換失敗: {e}")
+
+    # ===== 防呆24: 數值處理 =====
+    # 處理零值和 NaN
     min_nonzero = np.min(data_matrix[data_matrix > 0]) if np.any(data_matrix > 0) else 1
-    data_matrix[data_matrix == 0] = min_nonzero / 2
-    data_matrix = np.nan_to_num(data_matrix, nan=min_nonzero / 2)
-    data_log = np.log2(data_matrix + 1)
-    
-    combat_obj = pycombat.Combat()
-    corrected_data = combat_obj.fit_transform(data_log.T, batch_info)
-    corrected_data = corrected_data.T
-    
-    corrected_data = np.power(2, corrected_data) - 1
-    corrected_data[corrected_data < 0] = 0
-    
+
+    if min_nonzero == 0:
+        print(f"⚠️ 警告：最小非零值為 0，使用預設值 1")
+        min_nonzero = 1
+
+    zero_count = (data_matrix == 0).sum()
+    if zero_count > 0:
+        print(f"  - 處理 {zero_count} 個零值（填充為 {min_nonzero / 2:.2e}）")
+        data_matrix[data_matrix == 0] = min_nonzero / 2
+
+    nan_count = np.isnan(data_matrix).sum()
+    if nan_count > 0:
+        print(f"  - 處理 {nan_count} 個 NaN 值（填充為 {min_nonzero / 2:.2e}）")
+        data_matrix = np.nan_to_num(data_matrix, nan=min_nonzero / 2)
+
+    # 處理負值
+    negative_count = (data_matrix < 0).sum()
+    if negative_count > 0:
+        print(f"  - 處理 {negative_count} 個負值（設為 {min_nonzero / 2:.2e}）")
+        data_matrix[data_matrix < 0] = min_nonzero / 2
+
+    # Log2 轉換
+    try:
+        data_log = np.log2(data_matrix + 1)
+    except Exception as e:
+        print(f"❌ 錯誤：Log2 轉換失敗")
+        print(f"詳細錯誤: {e}")
+        raise ValueError(f"Log2 轉換失敗: {e}")
+
+    # ===== 防呆25: Log 轉換後檢查 =====
+    if np.any(np.isinf(data_log)):
+        inf_count = np.isinf(data_log).sum()
+        print(f"⚠️ 警告：Log2 轉換後產生 {inf_count} 個無限值")
+        data_log = np.nan_to_num(data_log, nan=0.0, posinf=0.0, neginf=0.0)
+
+    if np.any(np.isnan(data_log)):
+        nan_count = np.isnan(data_log).sum()
+        print(f"⚠️ 警告：Log2 轉換後產生 {nan_count} 個 NaN 值")
+        data_log = np.nan_to_num(data_log, nan=0.0)
+
+    print(f"  ✓ 數據預處理完成")
+    print(f"  - Log2 轉換範圍: [{data_log.min():.2f}, {data_log.max():.2f}]")
+
+    # ===== 防呆26: Combat 校正 =====
+    try:
+        combat_obj = pycombat.Combat()
+        print(f"  - 執行 Combat 校正...")
+        corrected_data = combat_obj.fit_transform(data_log.T, batch_info)
+        corrected_data = corrected_data.T
+        print(f"  ✓ Combat 校正完成")
+    except Exception as e:
+        print(f"❌ 錯誤：Combat 校正失敗")
+        print(f"詳細錯誤: {e}")
+        print(f"\n可能原因:")
+        print(f"  1. 批次資訊格式不正確")
+        print(f"  2. 某些批次樣本數過少")
+        print(f"  3. 數據中存在常數列或近似常數列")
+        raise ValueError(f"Combat 校正失敗: {e}")
+
+    # ===== 防呆27: 反轉 Log2 轉換 =====
+    try:
+        corrected_data = np.power(2, corrected_data) - 1
+    except Exception as e:
+        print(f"❌ 錯誤：反轉 Log2 轉換失敗")
+        print(f"詳細錯誤: {e}")
+        raise ValueError(f"反轉 Log2 轉換失敗: {e}")
+
+    # 處理負值（由於數值精度可能產生）
+    negative_count_after = (corrected_data < 0).sum()
+    if negative_count_after > 0:
+        print(f"  - 修正 {negative_count_after} 個負值（設為 0）")
+        corrected_data[corrected_data < 0] = 0
+
+    # ===== 防呆28: 輸出驗證 =====
+    if np.any(np.isnan(corrected_data)):
+        nan_count = np.isnan(corrected_data).sum()
+        print(f"⚠️ 警告：校正後數據包含 {nan_count} 個 NaN 值")
+        corrected_data = np.nan_to_num(corrected_data, nan=0.0)
+
+    if np.any(np.isinf(corrected_data)):
+        inf_count = np.isinf(corrected_data).sum()
+        print(f"⚠️ 警告：校正後數據包含 {inf_count} 個無限值")
+        corrected_data = np.nan_to_num(corrected_data, nan=0.0, posinf=0.0, neginf=0.0)
+
+    print(f"  ✓ 輸出維度: {corrected_data.shape[0]} 特徵 × {corrected_data.shape[1]} 樣本")
+    print(f"  ✓ 輸出數值範圍: [{corrected_data.min():.2e}, {corrected_data.max():.2e}]")
+
     return corrected_data
 def calculate_permanova(data, batch_labels, distance_metric='manhattan', permutations=999):
     """
     使用 PERMANOVA 評估批次效應
+
+    包含完整的參數驗證
     """
+    # ===== 防呆29: 輸入數據驗證 =====
+    if data is None or data.size == 0:
+        print(f"❌ 錯誤：輸入數據為空")
+        raise ValueError("輸入數據為空")
+
+    if batch_labels is None or len(batch_labels) == 0:
+        print(f"❌ 錯誤：批次標籤為空")
+        raise ValueError("批次標籤為空")
+
+    # ===== 防呆30: 維度一致性檢查 =====
+    if len(data) != len(batch_labels):
+        print(f"❌ 錯誤：數據樣本數與批次標籤數量不一致")
+        print(f"  數據樣本數: {len(data)}")
+        print(f"  批次標籤數量: {len(batch_labels)}")
+        raise ValueError("數據與批次標籤維度不一致")
+
+    # ===== 防呆31: 參數驗證 =====
+    if distance_metric not in ['manhattan', 'euclidean']:
+        print(f"❌ 錯誤：不支援的距離度量 '{distance_metric}'")
+        print(f"  支援的度量: 'manhattan', 'euclidean'")
+        raise ValueError(f"不支援的距離度量: {distance_metric}")
+
+    if permutations < 0:
+        print(f"❌ 錯誤：排列次數必須為非負整數")
+        raise ValueError(f"排列次數不能為負: {permutations}")
+
+    if permutations > 100000:
+        print(f"⚠️ 警告：排列次數過多 ({permutations})，可能耗時很長")
+
+    # ===== 防呆32: 批次數量檢查 =====
+    unique_batches = np.unique(batch_labels)
+    if len(unique_batches) < 2:
+        print(f"❌ 錯誤：批次數量不足 ({len(unique_batches)} < 2)")
+        raise ValueError("批次數量不足，需要至少 2 個批次")
+
+    # ===== 防呆33: 樣本數檢查 =====
+    if len(data) < len(unique_batches) + 1:
+        print(f"⚠️ 警告：樣本數相對於批次數較少")
+        print(f"  樣本數: {len(data)}, 批次數: {len(unique_batches)}")
+
     print(f"\n🔬 執行 PERMANOVA 批次效應檢驗")
     print(f"   - 距離度量: {distance_metric.capitalize()}")
     print(f"   - 排列次數: {permutations}")
-    
+    print(f"   - 樣本數: {len(data)}")
+    print(f"   - 批次數: {len(unique_batches)}")
+
     # 計算距離矩陣
-    if distance_metric == 'manhattan':
-        dist_matrix = manhattan_distances(data)
-    elif distance_metric == 'euclidean':
-        dist_matrix = euclidean_distances(data)
-    else:
-        raise ValueError(f"不支援的距離度量: {distance_metric}")
+    try:
+        if distance_metric == 'manhattan':
+            dist_matrix = manhattan_distances(data)
+        elif distance_metric == 'euclidean':
+            dist_matrix = euclidean_distances(data)
+    except Exception as e:
+        print(f"❌ 錯誤：計算距離矩陣失敗")
+        print(f"詳細錯誤: {e}")
+        raise ValueError(f"距離矩陣計算失敗: {e}")
     
     # 轉換為 DistanceMatrix 對象
     sample_ids = [f"S{i}" for i in range(len(data))]
@@ -1966,48 +2319,90 @@ def save_results_to_excel(input_file, output_file, data, sample_info,
 def main(input_file=None):
     """
     主函數 - 批次效應校正與評估（無母數版本）
+
+    包含完整的防呆措施
     """
     print("="*70)
-    print("  批次效應校正程式 v5.0 (無母數統計框架)")
+    print("  批次效應校正程式 v5.1 (完善防呆版本)")
     print("  - PERMANOVA 批次效應檢驗 (Manhattan 距離)")
     print("  - 配對排列檢定 (Paired Permutation Test)")
     print("  - Cohen's d 效果量")
     print("  - QC CV% 技術重現性")
     print("  - Silhouette Coefficient (次要指標)")
     print("="*70)
-    
+
     # ========== 1. 檔案選擇 ==========
     if input_file is None:
         print("\n請選擇要處理的Excel檔案...")
         input_file = select_file()
-        
+
         if not input_file:
             print("❌ 未選擇檔案，程式結束。")
             return None
-    
+
+    # ===== 防呆34: 文件存在性檢查 =====
     if not os.path.exists(input_file):
+        print(f"❌ 錯誤：找不到檔案 '{input_file}'")
         raise FileNotFoundError(f"找不到檔案: {input_file}")
-    
+
+    # ===== 防呆35: 文件讀取權限檢查 =====
+    if not os.access(input_file, os.R_OK):
+        print(f"❌ 錯誤：無法讀取檔案（權限不足）")
+        raise PermissionError(f"無法讀取檔案: {input_file}")
+
     print(f"\n✓ 選擇的檔案: {os.path.basename(input_file)}")
-    
+    print(f"  路徑: {input_file}")
+
     # ========== 2. 設定輸出路徑 ==========
-        # ========== 2. 設定輸出路徑 ==========
-    # 🔧 修正：使用腳本所在資料夾，而非輸入檔案資料夾
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(script_dir, 'output')
 
-    # 創建 output 資料夾
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        print(f"✓ 已創建 output 資料夾: {output_dir}")
+    # ===== 防呆36: 輸出目錄創建與權限檢查 =====
+    try:
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+            print(f"✓ 已創建 output 資料夾: {output_dir}")
+        else:
+            print(f"✓ output 資料夾已存在: {output_dir}")
+    except Exception as e:
+        print(f"❌ 錯誤：無法創建 output 資料夾")
+        print(f"詳細錯誤: {e}")
+        raise Exception(f"無法創建輸出目錄: {e}")
+
+    # ===== 防呆37: 輸出目錄寫入權限檢查 =====
+    try:
+        test_file = os.path.join(output_dir, '.write_test')
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+        print(f"✓ output 資料夾寫入權限正常")
+    except Exception as e:
+        print(f"❌ 錯誤：無法寫入 output 目錄")
+        print(f"  請檢查目錄權限: {output_dir}")
+        print(f"  詳細錯誤: {e}")
+        raise Exception(f"輸出目錄無寫入權限: {output_dir}")
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = os.path.join(output_dir, f'Combat_corrected_{timestamp}.xlsx')
 
+    # ===== 防呆38: 輸出文件檢查 =====
+    if os.path.exists(output_file):
+        print(f"⚠️ 警告：輸出檔案已存在，將被覆蓋")
+        print(f"  {output_file}")
+
     plots_dir = os.path.join(output_dir, 'Batch_Effect_plots')
-    if not os.path.exists(plots_dir):
-        os.makedirs(plots_dir)
-        print(f"✓ 已創建圖表資料夾: {plots_dir}")
+
+    # ===== 防呆39: 圖表目錄創建 =====
+    try:
+        if not os.path.exists(plots_dir):
+            os.makedirs(plots_dir, exist_ok=True)
+            print(f"✓ 已創建圖表資料夾: {plots_dir}")
+        else:
+            print(f"✓ 圖表資料夾已存在: {plots_dir}")
+    except Exception as e:
+        print(f"❌ 錯誤：無法創建圖表資料夾")
+        print(f"詳細錯誤: {e}")
+        raise Exception(f"無法創建圖表目錄: {e}")
     
     try:
         # ========== 3. 讀取數據 ==========
