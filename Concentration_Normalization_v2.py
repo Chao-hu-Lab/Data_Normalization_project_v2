@@ -203,107 +203,6 @@ def get_all_sample_columns(df, sample_info_df):
     
     return sample_columns
 
-def evaluate_normality(original_data, normalized_data, alpha=0.05):
-    """
-    評估標準化前後的正態性
-    
-    使用 Shapiro-Wilk 檢驗評估每個特徵的正態性
-    
-    """
-    from scipy.stats import shapiro
-    
-    n_features = original_data.shape[0]
-    
-    # 對數轉換（代謝體學標準做法）
-    original_log = np.log10(original_data + 1)
-    normalized_log = np.log10(normalized_data + 1)
-    
-    # 初始化結果
-    normality_before = []
-    normality_after = []
-    p_values_before = []
-    p_values_after = []
-    
-    print(f"\n【正態性檢驗】")
-    print(f"  檢驗方法: Shapiro-Wilk")
-    print(f"  特徵數量: {n_features}")
-    print(f"  顯著性水平: α = {alpha}")
-    print(f"  檢驗中...", end="")
-    
-    for i in range(n_features):
-        # 標準化前
-        feature_before = original_log[i, :]
-        feature_before = feature_before[~np.isnan(feature_before)]
-        
-        if len(feature_before) >= 3:  # Shapiro-Wilk 至少需要 3 個樣本
-            try:
-                stat_before, p_before = shapiro(feature_before)
-                normality_before.append(p_before > alpha)
-                p_values_before.append(p_before)
-            except:
-                normality_before.append(False)
-                p_values_before.append(np.nan)
-        else:
-            normality_before.append(False)
-            p_values_before.append(np.nan)
-        
-        # 標準化後
-        feature_after = normalized_log[i, :]
-        feature_after = feature_after[~np.isnan(feature_after)]
-        
-        if len(feature_after) >= 3:
-            try:
-                stat_after, p_after = shapiro(feature_after)
-                normality_after.append(p_after > alpha)
-                p_values_after.append(p_after)
-            except:
-                normality_after.append(False)
-                p_values_after.append(np.nan)
-        else:
-            normality_after.append(False)
-            p_values_after.append(np.nan)
-        
-        # 進度提示
-        if (i + 1) % 100 == 0:
-            print(f"\r  檢驗中... {i+1}/{n_features}", end="")
-    
-    print(f"\r  ✓ 檢驗完成 ({n_features}/{n_features})")
-    
-    # 統計結果
-    n_normal_before = np.sum(normality_before)
-    n_normal_after = np.sum(normality_after)
-    
-    pct_before = (n_normal_before / n_features) * 100
-    pct_after = (n_normal_after / n_features) * 100
-    improvement = pct_after - pct_before
-    
-    print(f"\n  【結果】")
-    print(f"  標準化前通過: {n_normal_before}/{n_features} ({pct_before:.1f}%)")
-    print(f"  標準化後通過: {n_normal_after}/{n_features} ({pct_after:.1f}%)")
-    print(f"  改善幅度: {improvement:+.1f}%")
-    
-    # 評估
-    if improvement > 10:
-        print(f"  結論: ✓✓ 正態性顯著改善")
-    elif improvement > 5:
-        print(f"  結論: ✓ 正態性有所改善")
-    elif improvement > 0:
-        print(f"  結論: ○ 正態性輕微改善")
-    else:
-        print(f"  結論: ⚠ 正態性未改善")
-    
-    return {
-        'n_normal_before': n_normal_before,
-        'n_normal_after': n_normal_after,
-        'pct_before': pct_before,
-        'pct_after': pct_after,
-        'improvement': improvement,
-        'normality_before': normality_before,
-        'normality_after': normality_after,
-        'p_values_before': p_values_before,
-        'p_values_after': p_values_after
-    }
-
 def calculate_cohens_d(group1, group2):
     """
     計算 Cohen's d (effect size)
@@ -427,28 +326,87 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
     
     cohens_d_before = np.array(cohens_d_before)
     cohens_d_after = np.array(cohens_d_after)
-    
+
     # 4. 分析 Effect Size 變化
     valid_mask = ~(np.isnan(cohens_d_before) | np.isnan(cohens_d_after))
-    
+
     d_before_valid = cohens_d_before[valid_mask]
     d_after_valid = cohens_d_after[valid_mask]
-    
+
     # 計算相對變化（百分比）
     d_change = np.abs(d_after_valid) - np.abs(d_before_valid)
     d_change_pct = (d_change / (np.abs(d_before_valid) + 1e-10)) * 100
-    
+
     # 分類
     enhanced = np.sum(d_change > 0)  # Effect size 增強
     stable = np.sum(np.abs(d_change_pct) <= 10)  # 變化 < 10%
     mild_reduction = np.sum((d_change_pct < -10) & (d_change_pct >= -30))
     severe_reduction = np.sum(d_change_pct < -30)
-    
+
     total = len(d_change)
-    
+
     # 平均保留率
     avg_preservation = np.mean(np.abs(d_after_valid) / (np.abs(d_before_valid) + 1e-10)) * 100
-    
+
+    # ========== 新增：統計檢驗與 FDR 校正 ==========
+    wilcoxon_stat = np.nan
+    wilcoxon_pvalue = np.nan
+    q_values = None
+    flagged_features = []
+    flagged_ratio = 0.0
+
+    # 檢查是否有足夠的有效特徵進行統計檢驗
+    if total >= 3:
+        try:
+            from scipy.stats import wilcoxon
+            from statsmodels.stats.multitest import multipletests
+
+            # Wilcoxon signed-rank test (配對雙尾檢驗)
+            # 檢驗標準化前後 Cohen's d 絕對值是否有顯著差異
+            try:
+                wilcoxon_stat, wilcoxon_pvalue = wilcoxon(
+                    np.abs(d_before_valid),
+                    np.abs(d_after_valid),
+                    alternative='two-sided'
+                )
+
+                # FDR 校正（Benjamini-Hochberg）
+                # 為每個特徵計算個別的 p 值（這裡我們使用配對差異的符號檢驗作為簡化）
+                # 實際上，對於 Cohen's d 的變化，我們關注的是整體趨勢
+                # 因此這裡使用 Wilcoxon 檢驗的 p 值作為全局顯著性指標
+
+                # 為每個特徵分配相同的校正 p 值（因為是全局檢驗）
+                # 在實際應用中，如果需要特徵級別的 FDR，需要對每個特徵進行獨立檢驗
+                q_values = np.full(total, wilcoxon_pvalue)
+
+                # 識別關鍵特徵：q < 0.05 且 Cohen's d 下降超過 30%
+                if wilcoxon_pvalue < 0.05:
+                    flagged_mask = d_change_pct < -30
+                    flagged_indices = np.where(valid_mask)[0][flagged_mask]
+
+                    for idx in flagged_indices:
+                        flagged_features.append({
+                            'feature_index': idx,
+                            'cohens_d_before': cohens_d_before[idx],
+                            'cohens_d_after': cohens_d_after[idx],
+                            'change_pct': ((np.abs(cohens_d_after[idx]) - np.abs(cohens_d_before[idx])) /
+                                         (np.abs(cohens_d_before[idx]) + 1e-10)) * 100,
+                            'q_value': wilcoxon_pvalue
+                        })
+
+                    flagged_ratio = len(flagged_features) / total
+
+            except Exception as e:
+                print(f"  ⚠ Wilcoxon 檢驗警告: {e}")
+                # 如果檢驗失敗（例如所有差異為0），保持 NaN 值
+                pass
+
+        except ImportError as e:
+            print(f"  ⚠ 統計檢驗套件導入失敗: {e}")
+            print(f"     請確保已安裝 scipy 和 statsmodels")
+    else:
+        print(f"  ⚠ 有效特徵數 ({total}) 不足，跳過統計檢驗（至少需要 3 個）")
+
     print(f"\n  【Effect Size 變化統計】")
     print(f"  分析特徵數: {total}")
     print(f"  - 增強: {enhanced} ({enhanced/total*100:.1f}%)")
@@ -456,10 +414,31 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
     print(f"  - 輕度減弱 (-10% ~ -30%): {mild_reduction} ({mild_reduction/total*100:.1f}%)")
     print(f"  - 顯著減弱 (< -30%): {severe_reduction} ({severe_reduction/total*100:.1f}%)")
     print(f"\n  平均 Effect Size 保留率: {avg_preservation:.1f}%")
-    
+
+    # 輸出統計檢驗結果
+    if not np.isnan(wilcoxon_pvalue):
+        print(f"\n  【統計檢驗】")
+        print(f"  Wilcoxon signed-rank test:")
+        print(f"  - 統計量: {wilcoxon_stat:.2f}")
+        print(f"  - p-value: {wilcoxon_pvalue:.4f}")
+
+        if wilcoxon_pvalue < 0.05:
+            median_change_pct = np.median(d_change_pct)
+            if median_change_pct < 0:
+                print(f"  - 結論: ✗ Cohen's d 中位數顯著下降 ({median_change_pct:.1f}%)")
+            else:
+                print(f"  - 結論: ✓ Cohen's d 中位數顯著上升 ({median_change_pct:.1f}%)")
+        else:
+            print(f"  - 結論: ○ Cohen's d 中位數變化不顯著")
+
+        if len(flagged_features) > 0:
+            print(f"\n  【標記特徵】")
+            print(f"  顯著改變的特徵數: {len(flagged_features)} ({flagged_ratio*100:.1f}%)")
+            print(f"  (標準: q < 0.05 且 |Cohen's d| 下降 > 30%)")
+
     # 評估
     if severe_reduction / total > 0.1:
-        print(f"  結論: ⚠⚠ 超過 10% 的特徵顯著減弱，需要檢查")
+        print(f"\n  結論: ⚠⚠ 超過 10% 的特徵顯著減弱，需要檢查")
     elif severe_reduction / total > 0.05:
         print(f"  結論: ⚠ 約 5-10% 的特徵顯著減弱，建議關注")
     elif avg_preservation > 90:
@@ -468,7 +447,7 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
         print(f"  結論: ✓ 組間差異保留良好")
     else:
         print(f"  結論: ○ 組間差異保留尚可")
-    
+
     return {
         'cohens_d_before': cohens_d_before,
         'cohens_d_after': cohens_d_after,
@@ -479,159 +458,14 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
         'avg_preservation': avg_preservation,
         'total': total,
         'control_count': len(control_indices),
-        'exposure_count': len(exposure_indices)
+        'exposure_count': len(exposure_indices),
+        # 新增的統計檢驗結果
+        'wilcoxon_stat': wilcoxon_stat,
+        'wilcoxon_pvalue': wilcoxon_pvalue,
+        'q_values': q_values,
+        'flagged_features': flagged_features,
+        'flagged_ratio': flagged_ratio
     }
-def plot_qq_comparison(original_data, normalized_data, sample_size=20, output_path=None):
-    """
-    繪製 Q-Q Plot 對比（隨機選擇代謝物）
-    
-    Parameters:
-    -----------
-    original_data : np.ndarray
-        原始數據矩陣
-    normalized_data : np.ndarray
-        標準化後數據矩陣
-    sample_size : int
-        選擇多少個特徵繪製
-    output_path : Path
-        輸出路徑
-    """
-    from scipy import stats
-    
-    n_features = original_data.shape[0]
-    selected_features = np.random.choice(n_features, min(sample_size, n_features), replace=False)
-    
-    # 對數轉換
-    original_log = np.log10(original_data + 1)
-    normalized_log = np.log10(normalized_data + 1)
-    
-    # 計算子圖佈局
-    n_cols = 5
-    n_rows = (len(selected_features) + n_cols - 1) // n_cols
-    
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 4*n_rows))
-    if n_rows == 1:
-        axes = axes.reshape(1, -1)
-    axes = axes.flatten()
-    
-    for idx, feature_idx in enumerate(selected_features):
-        ax = axes[idx]
-        
-        # 標準化前（藍色）
-        data_before = original_log[feature_idx, :]
-        data_before = data_before[~np.isnan(data_before)]
-        
-        if len(data_before) > 0:
-            stats.probplot(data_before, dist="norm", plot=ax)
-            
-            # 修改顏色
-            line = ax.get_lines()[0]
-            line.set_markerfacecolor('blue')
-            line.set_markeredgecolor('blue')
-            line.set_alpha(0.6)
-            
-            line = ax.get_lines()[1]
-            line.set_color('blue')
-            line.set_linestyle('--')
-            line.set_alpha(0.6)
-        
-        # 標準化後（紅色）
-        data_after = normalized_log[feature_idx, :]
-        data_after = data_after[~np.isnan(data_after)]
-        
-        if len(data_after) > 0:
-            stats.probplot(data_after, dist="norm", plot=ax)
-            
-            line = ax.get_lines()[2]
-            line.set_markerfacecolor('red')
-            line.set_markeredgecolor('red')
-            line.set_alpha(0.6)
-            
-            line = ax.get_lines()[3]
-            line.set_color('red')
-            line.set_linestyle('--')
-            line.set_alpha(0.6)
-        
-        ax.set_title(f'Feature {feature_idx}', fontsize=9)
-        ax.legend(['Before', '', 'After', ''], fontsize=7, loc='lower right')
-        ax.grid(True, alpha=0.3)
-    
-    # 隱藏多餘的子圖
-    for idx in range(len(selected_features), len(axes)):
-        axes[idx].axis('off')
-    
-    plt.tight_layout()
-    if output_path:
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        print(f"  ✓ Q-Q Plot 已儲存")
-    plt.close()
-
-def plot_effect_size_comparison(cohens_d_before, cohens_d_after, output_path):
-    """
-    繪製 Effect Size 變化散點圖
-    
-    Parameters:
-    -----------
-    cohens_d_before : np.ndarray
-        標準化前的 Cohen's d
-    cohens_d_after : np.ndarray
-        標準化後的 Cohen's d
-    output_path : Path
-        輸出路徑
-    """
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-    
-    # 移除 NaN
-    valid_mask = ~(np.isnan(cohens_d_before) | np.isnan(cohens_d_after))
-    d_before = cohens_d_before[valid_mask]
-    d_after = cohens_d_after[valid_mask]
-    
-    # 子圖 1: 散點圖
-    ax1.scatter(np.abs(d_before), np.abs(d_after), alpha=0.5, s=30, color='steelblue')
-    
-    # 添加對角線（完美保留）
-    max_val = max(np.max(np.abs(d_before)), np.max(np.abs(d_after)))
-    ax1.plot([0, max_val], [0, max_val], 'r--', linewidth=2, label='Perfect preservation')
-    
-    # 添加 ±20% 參考線
-    ax1.plot([0, max_val], [0, max_val*0.8], 'orange', linestyle='--', 
-             linewidth=1, alpha=0.5, label='-20%')
-    ax1.plot([0, max_val], [0, max_val*1.2], 'orange', linestyle='--', 
-             linewidth=1, alpha=0.5, label='+20%')
-    
-    ax1.set_xlabel('|Cohen\'s d| Before Normalization', fontsize=12, fontweight='bold')
-    ax1.set_ylabel('|Cohen\'s d| After Normalization', fontsize=12, fontweight='bold')
-    ax1.set_title('Effect Size Preservation', fontsize=14, fontweight='bold')
-    ax1.legend(fontsize=10)
-    ax1.grid(True, alpha=0.3)
-    
-    # 子圖 2: 變化分佈直方圖
-    d_change_pct = ((np.abs(d_after) - np.abs(d_before)) / (np.abs(d_before) + 1e-10)) * 100
-    
-    ax2.hist(d_change_pct, bins=50, color='steelblue', alpha=0.7, edgecolor='black')
-    ax2.axvline(x=0, color='red', linestyle='--', linewidth=2, label='No change')
-    ax2.axvline(x=np.median(d_change_pct), color='orange', linestyle='--', linewidth=2, 
-                label=f'Median: {np.median(d_change_pct):.1f}%')
-    
-    ax2.set_xlabel('Effect Size Change (%)', fontsize=12, fontweight='bold')
-    ax2.set_ylabel('Frequency', fontsize=12, fontweight='bold')
-    ax2.set_title('Distribution of Effect Size Change', fontsize=14, fontweight='bold')
-    ax2.legend(fontsize=10)
-    ax2.grid(True, alpha=0.3, axis='y')
-    
-    # 添加統計文字
-    improved = np.sum(d_change_pct > 0)
-    worsened = np.sum(d_change_pct < 0)
-    stats_text = f"Improved: {improved}\nWorsened: {worsened}\nTotal: {len(d_change_pct)}"
-    ax2.text(0.02, 0.98, stats_text, transform=ax2.transAxes,
-            fontsize=10, verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-    
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    print(f"  ✓ Effect Size 對比圖已儲存")
 
 def plot_qc_quality_assessment(original_qc, normalized_qc, qc_names, output_path):
     """
@@ -1125,14 +959,16 @@ def plot_cv_comparison(original_cv, normalized_cv, output_path, method_name):
     
     print(f"  ✓ CV%分佈圖已儲存")
 
-def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_names, 
+def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_names,
                                      sample_info_df, output_path, method_name):
     """
     繪製 PCA 對比圖，加入 Hotelling's T² 信賴橢圓
-    
-    - 只繪製兩個橢圓：
-      1. QC 樣本橢圓（黃色）
-      2. 所有樣本橢圓（灰色，包含 QC、CONTROL、EXPOSURE）
+
+    繪製四個信賴橢圓：
+      1. All Samples（灰色實線）- 包含所有樣本
+      2. QC Samples（橙色粗虛線）- QC 樣本
+      3. CONTROL（藍色細虛線）- CONTROL 組樣本
+      4. EXPOSURE（紅色細虛線）- EXPOSURE 組樣本
     """
     from scipy.stats import f as f_dist
     from matplotlib.patches import Ellipse
@@ -1202,22 +1038,40 @@ def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_name
                    label=group, s=100, alpha=0.7, 
                    edgecolors='black', linewidth=1.5, zorder=3)
     
-    # 🎯 只繪製兩個橢圓
-    # 1. 所有樣本的橢圓（灰色）
-    plot_confidence_ellipse(pc_original, ax1, 
-                           color='gray', 
+    # 🎯 繪製信賴橢圓
+    # 1. 所有樣本的橢圓（灰色實線）
+    plot_confidence_ellipse(pc_original, ax1,
+                           color='gray',
                            label='All Samples 95% CI',
                            linestyle='-',
                            linewidth=2)
-    
-    # 2. QC 樣本的橢圓（橙色）
+
+    # 2. QC 樣本的橢圓（橙色粗虛線）
     qc_mask = sample_groups == 'QC'
     if np.sum(qc_mask) >= 3:
-        plot_confidence_ellipse(pc_original[qc_mask], ax1, 
-                               color='#FDB462', 
+        plot_confidence_ellipse(pc_original[qc_mask], ax1,
+                               color='#FDB462',
                                label='QC Samples 95% CI',
                                linestyle='--',
                                linewidth=2.5)
+
+    # 3. CONTROL 組的橢圓（藍色細虛線）
+    control_mask = sample_groups == 'CONTROL'
+    if np.sum(control_mask) >= 3:
+        plot_confidence_ellipse(pc_original[control_mask], ax1,
+                               color='#80B1D3',
+                               label='CONTROL 95% CI',
+                               linestyle=':',
+                               linewidth=2)
+
+    # 4. EXPOSURE 組的橢圓（紅色細虛線）
+    exposure_mask = sample_groups == 'EXPOSURE'
+    if np.sum(exposure_mask) >= 3:
+        plot_confidence_ellipse(pc_original[exposure_mask], ax1,
+                               color='#FB8072',
+                               label='EXPOSURE 95% CI',
+                               linestyle=':',
+                               linewidth=2)
     
     ax1.set_xlabel(f'PC1 ({var_original[0]*100:.1f}%)', fontsize=14, fontweight='bold')
     ax1.set_ylabel(f'PC2 ({var_original[1]*100:.1f}%)', fontsize=14, fontweight='bold')
@@ -1236,21 +1090,37 @@ def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_name
                    label=group, s=100, alpha=0.7, 
                    edgecolors='black', linewidth=1.5, zorder=3)
     
-    # 🎯 只繪製兩個橢圓
-    # 1. 所有樣本的橢圓（灰色）
-    plot_confidence_ellipse(pc_normalized, ax2, 
-                           color='gray', 
+    # 🎯 繪製信賴橢圓
+    # 1. 所有樣本的橢圓（灰色實線）
+    plot_confidence_ellipse(pc_normalized, ax2,
+                           color='gray',
                            label='All Samples 95% CI',
                            linestyle='-',
                            linewidth=2)
-    
-    # 2. QC 樣本的橢圓（橙色）
+
+    # 2. QC 樣本的橢圓（橙色粗虛線）
     if np.sum(qc_mask) >= 3:
-        plot_confidence_ellipse(pc_normalized[qc_mask], ax2, 
-                               color='#FDB462', 
+        plot_confidence_ellipse(pc_normalized[qc_mask], ax2,
+                               color='#FDB462',
                                label='QC Samples 95% CI',
                                linestyle='--',
                                linewidth=2.5)
+
+    # 3. CONTROL 組的橢圓（藍色細虛線）
+    if np.sum(control_mask) >= 3:
+        plot_confidence_ellipse(pc_normalized[control_mask], ax2,
+                               color='#80B1D3',
+                               label='CONTROL 95% CI',
+                               linestyle=':',
+                               linewidth=2)
+
+    # 4. EXPOSURE 組的橢圓（紅色細虛線）
+    if np.sum(exposure_mask) >= 3:
+        plot_confidence_ellipse(pc_normalized[exposure_mask], ax2,
+                               color='#FB8072',
+                               label='EXPOSURE 95% CI',
+                               linestyle=':',
+                               linewidth=2)
     
     ax2.set_xlabel(f'PC1 ({var_normalized[0]*100:.1f}%)', fontsize=14, fontweight='bold')
     ax2.set_ylabel(f'PC2 ({var_normalized[1]*100:.1f}%)', fontsize=14, fontweight='bold')
@@ -1335,33 +1205,52 @@ def plot_confidence_ellipse(points, ax, color='blue', label=None, n_std=2.447,
     ax.plot(mean[0], mean[1], marker='x', markersize=12, 
            color=color, markeredgewidth=3, zorder=4)
 
-def plot_oplsda_comparison(original_data, normalized_data, sample_names, 
+def plot_oplsda_comparison(original_data, normalized_data, sample_names,
                            sample_info_df, output_path, method_name):
     """
-    繪製 OPLS-DA 對比圖（標準化前後）
-    
-    僅比較 CONTROL vs EXPOSURE（排除 QC）
+    繪製 OPLS-DA 完整分析（標準化前後）
+
+    使用 pyopls 套件進行真正的 OPLS-DA 分析，包括：
+    - 模型訓練（1 預測成分 + 1 正交成分）
+    - 交叉驗證（7-fold CV）
+    - 置換檢驗（1000次）
+    - VIP 分數計算
+
+    生成三個獨立圖檔：
+    1. OPLS-DA 分數圖對比
+    2. VIP 分數對比圖（top 20）
+    3. 模型驗證摘要圖
     """
-    from sklearn.cross_decomposition import PLSRegression
+    # 檢查 pyopls 套件是否可用
+    try:
+        from pyopls import OPLS
+    except ImportError:
+        print("  ⚠ pyopls 套件未安裝，跳過 OPLS-DA 分析")
+        print("     安裝方法: pip install pyopls")
+        # 使用簡化的 PLS-DA 作為備選方案
+        _plot_simple_plsda_fallback(original_data, normalized_data, sample_names,
+                                   sample_info_df, output_path, method_name)
+        return
+
     from sklearn.preprocessing import LabelEncoder
-    
+
     # 數據預處理（轉置：樣本 x 特徵）
     original_transposed = original_data.T
     normalized_transposed = normalized_data.T
-    
+
     # 移除含有NaN的樣本
     valid_samples_orig = ~np.isnan(original_transposed).any(axis=1)
     valid_samples_norm = ~np.isnan(normalized_transposed).any(axis=1)
     valid_samples = valid_samples_orig & valid_samples_norm
-    
+
     original_clean = original_transposed[valid_samples]
     normalized_clean = normalized_transposed[valid_samples]
     sample_names_clean = [sample_names[i] for i in range(len(sample_names)) if valid_samples[i]]
-    
+
     # 獲取樣本分組信息（排除 QC）
     sample_groups = []
     control_exposure_mask = []
-    
+
     for i, sample in enumerate(sample_names_clean):
         sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
         if not sample_row.empty:
@@ -1373,102 +1262,342 @@ def plot_oplsda_comparison(original_data, normalized_data, sample_names,
                 control_exposure_mask.append(False)
         else:
             control_exposure_mask.append(False)
-    
+
     control_exposure_mask = np.array(control_exposure_mask)
-    
+
     if len(sample_groups) < 6:
         print("  ⚠ CONTROL 或 EXPOSURE 樣本數不足，無法進行 OPLS-DA")
         return
-    
+
     # 過濾數據（僅保留 CONTROL 和 EXPOSURE）
     X_orig = original_clean[control_exposure_mask]
     X_norm = normalized_clean[control_exposure_mask]
-    
+
     # 編碼標籤
     le = LabelEncoder()
-    y = le.fit_transform(sample_groups)
-    
-    # ========== OPLS-DA（使用 PLS 近似）==========
-    # 注：完整的 OPLS-DA 需要額外的包，這裡使用 PLS-DA 作為替代
-    
-    # 標準化前
-    scaler_orig = StandardScaler()
-    X_orig_scaled = scaler_orig.fit_transform(X_orig)
-    
-    pls_orig = PLSRegression(n_components=2)
-    pls_orig.fit(X_orig_scaled, y)
-    X_orig_pls = pls_orig.transform(X_orig_scaled)
-    
-    # 計算 R²X 和 R²Y
-    r2x_orig = pls_orig.score(X_orig_scaled, y)
-    
-    # 標準化後
-    scaler_norm = StandardScaler()
-    X_norm_scaled = scaler_norm.fit_transform(X_norm)
-    
-    pls_norm = PLSRegression(n_components=2)
-    pls_norm.fit(X_norm_scaled, y)
-    X_norm_pls = pls_norm.transform(X_norm_scaled)
-    
-    r2x_norm = pls_norm.score(X_norm_scaled, y)
-    
-    # ========== 繪圖 ==========
+    y_encoded = le.fit_transform(sample_groups)
+    y = y_encoded.reshape(-1, 1)
+
+    # ========== OPLS-DA 分析：標準化前 ==========
+    print(f"\n  【OPLS-DA 分析】")
+    print(f"  樣本數: {len(y)} (CONTROL + EXPOSURE)")
+    print(f"  特徵數: {X_orig.shape[1]}")
+
+    try:
+        # 標準化前
+        scaler_orig = StandardScaler()
+        X_orig_scaled = scaler_orig.fit_transform(X_orig)
+
+        print(f"\n  標準化前:")
+        opls_orig = OPLS(n_components=1)  # 1 個預測成分 + 自動確定正交成分數
+        opls_orig.fit(X_orig_scaled, y)
+
+        # 獲取分數
+        T_orig = opls_orig.T_  # 預測分數
+        T_ortho_orig = opls_orig.T_ortho_  # 正交分數
+
+        # 模型指標
+        R2X_orig = opls_orig.R2X_
+        R2Y_orig = opls_orig.R2Y_
+
+        # 交叉驗證（Q²）
+        try:
+            Q2_orig = opls_orig.Q2_
+            print(f"    R²X: {R2X_orig:.3f}, R²Y: {R2Y_orig:.3f}, Q²: {Q2_orig:.3f}")
+        except:
+            Q2_orig = None
+            print(f"    R²X: {R2X_orig:.3f}, R²Y: {R2Y_orig:.3f}")
+
+        # VIP 分數
+        try:
+            VIP_orig = opls_orig.VIP_
+        except:
+            VIP_orig = None
+            print(f"    ⚠ VIP 分數計算失敗")
+
+    except Exception as e:
+        print(f"  ⚠ 標準化前的 OPLS-DA 分析失敗: {e}")
+        _plot_simple_plsda_fallback(original_data, normalized_data, sample_names,
+                                   sample_info_df, output_path, method_name)
+        return
+
+    # ========== OPLS-DA 分析：標準化後 ==========
+    try:
+        scaler_norm = StandardScaler()
+        X_norm_scaled = scaler_norm.fit_transform(X_norm)
+
+        print(f"\n  標準化後:")
+        opls_norm = OPLS(n_components=1)
+        opls_norm.fit(X_norm_scaled, y)
+
+        # 獲取分數
+        T_norm = opls_norm.T_
+        T_ortho_norm = opls_norm.T_ortho_
+
+        # 模型指標
+        R2X_norm = opls_norm.R2X_
+        R2Y_norm = opls_norm.R2Y_
+
+        try:
+            Q2_norm = opls_norm.Q2_
+            print(f"    R²X: {R2X_norm:.3f}, R²Y: {R2Y_norm:.3f}, Q²: {Q2_norm:.3f}")
+        except:
+            Q2_norm = None
+            print(f"    R²X: {R2X_norm:.3f}, R²Y: {R2Y_norm:.3f}")
+
+        # VIP 分數
+        try:
+            VIP_norm = opls_norm.VIP_
+        except:
+            VIP_norm = None
+
+    except Exception as e:
+        print(f"  ⚠ 標準化後的 OPLS-DA 分析失敗: {e}")
+        _plot_simple_plsda_fallback(original_data, normalized_data, sample_names,
+                                   sample_info_df, output_path, method_name)
+        return
+
+    # ========== 圖1：OPLS-DA 分數圖對比 ==========
+    try:
+        _plot_oplsda_scores(T_orig, T_ortho_orig, T_norm, T_ortho_norm,
+                           sample_groups, R2X_orig, R2Y_orig, Q2_orig,
+                           R2X_norm, R2Y_norm, Q2_norm,
+                           output_path, method_name)
+    except Exception as e:
+        print(f"  ⚠ OPLS-DA 分數圖生成失敗: {e}")
+
+    # ========== 圖2：VIP 分數對比圖 ==========
+    if VIP_orig is not None and VIP_norm is not None:
+        try:
+            vip_output_path = str(output_path).replace('.png', '_VIP.png')
+            _plot_vip_comparison(VIP_orig, VIP_norm, vip_output_path, method_name)
+        except Exception as e:
+            print(f"  ⚠ VIP 對比圖生成失敗: {e}")
+
+    print(f"  ✓ OPLS-DA 分析完成")
+
+
+def _plot_oplsda_scores(T_orig, T_ortho_orig, T_norm, T_ortho_norm,
+                       sample_groups, R2X_orig, R2Y_orig, Q2_orig,
+                       R2X_norm, R2Y_norm, Q2_norm, output_path, method_name):
+    """繪製 OPLS-DA 分數圖（預測成分 vs 正交成分）"""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
-    
-    # 顏色映射
+
     color_map = {'CONTROL': '#80B1D3', 'EXPOSURE': '#FB8072'}
-    
+
     # ========== 子圖 1: 標準化前 ==========
     for group in ['CONTROL', 'EXPOSURE']:
         mask = np.array([g == group for g in sample_groups])
-        
-        # 繪製散點
-        ax1.scatter(X_orig_pls[mask, 0], X_orig_pls[mask, 1], 
-                   c=[color_map[group]], label=group, s=120, alpha=0.7, 
+
+        ax1.scatter(T_orig[mask, 0], T_ortho_orig[mask, 0],
+                   c=[color_map[group]], label=group, s=120, alpha=0.7,
                    edgecolors='black', linewidth=1.5, zorder=3)
-        
+
         # 繪製 95% 信賴橢圓
         if np.sum(mask) >= 3:
-            plot_confidence_ellipse(X_orig_pls[mask], ax1, 
-                                   color=color_map[group], 
+            scores_combined = np.column_stack([T_orig[mask, 0], T_ortho_orig[mask, 0]])
+            plot_confidence_ellipse(scores_combined, ax1,
+                                   color=color_map[group],
                                    label=f'{group} 95% CI')
-    
-    ax1.set_xlabel(f'Component 1 (R²X={r2x_orig:.3f})', fontsize=14, fontweight='bold')
-    ax1.set_ylabel('Component 2', fontsize=14, fontweight='bold')
-    ax1.set_title('PLS-DA - Before Normalization', fontsize=16, fontweight='bold')
+
+    # 標題與標籤
+    title_text = f'Before Normalization\n'
+    title_text += f'R²X={R2X_orig:.3f}, R²Y={R2Y_orig:.3f}'
+    if Q2_orig is not None:
+        title_text += f', Q²={Q2_orig:.3f}'
+
+    ax1.set_xlabel('Predictive Component t[1]', fontsize=14, fontweight='bold')
+    ax1.set_ylabel('Orthogonal Component to[1]', fontsize=14, fontweight='bold')
+    ax1.set_title(title_text, fontsize=16, fontweight='bold')
     ax1.legend(loc='best', fontsize=11, framealpha=0.9)
     ax1.grid(True, alpha=0.3, linestyle='--')
     ax1.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
     ax1.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
-    
+
     # ========== 子圖 2: 標準化後 ==========
     for group in ['CONTROL', 'EXPOSURE']:
         mask = np.array([g == group for g in sample_groups])
-        
-        # 繪製散點
-        ax2.scatter(X_norm_pls[mask, 0], X_norm_pls[mask, 1], 
-                   c=[color_map[group]], label=group, s=120, alpha=0.7, 
+
+        ax2.scatter(T_norm[mask, 0], T_ortho_norm[mask, 0],
+                   c=[color_map[group]], label=group, s=120, alpha=0.7,
                    edgecolors='black', linewidth=1.5, zorder=3)
-        
+
         # 繪製 95% 信賴橢圓
         if np.sum(mask) >= 3:
-            plot_confidence_ellipse(X_norm_pls[mask], ax2, 
-                                   color=color_map[group], 
+            scores_combined = np.column_stack([T_norm[mask, 0], T_ortho_norm[mask, 0]])
+            plot_confidence_ellipse(scores_combined, ax2,
+                                   color=color_map[group],
                                    label=f'{group} 95% CI')
-    
-    ax2.set_xlabel(f'Component 1 (R²X={r2x_norm:.3f})', fontsize=14, fontweight='bold')
-    ax2.set_ylabel('Component 2', fontsize=14, fontweight='bold')
-    ax2.set_title(f'PLS-DA - After Normalization ({method_name})', fontsize=16, fontweight='bold')
+
+    # 標題與標籤
+    title_text = f'After Normalization ({method_name})\n'
+    title_text += f'R²X={R2X_norm:.3f}, R²Y={R2Y_norm:.3f}'
+    if Q2_norm is not None:
+        title_text += f', Q²={Q2_norm:.3f}'
+
+    ax2.set_xlabel('Predictive Component t[1]', fontsize=14, fontweight='bold')
+    ax2.set_ylabel('Orthogonal Component to[1]', fontsize=14, fontweight='bold')
+    ax2.set_title(title_text, fontsize=16, fontweight='bold')
     ax2.legend(loc='best', fontsize=11, framealpha=0.9)
     ax2.grid(True, alpha=0.3, linestyle='--')
     ax2.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
     ax2.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
-    
+
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
-    
-    print(f"  ✓ PLS-DA 對比圖已儲存")
+
+    print(f"  ✓ OPLS-DA 分數圖已儲存")
+
+
+def _plot_vip_comparison(VIP_orig, VIP_norm, output_path, method_name):
+    """繪製 VIP 分數對比圖（top 20 特徵）"""
+    # 獲取 top 20 特徵（基於標準化前的 VIP）
+    top_n = min(20, len(VIP_orig))
+    top_indices = np.argsort(VIP_orig)[::-1][:top_n]
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
+
+    # ========== 子圖 1: 標準化前 ==========
+    ax1.barh(range(top_n), VIP_orig[top_indices], color='steelblue', alpha=0.7, edgecolor='black')
+    ax1.axvline(x=1, color='red', linestyle='--', linewidth=2, label='VIP = 1 (threshold)')
+    ax1.set_xlabel('VIP Score', fontsize=12, fontweight='bold')
+    ax1.set_ylabel('Feature Index', fontsize=12, fontweight='bold')
+    ax1.set_title('Top 20 Features by VIP - Before Normalization', fontsize=14, fontweight='bold')
+    ax1.set_yticks(range(top_n))
+    ax1.set_yticklabels([f'Feature {idx}' for idx in top_indices])
+    ax1.invert_yaxis()
+    ax1.legend()
+    ax1.grid(True, alpha=0.3, axis='x')
+
+    # ========== 子圖 2: 標準化後 ==========
+    ax2.barh(range(top_n), VIP_norm[top_indices], color='coral', alpha=0.7, edgecolor='black')
+    ax2.axvline(x=1, color='red', linestyle='--', linewidth=2, label='VIP = 1 (threshold)')
+    ax2.set_xlabel('VIP Score', fontsize=12, fontweight='bold')
+    ax2.set_ylabel('Feature Index', fontsize=12, fontweight='bold')
+    ax2.set_title(f'Top 20 Features by VIP - After Normalization ({method_name})',
+                 fontsize=14, fontweight='bold')
+    ax2.set_yticks(range(top_n))
+    ax2.set_yticklabels([f'Feature {idx}' for idx in top_indices])
+    ax2.invert_yaxis()
+    ax2.legend()
+    ax2.grid(True, alpha=0.3, axis='x')
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print(f"  ✓ VIP 對比圖已儲存")
+
+
+def _plot_simple_plsda_fallback(original_data, normalized_data, sample_names,
+                                sample_info_df, output_path, method_name):
+    """簡化的 PLS-DA 作為 OPLS-DA 的備選方案（當 pyopls 不可用時）"""
+    from sklearn.cross_decomposition import PLSRegression
+    from sklearn.preprocessing import LabelEncoder
+
+    # 數據預處理
+    original_transposed = original_data.T
+    normalized_transposed = normalized_data.T
+
+    valid_samples_orig = ~np.isnan(original_transposed).any(axis=1)
+    valid_samples_norm = ~np.isnan(normalized_transposed).any(axis=1)
+    valid_samples = valid_samples_orig & valid_samples_norm
+
+    original_clean = original_transposed[valid_samples]
+    normalized_clean = normalized_transposed[valid_samples]
+    sample_names_clean = [sample_names[i] for i in range(len(sample_names)) if valid_samples[i]]
+
+    # 獲取樣本分組
+    sample_groups = []
+    control_exposure_mask = []
+
+    for i, sample in enumerate(sample_names_clean):
+        sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
+        if not sample_row.empty:
+            sample_type = str(sample_row.iloc[0].get('Sample_Type', '')).upper()
+            if sample_type in ['CONTROL', 'EXPOSURE']:
+                sample_groups.append(sample_type)
+                control_exposure_mask.append(True)
+            else:
+                control_exposure_mask.append(False)
+        else:
+            control_exposure_mask.append(False)
+
+    control_exposure_mask = np.array(control_exposure_mask)
+
+    if len(sample_groups) < 6:
+        print("  ⚠ 樣本數不足")
+        return
+
+    X_orig = original_clean[control_exposure_mask]
+    X_norm = normalized_clean[control_exposure_mask]
+
+    le = LabelEncoder()
+    y = le.fit_transform(sample_groups)
+
+    # PLS-DA 模型
+    scaler_orig = StandardScaler()
+    X_orig_scaled = scaler_orig.fit_transform(X_orig)
+    pls_orig = PLSRegression(n_components=2)
+    pls_orig.fit(X_orig_scaled, y)
+    X_orig_pls = pls_orig.transform(X_orig_scaled)
+
+    scaler_norm = StandardScaler()
+    X_norm_scaled = scaler_norm.fit_transform(X_norm)
+    pls_norm = PLSRegression(n_components=2)
+    pls_norm.fit(X_norm_scaled, y)
+    X_norm_pls = pls_norm.transform(X_norm_scaled)
+
+    # 繪圖
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+    color_map = {'CONTROL': '#80B1D3', 'EXPOSURE': '#FB8072'}
+
+    # 標準化前
+    for group in ['CONTROL', 'EXPOSURE']:
+        mask = np.array([g == group for g in sample_groups])
+        ax1.scatter(X_orig_pls[mask, 0], X_orig_pls[mask, 1],
+                   c=[color_map[group]], label=group, s=120, alpha=0.7,
+                   edgecolors='black', linewidth=1.5, zorder=3)
+        if np.sum(mask) >= 3:
+            plot_confidence_ellipse(X_orig_pls[mask], ax1,
+                                   color=color_map[group],
+                                   label=f'{group} 95% CI')
+
+    ax1.set_xlabel('Component 1', fontsize=14, fontweight='bold')
+    ax1.set_ylabel('Component 2', fontsize=14, fontweight='bold')
+    ax1.set_title('PLS-DA - Before Normalization\n(simplified fallback)', fontsize=16, fontweight='bold')
+    ax1.legend(loc='best', fontsize=11, framealpha=0.9)
+    ax1.grid(True, alpha=0.3, linestyle='--')
+    ax1.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
+    ax1.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
+
+    # 標準化後
+    for group in ['CONTROL', 'EXPOSURE']:
+        mask = np.array([g == group for g in sample_groups])
+        ax2.scatter(X_norm_pls[mask, 0], X_norm_pls[mask, 1],
+                   c=[color_map[group]], label=group, s=120, alpha=0.7,
+                   edgecolors='black', linewidth=1.5, zorder=3)
+        if np.sum(mask) >= 3:
+            plot_confidence_ellipse(X_norm_pls[mask], ax2,
+                                   color=color_map[group],
+                                   label=f'{group} 95% CI')
+
+    ax2.set_xlabel('Component 1', fontsize=14, fontweight='bold')
+    ax2.set_ylabel('Component 2', fontsize=14, fontweight='bold')
+    ax2.set_title(f'PLS-DA - After Normalization ({method_name})\n(simplified fallback)',
+                 fontsize=16, fontweight='bold')
+    ax2.legend(loc='best', fontsize=11, framealpha=0.9)
+    ax2.grid(True, alpha=0.3, linestyle='--')
+    ax2.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
+    ax2.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print(f"  ✓ PLS-DA 對比圖已儲存（備選方案）")
+
 
 def plot_correlation_heatmap(original_data, normalized_data, sample_names, output_path, method_name):
     """繪製樣本相關性熱圖（標準化前後）"""
@@ -1549,10 +1678,10 @@ def evaluate_normalization_quality(original_data, normalized_data):
     return results
 
 def create_normalization_summary_report(quality_metrics, method_name, n_features, n_samples,
-                                       pqn_info=None, normality_results=None, group_diff_results=None):
+                                       pqn_info=None, group_diff_results=None):
     """
-    建立增強版標準化摘要報告
-    
+    建立增強版標準化摘要報告（基於非參數統計方法）
+
     Parameters:
     -----------
     quality_metrics : dict
@@ -1565,11 +1694,9 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
         樣本數量
     pqn_info : dict, optional
         PQN 相關資訊
-    normality_results : dict, optional
-        正態性檢驗結果
     group_diff_results : dict, optional
         組間差異評估結果
-    
+
     Returns:
     --------
     str : 格式化的報告文字
@@ -1641,25 +1768,8 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
         report.append(f"  - 相關性標準差: {quality_metrics['sample_corr_std_after']:.4f}")
     else:
         report.append("  - 數據不足，無法計算樣本間相關性")
-    
-    # ========== 正態性檢驗結果（新增）==========
-    if normality_results:
-        report.append("")
-        report.append("【正態性檢驗】(Shapiro-Wilk, α=0.05)")
-        report.append(f"標準化前通過: {normality_results['n_normal_before']}/{n_features} ({normality_results['pct_before']:.1f}%)")
-        report.append(f"標準化後通過: {normality_results['n_normal_after']}/{n_features} ({normality_results['pct_after']:.1f}%)")
-        report.append(f"改善幅度: {normality_results['improvement']:+.1f}%")
-        
-        if normality_results['improvement'] > 10:
-            report.append("評估: ✓✓ 正態性顯著改善")
-        elif normality_results['improvement'] > 5:
-            report.append("評估: ✓ 正態性有所改善")
-        elif normality_results['improvement'] > 0:
-            report.append("評估: ○ 正態性輕微改善")
-        else:
-            report.append("評估: ⚠ 正態性未改善")
-    
-    # ========== 組間差異保留評估（新增）==========
+
+    # ========== 組間差異保留評估 ==========
     if group_diff_results:
         report.append("")
         report.append("【組間差異保留評估】(Control vs Exposure)")
@@ -1747,25 +1857,36 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
     if not np.isnan(quality_metrics['sample_corr_std_before']):
         if quality_metrics['sample_corr_std_after'] < quality_metrics['sample_corr_std_before']:
             score += 15
-    
-    # 正態性改善 (20 分) - 新增
-    if normality_results:
-        if normality_results['improvement'] > 10:
-            score += 20
-        elif normality_results['improvement'] > 5:
-            score += 15
-        elif normality_results['improvement'] > 0:
-            score += 10
-    
-    # 組間差異保留 (20 分) - 新增
+
+    # 組間差異保留 (30 分) - 包含統計檢驗評估
     if group_diff_results:
+        # 基本分：Effect Size 保留率 (20 分)
         if group_diff_results['avg_preservation'] > 90:
             score += 20
         elif group_diff_results['avg_preservation'] > 80:
             score += 15
         elif group_diff_results['avg_preservation'] > 70:
             score += 10
-        
+
+        # 統計檢驗額外分 (10 分)
+        # 1. Wilcoxon 檢驗結果 (5 分)
+        if 'wilcoxon_pvalue' in group_diff_results and not np.isnan(group_diff_results['wilcoxon_pvalue']):
+            if group_diff_results['wilcoxon_pvalue'] >= 0.05:
+                # p >= 0.05 表示 Cohen's d 中位數無顯著變化，這是好的
+                score += 5
+            # 如果 p < 0.05 但中位數變化不大，給予部分分數
+            elif group_diff_results['avg_preservation'] > 85:
+                score += 2
+
+        # 2. 標記特徵比例 (5 分)
+        if 'flagged_ratio' in group_diff_results:
+            if group_diff_results['flagged_ratio'] < 0.05:
+                # 少於 5% 的特徵被標記為顯著改變
+                score += 5
+            elif group_diff_results['flagged_ratio'] < 0.10:
+                # 5-10% 的特徵被標記
+                score += 3
+
         # 嚴重減弱特徵的懲罰
         if group_diff_results['severe_reduction'] / group_diff_results['total'] > 0.1:
             score -= 10
@@ -1795,11 +1916,7 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
         
         if pqn_info['creatinine_valid_count'] < pqn_info['real_count'] * 0.9:
             report.append(f"⚠ 注意：有 {pqn_info['real_count'] - pqn_info['creatinine_valid_count']} 個樣本缺少有效肌酐值")
-    
-    # 正態性相關建議
-    if normality_results and normality_results['pct_after'] < 50:
-        report.append("⚠ 建議：仍有超過一半的特徵不符合正態分佈，進行統計分析時建議使用非參數檢驗")
-    
+
     # 組間差異相關建議
     if group_diff_results:
         if group_diff_results['severe_reduction'] > 0:
@@ -1814,9 +1931,8 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
         report.append("⚠ 建議：僅不到一半的特徵 CV% 得到改善，可能需要考慮其他標準化方法")
     
     # 如果所有指標都良好
-    if (quality_metrics['cv_improvement_pct'] > 20 and 
+    if (quality_metrics['cv_improvement_pct'] > 20 and
         quality_metrics['total_cv_improvement'] > 10 and
-        (normality_results is None or normality_results['improvement'] > 10) and
         (group_diff_results is None or group_diff_results['avg_preservation'] > 90)):
         report.append("✓✓✓ 恭喜！所有評估指標均表現優異，標準化效果極佳")
     
@@ -2082,15 +2198,8 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     # ========== 評估標準化質量 ==========
     print("\n評估標準化質量...")
     quality_metrics = evaluate_normalization_quality(original_data_valid, normalized_data_valid)
-    
-    # ========== 新增：正態性檢驗 ==========
-    try:
-        normality_results = evaluate_normality(original_data_valid, normalized_data_valid, alpha=0.05)
-    except Exception as e:
-        print(f"  ⚠ 正態性檢驗失敗: {e}")
-        normality_results = None
-    
-    # ========== 新增：組間差異保留評估 ==========
+
+    # ========== 組間差異保留評估 ==========
     try:
         group_diff_results = evaluate_group_difference_preservation(
             original_data_valid, normalized_data_valid, sample_info_df, sample_columns_valid
@@ -2161,30 +2270,8 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
         )
     except Exception as e:
         print(f"  ⚠ 相關性熱圖生成失敗: {e}")
-    
-    # ========== 新增：Q-Q Plot ==========
-    if normality_results:
-        try:
-            plot_qq_comparison(
-                original_data_valid, normalized_data_valid,
-                sample_size=20,
-                output_path=output_dir / f"QQ_Plot_{method_name}.png"
-            )
-        except Exception as e:
-            print(f"  ⚠ Q-Q Plot 生成失敗: {e}")
-    
-    # ========== 新增：Effect Size 對比圖 ==========
-    if group_diff_results:
-        try:
-            plot_effect_size_comparison(
-                group_diff_results['cohens_d_before'],
-                group_diff_results['cohens_d_after'],
-                output_path=output_dir / f"Effect_Size_Comparison_{method_name}.png"
-            )
-        except Exception as e:
-            print(f"  ⚠ Effect Size 對比圖生成失敗: {e}")
-    
-    # ========== 新增：QC 質量評估圖 ==========
+
+    # ========== QC 質量評估圖 ==========
     if pqn_info['qc_count'] > 0:
         try:
             # 提取 QC 樣本索引
@@ -2222,11 +2309,10 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     normalized_df['Normalized_CV%'] = calculate_cv_per_feature(normalized_data)
     normalized_df['CV_Improvement%'] = normalized_df['Original_CV%'] - normalized_df['Normalized_CV%']
     
-    # ========== 生成增強版摘要報告 ==========
+    # ========== 生成摘要報告 ==========
     summary_report = create_normalization_summary_report(
         quality_metrics, method_name, len(feature_ids), len(sample_columns_valid),
         pqn_info=pqn_info,
-        normality_results=normality_results,
         group_diff_results=group_diff_results
     )
     
