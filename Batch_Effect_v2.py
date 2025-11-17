@@ -296,7 +296,7 @@ def prepare_data_for_combat(data, sample_info):
         print(f"❌ 錯誤：數據矩陣維度不一致")
         print(f"  預期樣本數: {len(valid_samples)}")
         print(f"  實際樣本數: {data_matrix.shape[1]}")
-        raise ValueError("數據矩陣維度不一致")
+        raise ValueError("數據矩陣與批次資訊維度不一致")
 
     print(f"  ✓ 數據矩陣維度: {data_matrix.shape[0]} 特徵 × {data_matrix.shape[1]} 樣本")
 
@@ -933,7 +933,7 @@ def generate_quality_warnings(permanova_before, permanova_after,
             'category': '批次仍解釋較多變異',
             'details': f"R² = {permanova_after['r_squared']*100:.1f}% (建議 < 10%)",
             'suggestion': [
-                "1. 批次效應可能與生物學差異混雜",
+                "1. 批次效應可能與生物學差異混淆",
                 "2. 檢查批次內樣本數是否足夠",
                 "3. 考慮使用更強的校正參數"
             ]
@@ -2572,16 +2572,21 @@ def main(input_file=None):
 
         # 圖 2: PCA 前後對比（按 Batch）
         print("\n生成圖 2: PCA 前後對比（按 Batch 分組）...")
-        fig2, outliers_orig_batch, outliers_corr_batch = create_comparison_pca_plot(
-            original_data_for_eval, corrected_data_for_eval, 
-            sample_info, sample_columns, batch_info, 
+        outliers_orig_batch = np.array([])
+        outliers_corr_batch = np.array([])
+        result = create_comparison_pca_plot(
+            original_data_for_eval, corrected_data_for_eval,
+            sample_info, sample_columns, batch_info,
             title_suffix="", grouping="batch"
         )
-        if fig2:
+        if result:
+            fig2, outliers_orig_batch, outliers_corr_batch = result
             fig2_file = os.path.join(plots_dir, f'Fig2_PCA_by_batch_{timestamp}.png')
             fig2.savefig(fig2_file, dpi=300, bbox_inches='tight')
             plt.close(fig2)
             print(f"✓ 已儲存: {os.path.basename(fig2_file)}")
+        else:
+            print("   ⚠ 樣本不足或繪圖失敗，跳過圖 2")
 
         # 圖 3: Permutation Test Null Distribution
         print("\n生成圖 3: Permutation Test 顯著性檢驗...")
@@ -2595,18 +2600,21 @@ def main(input_file=None):
 
         # 圖 4: PCA 前後對比（按樣本分類）
         print("\n生成圖 4: PCA 前後對比（按樣本分類分組）...")
-        fig4, outliers_orig_type, outliers_corr_type = create_comparison_pca_plot(
-            original_data_for_eval, corrected_data_for_eval, 
-            sample_info, sample_columns, batch_info, 
+        result = create_comparison_pca_plot(
+            original_data_for_eval, corrected_data_for_eval,
+            sample_info, sample_columns, batch_info,
             title_suffix="", grouping="sample_type"
         )
-        if fig4:
+        if result:
+            fig4, outliers_orig_type, outliers_corr_type = result
             fig4_file = os.path.join(plots_dir, f'Fig4_PCA_by_sample_type_{timestamp}.png')
             fig4.savefig(fig4_file, dpi=300, bbox_inches='tight')
             plt.close(fig4)
             print(f"✓ 已儲存: {os.path.basename(fig4_file)}")
+        else:
+            print("   ⚠ 樣本不足或繪圖失敗，跳過圖 4")
 
-        # 🆕 圖 5: 森林圖（批次對 Cohen's d）
+        # 🆕 圖 5: 森林圖（批次對效應量比較）
         print("\n生成圖 5: Cohen's d 森林圖...")
         fig5 = plot_cohens_d_forest(cohens_d_before, cohens_d_after)
         if fig5:
