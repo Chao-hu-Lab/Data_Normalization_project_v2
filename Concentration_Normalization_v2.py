@@ -36,14 +36,12 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns, refe
     for sample in sample_columns:
         sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
         if not sample_row.empty:
-            sample_type = str(sample_row.iloc[0].get('Sample_Type', '')).strip().upper()  # ← 加入 strip()
-            sample_types[sample] = sample_type
+            sample_type = str(sample_row.iloc[0].get('Sample_Type', ''))
+
+            # 將所有可能的樣本類型轉為大寫
+            sample_types[sample] = sample_type.upper()
         else:
-            # 如果找不到，根據名稱判斷
-            if 'QC' in sample.upper():  # ← 改為更寬鬆的判斷
-                sample_types[sample] = 'QC'
-            else:
-                sample_types[sample] = 'SAMPLE'
+            sample_types[sample] = 'UNKNOWN'
     
     qc_indices = [i for i, s in enumerate(sample_columns) if sample_types[s] == 'QC']
     real_indices = [i for i, s in enumerate(sample_columns) if sample_types[s] != 'QC']
@@ -269,8 +267,10 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
     for sample in sample_columns:
         sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
         if not sample_row.empty:
-            sample_type = str(sample_row.iloc[0].get('Sample_Type', '')).upper()
-            sample_groups.append(sample_type)
+            sample_type = str(sample_row.iloc[0].get('Sample_Type', ''))
+
+            # 將所有可能的樣本類型轉為大寫
+            sample_groups.append(sample_type.upper())
         else:
             sample_groups.append('UNKNOWN')
     
@@ -469,7 +469,7 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
 
 def plot_qc_variability(original_qc, normalized_qc, qc_names, output_path):
     """
-    Fig 7A - QC Variability Assessment (Improved)
+    Fig5 - QC Variability Assessment (Improved)
 
     包含：
     1. CV% 分佈對比
@@ -488,8 +488,8 @@ def plot_qc_variability(original_qc, normalized_qc, qc_names, output_path):
     output_path : Path
         輸出路徑
     """
-    fig = plt.figure(figsize=(18, 10))
-    gs = fig.add_gridspec(2, 3, height_ratios=[3, 1], hspace=0.3, wspace=0.3)
+    fig = plt.figure(figsize=(18, 12))
+    gs = fig.add_gridspec(2, 3, height_ratios=[3.2, 1.2], hspace=0.35, wspace=0.3)
 
     cv_before = calculate_rsd(original_qc)
     cv_after = calculate_rsd(normalized_qc)
@@ -547,6 +547,7 @@ def plot_qc_variability(original_qc, normalized_qc, qc_names, output_path):
     # === 統計摘要文字 ===
     ax7 = fig.add_subplot(gs[1, :])
     ax7.axis('off')
+    ax7.set_position([0.04, 0.03, 0.92, 0.22])
 
     # 計算統計資訊
     median_cv_before = np.median(cv_before)
@@ -566,7 +567,7 @@ def plot_qc_variability(original_qc, normalized_qc, qc_names, output_path):
     # 組織文字（移除主觀評級）
     summary_text = f"""
 ╔═══════════════════════════════════════════════════════════════════════════════════════╗
-║                            QC VARIABILITY ASSESSMENT (Fig 7A)                          ║
+║                            QC VARIABILITY ASSESSMENT (Fig5)                         ║
 ╚═══════════════════════════════════════════════════════════════════════════════════════╝
 
 【CV% Metrics】
@@ -604,12 +605,12 @@ def plot_qc_variability(original_qc, normalized_qc, qc_names, output_path):
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-    print(f"  ✓ QC Variability 圖已儲存 (Fig 7A - Improved)")
+    print(f"  ✓ QC Variability 圖已儲存 (Fig5 - Improved)")
 
 
 def plot_qc_reproducibility(original_qc, normalized_qc, qc_names, output_path):
     """
-    Fig 7B - QC Reproducibility Assessment (Improved)
+    Fig6 - QC Reproducibility Assessment (Improved)
 
     包含：
     1. QC 樣本總強度
@@ -627,8 +628,8 @@ def plot_qc_reproducibility(original_qc, normalized_qc, qc_names, output_path):
     output_path : Path
         輸出路徑
     """
-    fig = plt.figure(figsize=(18, 8))
-    gs = fig.add_gridspec(2, 3, height_ratios=[3, 1], hspace=0.3, wspace=0.3)
+    fig = plt.figure(figsize=(18, 10))
+    gs = fig.add_gridspec(2, 3, height_ratios=[3.2, 1.2], hspace=0.35, wspace=0.3)
 
     # === 子圖 2: QC 樣本總強度 ===
     ax2 = fig.add_subplot(gs[0, 0])
@@ -667,7 +668,7 @@ def plot_qc_reproducibility(original_qc, normalized_qc, qc_names, output_path):
     # 在格子中顯示數值
     for i in range(len(qc_names)):
         for j in range(len(qc_names)):
-            text = ax3.text(j, i, f'{corr_before[i, j]:.3f}',
+            text = ax3.text(j, i, f'{corr_before[i, j]:.2f}',
                            ha="center", va="center", color="black", fontsize=7)
 
     # === 子圖 4: QC 相關性熱圖（標準化後）===
@@ -684,12 +685,13 @@ def plot_qc_reproducibility(original_qc, normalized_qc, qc_names, output_path):
 
     for i in range(len(qc_names)):
         for j in range(len(qc_names)):
-            text = ax4.text(j, i, f'{corr_after[i, j]:.3f}',
+            text = ax4.text(j, i, f'{corr_after[i, j]:.2f}',
                            ha="center", va="center", color="black", fontsize=7)
 
     # === 統計摘要文字 ===
     ax7 = fig.add_subplot(gs[1, :])
     ax7.axis('off')
+    ax7.set_position([0.05, 0.04, 0.9, 0.23])
 
     # 計算統計資訊
     mean_corr_before = np.mean(corr_before[np.triu_indices_from(corr_before, k=1)])
@@ -701,7 +703,7 @@ def plot_qc_reproducibility(original_qc, normalized_qc, qc_names, output_path):
     # 組織文字
     summary_text = f"""
 ╔═══════════════════════════════════════════════════════════════════════════════════════╗
-║                          QC REPRODUCIBILITY ASSESSMENT (Fig 7B)                        ║
+║                          QC REPRODUCIBILITY ASSESSMENT (Fig6)                       ║
 ╚═══════════════════════════════════════════════════════════════════════════════════════╝
 
 【QC Sample Correlation】
@@ -725,7 +727,7 @@ def plot_qc_reproducibility(original_qc, normalized_qc, qc_names, output_path):
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-    print(f"  ✓ QC Reproducibility 圖已儲存 (Fig 7B - Improved)")
+    print(f"  ✓ QC Reproducibility 圖已儲存 (Fig6 - Improved)")
 
 # ==================== 輔助函數 ====================
 
@@ -777,7 +779,7 @@ def get_sample_columns_only(df, sample_info_df):
     sample_type_dict = {}
     for idx, row in sample_info_df.iterrows():
         sample_name = row.iloc[0]
-        sample_type = str(row.get('Sample_Type', '')).upper()
+        sample_type = str(row.get('Sample_Type', ''), 'Unknown').upper()
         sample_type_dict[sample_name] = sample_type
     
     for col in df.columns:
@@ -894,7 +896,7 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
         'Unknown': '#95A5A6'      # 灰色
     }
 
-    # 獲取樣本分組信息
+    # 獲取樣本分組資訊
     sample_groups = []
     for sample in sample_names:
         sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
@@ -1263,10 +1265,6 @@ def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_name
     valid_samples_norm = ~np.isnan(normalized_transposed).any(axis=1)
     valid_samples = valid_samples_orig & valid_samples_norm
 
-    if np.sum(valid_samples) < 3:
-        print("  ⚠ 有效樣本數不足，無法進行PCA分析")
-        return
-
     original_clean = original_transposed[valid_samples]
     normalized_clean = normalized_transposed[valid_samples]
     sample_names_clean = [sample_names[i] for i in range(len(sample_names)) if valid_samples[i]]
@@ -1285,10 +1283,16 @@ def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_name
 
     # 顏色映射
     color_palette = {
-        'QC': '#F39C12',       # 橙色
-        'CONTROL': '#3498DB',   # 藍色
-        'EXPOSURE': '#E74C3C',  # 紅色
-        'Unknown': '#95A5A6'    # 灰色
+        'QC': '#F39C12',
+        'CONTROL': '#3498DB',
+        'EXPOSURE': '#E74C3C',
+        'UNKNOWN': '#95A5A6'
+    }
+    marker_palette = {
+        'QC': 'o',          # circle
+        'CONTROL': 's',     # square
+        'EXPOSURE': '^',    # triangle
+        'UNKNOWN': 'd'
     }
 
     # 標準化（用於PCA）
@@ -1399,24 +1403,23 @@ def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_name
         qc_mean_dist_before, qc_mean_dist_after, qc_dist_reduction_pct = np.nan, np.nan, np.nan
 
     # ========== 繪圖 ==========
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 9.5))
+    fig.subplots_adjust(top=0.8, bottom=0.12, wspace=0.25)
 
     # ========== 子圖 1: 標準化前 ==========
     # 繪製散點（QC 樣本加粗、增大）
     for group in sorted(set(sample_groups)):
         mask = sample_groups == group
-        if group == 'QC':
-            ax1.scatter(pc_original[mask, 0], pc_original[mask, 1],
-                       c=[color_palette.get(group, '#95A5A6')],
-                       label=group, s=200, alpha=0.9,
-                       edgecolors='black', linewidth=3, zorder=4, marker='D')  # QC 用菱形，加粗
-        else:
-            ax1.scatter(pc_original[mask, 0], pc_original[mask, 1],
-                       c=[color_palette.get(group, '#95A5A6')],
-                       label=group, s=100, alpha=0.7,
-                       edgecolors='black', linewidth=1.5, zorder=3)
+        edgecolor = 'black' if group == 'QC' else 'none'
+        linewidth = 1.2 if group == 'QC' else 0
+        size = 150 if group == 'QC' else 110
+        ax1.scatter(pc_original[mask, 0], pc_original[mask, 1],
+                    c=[color_palette.get(group, '#BEBADA')],
+                    marker=marker_palette.get(group, 'o'),
+                    label=group, s=size, alpha=0.8,
+                    edgecolors=edgecolor, linewidth=linewidth, zorder=3)
 
-    # 🎯 繪製信賴橢圓（只繪製 Control、Exposure、QC）
+    # 🎯 繪製信賴橢圆（只繪製 Control、Exposure、QC）
     # 1. QC 樣本的橢圓
     if np.sum(qc_mask) >= 3:
         plot_confidence_ellipse(pc_original[qc_mask], ax1,
@@ -1446,7 +1449,12 @@ def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_name
     ax1.set_xlabel(f'PC1 ({var_original[0]*100:.1f}%)', fontsize=14, fontweight='bold')
     ax1.set_ylabel(f'PC2 ({var_original[1]*100:.1f}%)', fontsize=14, fontweight='bold')
     ax1.set_title('Before Normalization', fontsize=16, fontweight='bold')
-    ax1.legend(loc='best', fontsize=10, framealpha=0.9)
+    centroid_handle = plt.Line2D([], [], marker='x', color='black', linestyle='None',
+                                 markersize=10, markeredgewidth=2, label='Group centroid (x)')
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    handles1.append(centroid_handle)
+    labels1.append('Group centroid (x)')
+    ax1.legend(handles1, labels1, loc='best', fontsize=10, framealpha=0.9)
     ax1.grid(True, alpha=0.3, linestyle='--')
     ax1.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
     ax1.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
@@ -1455,16 +1463,14 @@ def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_name
     # 繪製散點（QC 樣本加粗、增大）
     for group in sorted(set(sample_groups)):
         mask = sample_groups == group
-        if group == 'QC':
-            ax2.scatter(pc_normalized[mask, 0], pc_normalized[mask, 1],
-                       c=[color_palette.get(group, '#95A5A6')],
-                       label=group, s=200, alpha=0.9,
-                       edgecolors='black', linewidth=3, zorder=4, marker='D')  # QC 用菱形，加粗
-        else:
-            ax2.scatter(pc_normalized[mask, 0], pc_normalized[mask, 1],
-                       c=[color_palette.get(group, '#95A5A6')],
-                       label=group, s=100, alpha=0.7,
-                       edgecolors='black', linewidth=1.5, zorder=3)
+        edgecolor = 'black' if group == 'QC' else 'none'
+        linewidth = 1.2 if group == 'QC' else 0
+        size = 150 if group == 'QC' else 110
+        ax2.scatter(pc_normalized[mask, 0], pc_normalized[mask, 1],
+                    c=[color_palette.get(group, '#BEBADA')],
+                    marker=marker_palette.get(group, 'o'),
+                    label=group, s=size, alpha=0.8,
+                    edgecolors=edgecolor, linewidth=linewidth, zorder=3)
 
     # 🎯 繪製信賴橢圓（只繪製 Control、Exposure、QC）
     # 1. QC 樣本的橢圓
@@ -1494,7 +1500,12 @@ def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_name
     ax2.set_xlabel(f'PC1 ({var_normalized[0]*100:.1f}%)', fontsize=14, fontweight='bold')
     ax2.set_ylabel(f'PC2 ({var_normalized[1]*100:.1f}%)', fontsize=14, fontweight='bold')
     ax2.set_title(f'After Normalization ({method_name})', fontsize=16, fontweight='bold')
-    ax2.legend(loc='best', fontsize=10, framealpha=0.9)
+    centroid_handle2 = plt.Line2D([], [], marker='x', color='black', linestyle='None',
+                                  markersize=10, markeredgewidth=2, label='Group centroid (x)')
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    handles2.append(centroid_handle2)
+    labels2.append('Group centroid (x)')
+    ax2.legend(handles2, labels2, loc='best', fontsize=10, framealpha=0.9)
     ax2.grid(True, alpha=0.3, linestyle='--')
     ax2.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
     ax2.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
@@ -1515,10 +1526,11 @@ Interpretation:
   No significant separation
 """
 
-    ax1.text(0.02, 0.98, permanova_text, transform=ax1.transAxes,
-            fontsize=9, verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8, edgecolor='black', linewidth=1.5),
-            family='monospace')
+    fig.text(0.02, 0.93, permanova_text,
+             fontsize=9, verticalalignment='top',
+             bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8,
+                       edgecolor='black', linewidth=1.5),
+             family='monospace')
 
     # === 添加 QC 聚集度指標框 ===
     if not np.isnan(qc_t2_before):
@@ -1534,12 +1546,13 @@ Mean distance to centroid:
   ({qc_dist_reduction_pct:+.1f}%)
 """
 
-        ax2.text(0.02, 0.98, qc_text, transform=ax2.transAxes,
-                fontsize=9, verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8, edgecolor='green', linewidth=1.5),
-                family='monospace')
+        fig.text(0.52, 0.93, qc_text,
+                 fontsize=9, verticalalignment='top',
+                 bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8,
+                           edgecolor='green', linewidth=1.5),
+                 family='monospace')
 
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.88])
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 
@@ -1818,7 +1831,12 @@ def _plot_oplsda_scores(T_orig, T_ortho_orig, T_norm, T_ortho_norm,
     ax1.set_xlabel('Predictive Component t[1]', fontsize=14, fontweight='bold')
     ax1.set_ylabel('Orthogonal Component to[1]', fontsize=14, fontweight='bold')
     ax1.set_title(title_text, fontsize=16, fontweight='bold')
-    ax1.legend(loc='best', fontsize=11, framealpha=0.9)
+    centroid_handle = plt.Line2D([], [], marker='x', color='black', linestyle='None',
+                                 markersize=10, markeredgewidth=2, label='Group centroid (x)')
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    handles1.append(centroid_handle)
+    labels1.append('Group centroid (x)')
+    ax1.legend(handles1, labels1, loc='best', fontsize=10, framealpha=0.9)
     ax1.grid(True, alpha=0.3, linestyle='--')
     ax1.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
     ax1.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
@@ -1826,7 +1844,6 @@ def _plot_oplsda_scores(T_orig, T_ortho_orig, T_norm, T_ortho_norm,
     # ========== 子圖 2: 標準化後 ==========
     for group in ['CONTROL', 'EXPOSURE']:
         mask = np.array([g == group for g in sample_groups])
-
         ax2.scatter(T_norm[mask, 0], T_ortho_norm[mask, 0],
                    c=[color_map[group]], label=group, s=120, alpha=0.7,
                    edgecolors='black', linewidth=1.5, zorder=3)
@@ -1847,7 +1864,12 @@ def _plot_oplsda_scores(T_orig, T_ortho_orig, T_norm, T_ortho_norm,
     ax2.set_xlabel('Predictive Component t[1]', fontsize=14, fontweight='bold')
     ax2.set_ylabel('Orthogonal Component to[1]', fontsize=14, fontweight='bold')
     ax2.set_title(title_text, fontsize=16, fontweight='bold')
-    ax2.legend(loc='best', fontsize=11, framealpha=0.9)
+    centroid_handle2 = plt.Line2D([], [], marker='x', color='black', linestyle='None',
+                                  markersize=10, markeredgewidth=2, label='Group centroid (x)')
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    handles2.append(centroid_handle2)
+    labels2.append('Group centroid (x)')
+    ax2.legend(handles2, labels2, loc='best', fontsize=10, framealpha=0.9)
     ax2.grid(True, alpha=0.3, linestyle='--')
     ax2.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
     ax2.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
@@ -2067,8 +2089,8 @@ def evaluate_normalization_quality(original_data, normalized_data):
     original_totals = np.nansum(original_data, axis=0)
     normalized_totals = np.nansum(normalized_data, axis=0)
     
-    results['total_cv_before'] = (np.nanstd(original_totals) / np.nanmean(original_totals)) * 100
-    results['total_cv_after'] = (np.nanstd(normalized_totals) / np.nanmean(normalized_totals)) * 100
+    results['total_cv_before'] = (np.std(original_totals) / np.mean(original_totals)) * 100
+    results['total_cv_after'] = (np.std(normalized_totals) / np.mean(normalized_totals)) * 100
     results['total_cv_improvement'] = results['total_cv_before'] - results['total_cv_after']
     
     # 3. 樣本間相關性
@@ -2188,8 +2210,8 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
         report.append(f"Effect Size 變化統計:")
         report.append(f"  - 增強: {group_diff_results['enhanced']} ({group_diff_results['enhanced']/group_diff_results['total']*100:.1f}%)")
         report.append(f"  - 穩定 (±10%): {group_diff_results['stable']} ({group_diff_results['stable']/group_diff_results['total']*100:.1f}%)")
-        report.append(f"  - 輕度減弱: {group_diff_results['mild_reduction']} ({group_diff_results['mild_reduction']/group_diff_results['total']*100:.1f}%)")
-        report.append(f"  - 顯著減弱: {group_diff_results['severe_reduction']} ({group_diff_results['severe_reduction']/group_diff_results['total']*100:.1f}%)")
+        report.append(f"  - 輕度減弱 (-10% ~ -30%): {group_diff_results['mild_reduction']} ({group_diff_results['mild_reduction']/group_diff_results['total']*100:.1f}%)")
+        report.append(f"  - 顯著減弱 (< -30%): {group_diff_results['severe_reduction']} ({group_diff_results['severe_reduction']/group_diff_results['total']*100:.1f}%)")
         report.append(f"平均 Effect Size 保留率: {group_diff_results['avg_preservation']:.1f}%")
         
         if group_diff_results['severe_reduction'] / group_diff_results['total'] > 0.1:
@@ -2263,9 +2285,8 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
             score += 15
     
     # 樣本間相關性改善 (15 分)
-    if not np.isnan(quality_metrics['sample_corr_std_before']):
-        if quality_metrics['sample_corr_std_after'] < quality_metrics['sample_corr_std_before']:
-            score += 15
+    if not np.isnan(quality_metrics['sample_corr_std_before']) and quality_metrics['sample_corr_std_after'] < quality_metrics['sample_corr_std_before']:
+        score += 15
 
     # 組間差異保留 (30 分) - 包含統計檢驗評估
     if group_diff_results:
@@ -2415,7 +2436,7 @@ def find_sample_info_sheet(sheets):
     return None, None
 
 def find_correction_column(df):
-    """在樣本資訊工作表中尋找可用於校正的欄位"""
+    """在樣本資訊工作表尋找可用於校正的欄位"""
     if df.shape[1] < 6:
         print("警告：樣本資訊工作表欄位不足")
         return None, None
@@ -2597,7 +2618,18 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     output_dir = Path(file_path).parent / f"Normalization_Results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_dir.mkdir(exist_ok=True)
     print(f"✓ 創建輸出資料夾: {output_dir.name}")
-    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    figures_dir = output_dir / "Normalization_Figures"
+    figures_dir.mkdir(exist_ok=True)
+    figure_paths = {
+        "boxplot": figures_dir / f"Fig1_Boxplot_{method_name}_{timestamp}.png",
+        "sample_distribution": figures_dir / f"Fig2_SampleDistribution_{method_name}_{timestamp}.png",
+        "cv": figures_dir / f"Fig3_CV_{method_name}_{timestamp}.png",
+        "pca": figures_dir / f"Fig4_PCA_{method_name}_{timestamp}.png",
+        "qc_variability": figures_dir / f"Fig5_QC_Variability_{method_name}_{timestamp}.png",
+        "qc_reproducibility": figures_dir / f"Fig6_QC_Reproducibility_{method_name}_{timestamp}.png",
+        "correlation": figures_dir / f"Fig7_Correlation_{method_name}_{timestamp}.png"
+    }
     # 分離有效樣本用於評估
     valid_sample_mask = ~np.isnan(normalized_data[0, :])
     original_data_valid = original_data[:, valid_sample_mask]
@@ -2630,7 +2662,7 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     # 2. 盒鬚圖
     plot_boxplot_comparison(
         original_data_valid, normalized_data_valid, sample_columns_valid,
-        output_dir / f"Boxplot_{method_name}.png",
+        figure_paths["boxplot"],
         method_name,
         sample_info_df  # 新增參數
     )
@@ -2638,7 +2670,7 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     # 3. 樣本分佈圖
     plot_sample_distribution(
         original_data_valid, normalized_data_valid, sample_columns_valid,
-        output_dir / f"Sample_Distribution_{method_name}.png",
+        figure_paths["sample_distribution"],
         method_name
     )
     
@@ -2647,7 +2679,7 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     normalized_cv = calculate_cv_per_feature(normalized_data_valid)
     plot_cv_comparison(
         original_cv, normalized_cv,
-        output_dir / f"CV_Distribution_{method_name}.png",
+        figure_paths["cv"],
         method_name
     )
     
@@ -2655,7 +2687,7 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     try:
         plot_pca_with_confidence_ellipse(
             original_data_valid, normalized_data_valid, sample_columns_valid, sample_info_df,
-            output_dir / f"PCA_Comparison_{method_name}.png",
+            figure_paths["pca"],
             method_name
         )
     except Exception as e:
@@ -2675,7 +2707,7 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     try:
         plot_correlation_heatmap(
             original_data_valid, normalized_data_valid, sample_columns_valid,
-            output_dir / f"Correlation_Heatmap_{method_name}.png",
+            figure_paths["correlation"],
             method_name
         )
     except Exception as e:
@@ -2699,16 +2731,16 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
                 original_qc = original_data_valid[:, qc_indices]
                 normalized_qc = normalized_data_valid[:, qc_indices]
 
-                # Fig 7A - QC Variability
+                # Fig5 - QC Variability
                 plot_qc_variability(
                     original_qc, normalized_qc, qc_names,
-                    output_path=output_dir / f"Fig7A_QC_Variability_{method_name}.png"
+                    output_path=figure_paths["qc_variability"]
                 )
 
-                # Fig 7B - QC Reproducibility
+                # Fig6 - QC Reproducibility
                 plot_qc_reproducibility(
                     original_qc, normalized_qc, qc_names,
-                    output_path=output_dir / f"Fig7B_QC_Reproducibility_{method_name}.png"
+                    output_path=figure_paths["qc_reproducibility"]
                 )
         except Exception as e:
             print(f"  ⚠ QC 質量評估圖生成失敗: {e}")
@@ -2914,6 +2946,8 @@ def main(input_file=None):
     
     normalized_df, summary_report, method_name, output_dir, quality_metrics = result
     
+   
+    
     # 儲存結果
     print("\n儲存結果...")
     output_path = save_normalization_results(
@@ -2930,12 +2964,13 @@ def main(input_file=None):
     print(f"📄 Excel檔案: {Path(output_path).name}")
     
     print("\n📊 生成的視覺化圖表:")
-    print(f"  1. Density_Plot_{method_name}.png - 密度分佈圖")
-    print(f"  2. Boxplot_{method_name}.png - 盒鬚圖")
-    print(f"  3. Sample_Distribution_{method_name}.png - 樣本總強度分佈")
-    print(f"  4. CV_Distribution_{method_name}.png - CV%分佈圖")
-    print(f"  5. PCA_Comparison_{method_name}.png - PCA對比圖")
-    print(f"  6. Correlation_Heatmap_{method_name}.png - 樣本相關性熱圖")
+    print(f"  1. {output_dir}/Normalization_Figures/Fig1_Boxplot_{method_name}_*.png - 盒鬚圖")
+    print(f"  2. {output_dir}/Normalization_Figures/Fig2_SampleDistribution_{method_name}_*.png - 樣本總強度分佈")
+    print(f"  3. {output_dir}/Normalization_Figures/Fig3_CV_{method_name}_*.png - CV%分佈圖")
+    print(f"  4. {output_dir}/Normalization_Figures/Fig4_PCA_{method_name}_*.png - PCA對比圖")
+    print(f"  5. {output_dir}/Normalization_Figures/Fig5_QC_Variability_{method_name}_*.png - QC變異性評估")
+    print(f"  6. {output_dir}/Normalization_Figures/Fig6_QC_Reproducibility_{method_name}_*.png - QC重現性評估")
+    print(f"  7. {output_dir}/Normalization_Figures/Fig7_Correlation_{method_name}_*.png - 樣本相關性熱圖")
     
     print("\n" + "=" * 80)
     print("📈 標準化質量評估摘要:")
