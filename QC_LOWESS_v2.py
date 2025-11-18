@@ -19,287 +19,463 @@ import copy
 
 warnings.filterwarnings('ignore')
 
-# ========== 🔧 優化：動態 frac 選擇 ==========
-def optimize_lowess_frac_dynamic(qc_count):
-    """根據 QC 樣本數量動態選擇 frac"""
-    if qc_count < 6:
-        return 1.0
-    elif qc_count < 10:
-        return 0.8
-    elif qc_count < 15:
-        return 0.75
-    elif qc_count < 25:
-        return 0.6
-    else:
-        return 0.5
+# Columns that should never be treated as sample intensities
+DEFAULT_NON_SAMPLE_COLUMNS = {
+    'FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference', 'ISTD_Median',
+    'QC_CV%', 'Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%',
+    'Variance_Test_pvalue', 'Wilcoxon_pvalue', 'Shapiro_pvalue',
+    'MK_Trend_pvalue', 'Kendall_Tau', 'LOWESS_R2', 'LOWESS_RMSE',
+    'Significant_Improvement', 'Decision', 'Trend_Status', 'frac',
+    'outliers_removed', 'median_correction_factor', 'correction_factor_cv',
+    'correction_factor_std', 'correction_factor_range_low',
+    'correction_factor_range_high'
+}
+
+# Keywords that help identify derived statistical columns even if the exact
+# column name is unknown (e.g., legacy exports or user-provided sheets).
+STAT_COLUMN_KEYWORDS = (
+    'original_qc_', 'corrected_qc_', 'cv_', 'variance_', 'levene', 'mk_',
+    'kendall', 'lowess_', 'trend_', 'wilcoxon', 'shapiro', 'significant',
+    'decision', 'rmse', 'median_correction', 'correction_factor'
+)
+
+COLORBLIND_COLORS = ['#0173B2', '#DE8F05', '#029E73', '#CC78BC', '#CA9161',
+                     '#949494', '#ECE133', '#56B4E9']
 
 
-# ========== ✅ 趨勢顯著性檢驗 ==========
-def validate_lowess_trend(qc_orders, qc_intensities, fitted_values):
-    """驗證 LOWESS 擬合品質（僅用於記錄）"""
-    try:
-        tau, mk_pvalue = kendalltau(qc_orders, qc_intensities)
-        
-        ss_res = np.sum((qc_intensities - fitted_values) ** 2)
-        ss_tot = np.sum((qc_intensities - np.mean(qc_intensities)) ** 2)
-        
-        if ss_tot == 0:
-            r_squared = 0.0
+def normalize_sample_name(name):
+    """Helper to normalize sample names for consistent comparisons."""
+    if pd.isna(name):
+        return ''
+    return str(name).strip().lower()
+
+
+def identify_sample_columns(istd_df, sample_info_df):
+    """Identify valid sample intensity columns using SampleInfo metadata."""
+    sample_names = sample_info_df['Sample_Name'].astype(str).str.strip()
+    sample_lookup = {normalize_sample_name(name) for name in sample_names}
+    non_sample_lower = {normalize_sample_name(col) for col in DEFAULT_NON_SAMPLE_COLUMNS}
+    sample_columns = []
+    dropped_columns = []
+
+    for col in istd_df.columns:
+        col_norm = normalize_sample_name(col)
+        if col_norm in non_sample_lower:
+            continue
+        if col_norm in sample_lookup:
+            sample_columns.append(col)
         else:
-            r_squared = 1 - (ss_res / ss_tot)
-            r_squared = max(0, r_squared)
-        
-        rmse = np.sqrt(np.mean((qc_intensities - fitted_values) ** 2))
-        has_significant_trend = mk_pvalue < 0.05
-        
-        return {
-            'trend_pvalue': mk_pvalue,
-            'trend_tau': tau,
-            'r_squared': r_squared,
-            'rmse': rmse,
-            'has_significant_trend': has_significant_trend
-        }
-    
-    except Exception as e:
-        return {
+            if any(keyword in col_norm for keyword in STAT_COLUMN_KEYWORDS):
+                dropped_columns.append(col)
+
+    if not sample_columns:
+        sample_columns = [col for col in istd_df.columns
+                          if normalize_sample_name(col) not in non_sample_lower]
+
+    return sample_columns, dropped_columns
+
+
+def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensities, debug_flag=None):
+    """對單一批次特徵執行 QC-LOWESS 校正並回傳詳細統計。"""
+    info = {
+        'status': 'failed',
+        'cv_before': np.nan,
+        'cv_after': np.nan,
+        'cv_improvement': np.nan,
+        'correction_factor_stats': {},
+        'trend_validation': {
             'trend_pvalue': np.nan,
             'trend_tau': np.nan,
             'r_squared': np.nan,
-            'rmse': np.nan,
-            'has_significant_trend': False,
-            'error': str(e)
+            'rmse': np.nan
         }
+    }
 
+    if all_orders is None or all_intensities is None:
+        return [], info
 
-# ========== ✅ 簡化版 LOWESS 校正 ==========
-def robust_lowess_correction_v7(qc_orders, qc_intensities, all_orders, all_intensities, feature_id):
-    """
-    簡化版 LOWESS 校正
-    
-    決策邏輯：
-    1. QC 樣本數 < 5 → 跳過
-    2. 離群值檢測與移除
-    3. LOWESS 擬合
-    4. CV% 改善 ≥ 2% → 執行校正
-    5. 穩定性檢查（校正因子 CV < 30%）
-    6. 過度校正檢查（校正後 CV 不能增加）
-    """
-    qc_orders = np.array(qc_orders)
-    qc_intensities = np.array(qc_intensities)
-    all_orders = np.array(all_orders)
-    all_intensities = np.array(all_intensities)
-    
-    debug_mode = feature_id is not None
-    
-    # ========== 步驟 1：檢查 QC 樣本數 ==========
-    if len(qc_orders) < 5:
-        return all_intensities, {
-            'status': 'insufficient_qc',
-            'qc_count': len(qc_orders),
-            'trend_validation': {
-                'trend_pvalue': np.nan,
-                'trend_tau': np.nan,
-                'r_squared': np.nan,
-                'rmse': np.nan,
-                'has_significant_trend': False
-            }
-        }
-    
-    # ========== 步驟 2：離群值檢測 ==========
-    Q1 = np.percentile(qc_intensities, 25)
-    Q3 = np.percentile(qc_intensities, 75)
-    IQR = Q3 - Q1
-    
-    lower_bound = Q1 - 1.5 * IQR
-    upper_bound = Q3 + 1.5 * IQR
-    
-    outlier_mask = (qc_intensities < lower_bound) | (qc_intensities > upper_bound)
-    outliers_removed = np.sum(outlier_mask)
-    
-    qc_orders_clean = qc_orders[~outlier_mask]
-    qc_intensities_clean = qc_intensities[~outlier_mask]
-    
-    if len(qc_orders_clean) < max(5, len(qc_orders) * 0.7):
-        qc_orders_clean = qc_orders
-        qc_intensities_clean = qc_intensities
-        outliers_removed = 0
-    
-    # ========== 步驟 3：動態選擇 frac ==========
-    n_qc = len(qc_orders_clean)
-    
-    if n_qc < 8:
-        best_frac = 1.0
-    elif n_qc < 12:
-        best_frac = 0.8
-    elif n_qc < 20:
-        best_frac = 0.6
-    else:
-        best_frac = 0.4
-    
+    all_orders_arr = np.asarray(all_orders, dtype=float)
+    all_intensities_arr = np.asarray(all_intensities, dtype=float)
+    if all_orders_arr.size == 0:
+        return all_intensities_arr.tolist(), info
+
+    qc_orders_arr = np.asarray(qc_orders, dtype=float)
+    qc_intensities_arr = np.asarray(qc_intensities, dtype=float)
+    valid_mask = np.isfinite(qc_orders_arr) & np.isfinite(qc_intensities_arr) & (qc_intensities_arr > 0)
+    valid_x = qc_orders_arr[valid_mask]
+    valid_y = qc_intensities_arr[valid_mask]
+
+    if valid_x.size < 3 or np.unique(valid_x).size < 2:
+        info['status'] = 'insufficient_qc'
+        return all_intensities_arr.tolist(), info
+
+    frac = np.clip(valid_x.size / 30, 0.3, 0.8)
+    lowess_result = sm.nonparametric.lowess(valid_y, valid_x, frac=frac, it=2, return_sorted=True)
+    x_fit, y_fit = lowess_result[:, 0], lowess_result[:, 1]
+    median_qc = np.nanmedian(y_fit)
+    if not np.isfinite(median_qc) or median_qc <= 0:
+        median_qc = np.nanmedian(valid_y)
+    if not np.isfinite(median_qc) or median_qc <= 0:
+        median_qc = 1.0
+
+    def predict(x_new):
+        if not np.isfinite(x_new):
+            return np.nan
+        return float(np.interp(x_new, x_fit, y_fit, left=y_fit[0], right=y_fit[-1]))
+
+    corrected = []
+    factors = []
+    for order, intensity in zip(all_orders_arr, all_intensities_arr):
+        if not np.isfinite(intensity) or intensity <= 0:
+            corrected.append(0.0)
+            continue
+        fitted = predict(order)
+        if not np.isfinite(fitted) or fitted <= 0:
+            corrected.append(float(intensity))
+            continue
+        factor = median_qc / fitted
+        factors.append(factor)
+        corrected.append(float(intensity * factor))
+
+    qc_pred = np.array([predict(x) for x in valid_x], dtype=float)
+    qc_pred = np.where(np.isfinite(qc_pred) & (qc_pred > 0), qc_pred, np.nan)
+    qc_factors = np.where(np.isfinite(qc_pred), median_qc / qc_pred, 1.0)
+    qc_corrected = valid_y * qc_factors
+
+    def calc_cv(values):
+        values = np.asarray(values, dtype=float)
+        values = values[np.isfinite(values) & (values > 0)]
+        if values.size < 2:
+            return np.nan
+        mean_val = np.mean(values)
+        if mean_val == 0:
+            return np.nan
+        return float(np.std(values, ddof=1) / mean_val * 100)
+
+    original_cv = calc_cv(valid_y)
+    corrected_cv = calc_cv(qc_corrected)
+    cv_improvement = original_cv - corrected_cv if np.isfinite(original_cv) and np.isfinite(corrected_cv) else np.nan
+    factor_array = np.asarray(factors, dtype=float)
+    factor_cv = calc_cv(factor_array) if factor_array.size >= 2 else np.nan
+
     try:
-        # ========== 步驟 4：LOWESS 擬合 ==========
-        lowess_result = sm.nonparametric.lowess(
-            qc_intensities_clean,
-            qc_orders_clean,
-            frac=best_frac,
-            it=3,
-            delta=0.0,
-            return_sorted=True
-        )
-        
-        fitted_values = lowess_result[:, 1]
-        
-        # ========== 步驟 5：趨勢驗證（僅用於記錄）==========
-        trend_validation = validate_lowess_trend(
-            qc_orders_clean, 
-            qc_intensities_clean, 
-            fitted_values
-        )
-        
-        if debug_mode:
-            print(f"\n🔍 調試特徵: {feature_id}")
-            print(f"   QC 樣本數: {n_qc}")
-            print(f"   使用 frac: {best_frac}")
-            print(f"\n   📊 趨勢驗證（參考）:")
-            print(f"     Mann-Kendall p: {trend_validation['trend_pvalue']:.4f}")
-            print(f"     Kendall's tau: {trend_validation['trend_tau']:.4f}")
-            print(f"     R²: {trend_validation['r_squared']:.4f}")
-            print(f"     RMSE: {trend_validation['rmse']:.2e}")
-        
-        # ========== 步驟 6：計算 CV% 改善 ==========
-        original_cv = np.std(qc_intensities_clean, ddof=1) / np.mean(qc_intensities_clean) * 100
-        
-        # 預測 QC 樣本校正後的值
-        qc_predicted_trends = np.interp(
-            qc_orders_clean,
-            lowess_result[:, 0],
-            lowess_result[:, 1]
-        )
-        
-        qc_reference = np.median(qc_intensities_clean)
-        qc_predicted_trends = np.where(qc_predicted_trends == 0, qc_reference, qc_predicted_trends)
-        qc_correction_factors = qc_reference / qc_predicted_trends
-        qc_correction_factors = np.clip(qc_correction_factors, 0.5, 2.0)
-        
-        qc_corrected = qc_intensities_clean * qc_correction_factors
-        corrected_cv = np.std(qc_corrected, ddof=1) / np.mean(qc_corrected) * 100
-        
-        cv_improvement = original_cv - corrected_cv
-        
-        if debug_mode:
-            print(f"\n   📊 CV% 評估:")
-            print(f"     原始 CV: {original_cv:.2f}%")
-            print(f"     預測校正 CV: {corrected_cv:.2f}%")
-            print(f"     改善: {cv_improvement:.2f}%")
-        
-        # ========== 步驟 7：CV% 改善判斷 ==========
-        MIN_IMPROVEMENT = 2.0
-        
-        if cv_improvement < MIN_IMPROVEMENT:
-            if debug_mode:
-                print(f"\n   ⚠️  CV% 改善不足 ({cv_improvement:.2f}% < {MIN_IMPROVEMENT}%)，跳過校正")
-            return all_intensities, {
-                'status': 'insufficient_improvement',
-                'original_cv': original_cv,
-                'corrected_cv': corrected_cv,
-                'cv_improvement': cv_improvement,
-                'trend_validation': trend_validation
+        trend_tau, trend_pvalue = kendalltau(valid_x, valid_y)
+    except Exception:
+        trend_tau, trend_pvalue = (np.nan, np.nan)
+
+    qc_predicted = np.array([predict(x) for x in valid_x], dtype=float)
+    qc_predicted = np.where(np.isfinite(qc_predicted), qc_predicted, np.nanmedian(valid_y))
+    ss_res = np.nansum((valid_y - qc_predicted) ** 2)
+    ss_tot = np.nansum((valid_y - np.nanmean(valid_y)) ** 2)
+    r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
+    rmse = np.sqrt(np.nanmean((valid_y - qc_predicted) ** 2))
+
+    status = 'success'
+    if not np.isfinite(original_cv) or not np.isfinite(corrected_cv):
+        status = 'failed'
+    elif cv_improvement < -1:
+        status = 'overcorrection_detected'
+    elif factor_array.size >= 3 and np.isfinite(factor_cv) and factor_cv > 50:
+        status = 'unstable_correction_factors'
+    elif not np.isfinite(cv_improvement) or cv_improvement < 2:
+        status = 'insufficient_improvement'
+
+    info['status'] = status
+    info['cv_before'] = original_cv
+    info['cv_after'] = corrected_cv
+    info['cv_improvement'] = cv_improvement
+    info['correction_factor_stats'] = {
+        'median': float(np.nanmedian(factor_array)) if factor_array.size else np.nan,
+        'cv_percent': factor_cv,
+        'min': float(np.nanmin(factor_array)) if factor_array.size else np.nan,
+        'max': float(np.nanmax(factor_array)) if factor_array.size else np.nan
+    }
+    info['trend_validation'] = {
+        'trend_pvalue': trend_pvalue,
+        'trend_tau': trend_tau,
+        'r_squared': r_squared,
+        'rmse': rmse
+    }
+
+    if debug_flag:
+        delta = cv_improvement if np.isfinite(cv_improvement) else float('nan')
+        print(f"     [DEBUG] Feature {debug_flag}: status={status}, ΔCV={delta:.2f}%")
+
+    return corrected, info
+
+def perform_lowess_normalization(istd_df, sample_info_df):
+    """執行分批次的 QC-LOWESS 正規化流程。"""
+    try:
+        if istd_df is None or istd_df.empty:
+            print("❌ 錯誤：ISTD_Correction 數據為空")
+            return None, None, None, None, None
+
+        if sample_info_df is None or sample_info_df.empty:
+            print("❌ 錯誤：SampleInfo 數據為空")
+            return None, None, None, None, None
+
+        if 'FeatureID' not in istd_df.columns:
+            print("❌ 錯誤：ISTD_Correction 缺少 'FeatureID' 欄位")
+            return None, None, None, None, None
+
+        if 'Sample_Name' not in sample_info_df.columns or 'Sample_Type' not in sample_info_df.columns:
+            print("❌ 錯誤：SampleInfo 缺少必要欄位 (Sample_Name, Sample_Type)")
+            return None, None, None, None, None
+
+        sample_columns = istd_df.attrs.get('sample_columns')
+        if not sample_columns:
+            sample_columns, _ = identify_sample_columns(istd_df, sample_info_df)
+
+        sample_columns = [col for col in sample_columns if col in istd_df.columns]
+        if not sample_columns:
+            print("❌ 錯誤：找不到有效的樣本欄位")
+            return None, None, None, None, None
+
+        sample_meta = sample_info_df.set_index('Sample_Name')
+        missing_meta = [col for col in sample_columns if col not in sample_meta.index]
+        if missing_meta:
+            print("⚠️  警告：以下樣本在 SampleInfo 中找不到對應資訊，將被排除：")
+            for name in missing_meta[:5]:
+                print(f"     - {name}")
+            if len(missing_meta) > 5:
+                print(f"     ... 還有 {len(missing_meta) - 5} 個樣本")
+        sample_columns = [col for col in sample_columns if col in sample_meta.index]
+
+        if not sample_columns:
+            print("❌ 錯誤：無法匹配 SampleInfo 與 ISTD_Correction 的樣本欄位")
+            return None, None, None, None, None
+
+        qc_samples = [
+            sample for sample in sample_columns
+            if 'QC' in str(sample_meta.loc[sample].get('Sample_Type', '')).upper()
+        ]
+
+        if len(qc_samples) < 5:
+            print(f"❌ 錯誤：QC 樣本不足 ({len(qc_samples)} < 5)，無法進行校正")
+            return None, None, None, None, None
+
+        batch_groups = {}
+        missing_order_samples = []
+        for sample in sample_columns:
+            meta_row = sample_meta.loc[sample]
+            batch_name = str(meta_row.get('Batch', 'Batch1'))
+            batch_entry = batch_groups.setdefault(
+                batch_name,
+                {'samples': [], 'qc_samples': [], 'injection_orders': {}}
+            )
+            batch_entry['samples'].append(sample)
+
+            sample_type = str(meta_row.get('Sample_Type', '')).upper()
+            if 'QC' in sample_type:
+                batch_entry['qc_samples'].append(sample)
+
+            order = meta_row.get('Injection_Order')
+            if pd.isna(order):
+                missing_order_samples.append(sample)
+                order = len(batch_entry['injection_orders']) + 1
+            batch_entry['injection_orders'][sample] = order
+
+        active_batches = {k: v for k, v in batch_groups.items() if v['samples']}
+        if not active_batches:
+            print("❌ 錯誤：找不到可供處理的批次樣本")
+            return None, None, None, None, None
+
+        print("\n📊 數據概覽：")
+        print(f"  - 特徵數: {len(istd_df)}")
+        print(f"  - 樣本總數: {len(sample_columns)}")
+        print(f"  - QC 樣本數: {len(qc_samples)}")
+        print(f"  - 批次數: {len(active_batches)}")
+        for batch, info in active_batches.items():
+            print(f"    • Batch {batch}: {len(info['samples'])} samples (QC: {len(info['qc_samples'])})")
+
+        if missing_order_samples:
+            print(f"⚠️  提示：{len(missing_order_samples)} 個樣本缺少 Injection_Order，已套用臨時序號")
+
+        print("\n🔍 計算 QC CV% 以選擇調試特徵...")
+        feature_cvs = []
+        for _, row in istd_df.iterrows():
+            feature_id = row['FeatureID']
+            qc_values = []
+            for qc_sample in qc_samples:
+                if qc_sample in row.index:
+                    intensity = row[qc_sample]
+                    if not pd.isna(intensity) and intensity > 0:
+                        qc_values.append(intensity)
+            if len(qc_values) >= 2:
+                cv_value = np.std(qc_values, ddof=1) / np.mean(qc_values) * 100
+                feature_cvs.append((feature_id, cv_value))
+
+        debug_features = []
+        if feature_cvs:
+            feature_cvs_sorted = sorted(feature_cvs, key=lambda x: x[1])
+            debug_features = [feature_cvs_sorted[0][0]]
+            debug_features.append(feature_cvs_sorted[len(feature_cvs_sorted) // 2][0])
+            debug_features.append(feature_cvs_sorted[-1][0])
+            debug_features = list(dict.fromkeys(debug_features))
+            print("   • 調試特徵:")
+            for fid in debug_features:
+                matching = [cv for cv in feature_cvs if cv[0] == fid]
+                if matching:
+                    print(f"     - {fid} (CV% = {matching[0][1]:.2f}%)")
+
+        def normalize_feature_for_batch(feature_row, batch_name, batch_info, debug_flag):
+            samples = batch_info['samples']
+            injection_orders = batch_info['injection_orders']
+            valid_samples = [s for s in samples if s in injection_orders]
+            if not valid_samples:
+                return {
+                    'status': 'failed',
+                    'corrected_samples': {},
+                    'trend_validation': None,
+                    'qc_samples': []
+                }
+
+            batch_data = []
+            for sample in valid_samples:
+                order = injection_orders[sample]
+                intensity = feature_row.get(sample, 0)
+                if pd.isna(intensity) or intensity <= 0:
+                    intensity = 0
+                batch_data.append((sample, order, float(intensity)))
+
+            batch_data.sort(key=lambda x: x[1])
+            all_sample_names = [d[0] for d in batch_data]
+            all_orders = [d[1] for d in batch_data]
+            all_intensities = [d[2] for d in batch_data]
+
+            qc_batch_samples = [s for s in batch_info['qc_samples'] if s in all_sample_names]
+            qc_indices = [all_sample_names.index(s) for s in qc_batch_samples]
+            qc_orders = [all_orders[i] for i in qc_indices]
+            qc_intensities = [all_intensities[i] for i in qc_indices]
+
+            corrected_intensities, info = apply_lowess_correction(
+                qc_orders, qc_intensities, all_orders, all_intensities, debug_flag
+            )
+
+            corrected_map = dict(zip(all_sample_names, corrected_intensities))
+            return {
+                'status': info.get('status', 'unknown'),
+                'corrected_samples': corrected_map,
+                'trend_validation': info.get('trend_validation', None),
+                'qc_samples': qc_batch_samples
             }
-        
-        # ========== 步驟 8：校正因子穩定性檢查 ==========
-        cf_cv = np.std(qc_correction_factors) / np.mean(qc_correction_factors) * 100
-        MAX_CF_CV = 30.0
-        
-        if cf_cv > MAX_CF_CV:
-            if debug_mode:
-                print(f"\n   ⚠️  校正因子不穩定 (CV={cf_cv:.1f}% > {MAX_CF_CV}%)，跳過校正")
-            return all_intensities, {
-                'status': 'unstable_correction_factors',
-                'correction_factor_cv': cf_cv,
-                'original_cv': original_cv,
-                'corrected_cv': corrected_cv,
-                'cv_improvement': cv_improvement,
-                'trend_validation': trend_validation
-            }
-        
-        # ========== 步驟 9：過度校正檢查 ==========
-        if corrected_cv > original_cv * 1.05:
-            if debug_mode:
-                print(f"\n   ⚠️  校正反而增加變異，跳過校正")
-            return all_intensities, {
-                'status': 'overcorrection_detected',
-                'original_cv': original_cv,
-                'corrected_cv': corrected_cv,
-                'cv_improvement': cv_improvement,
-                'trend_validation': trend_validation
-            }
-        
-        # ========== 步驟 10：通過所有檢查，執行校正 ==========
-        if debug_mode:
-            print(f"\n   ✅ 通過所有檢查，執行校正")
-            print(f"      CV% 改善: {cv_improvement:.2f}%")
-            print(f"      校正因子穩定性: CV={cf_cv:.1f}%")
-        
-        # 計算所有樣本的校正因子
-        predicted_trends = np.interp(
-            all_orders, 
-            lowess_result[:, 0],
-            lowess_result[:, 1]
-        )
-        
-        predicted_trends = np.where(predicted_trends == 0, qc_reference, predicted_trends)
-        correction_factors = qc_reference / predicted_trends
-        correction_factors = np.clip(correction_factors, 0.5, 2.0)
-        
-        # 應用校正
-        corrected_intensities = all_intensities * correction_factors
-        
-        # 計算最終效果
-        qc_indices = [i for i, order in enumerate(all_orders) if order in qc_orders]
-        
-        if len(qc_indices) >= 2:
-            qc_corrected_final = corrected_intensities[qc_indices]
-            final_corrected_cv = np.std(qc_corrected_final, ddof=1) / np.mean(qc_corrected_final) * 100
-        else:
-            final_corrected_cv = corrected_cv
-        
-        correction_info = {
-            'status': 'success',
-            'frac': best_frac,
-            'qc_count': len(qc_orders_clean),
-            'outliers_removed': outliers_removed,
-            'original_cv': original_cv,
-            'corrected_cv': final_corrected_cv,
-            'cv_improvement': original_cv - final_corrected_cv,
-            'median_correction_factor': np.median(correction_factors),
-            'correction_factor_cv': cf_cv,
-            'qc_reference': qc_reference,
-            'correction_factor_range': (np.min(correction_factors), np.max(correction_factors)),
-            'correction_factor_std': np.std(correction_factors),
-            'trend_validation': trend_validation
-        }
-        
-        return corrected_intensities, correction_info
-        
+
+        def safe_nanmedian(values):
+            if not values:
+                return np.nan
+            arr = np.array(values, dtype=float)
+            if arr.size == 0 or np.all(np.isnan(arr)):
+                return np.nan
+            return float(np.nanmedian(arr))
+
+        status_categories = [
+            'success', 'insufficient_qc', 'insufficient_improvement',
+            'unstable_correction_factors', 'overcorrection_detected',
+            'failed', 'unknown'
+        ]
+        decision_stats = {key: 0 for key in status_categories}
+        decision_stats['partial_success'] = 0
+        decision_stats['event_counts'] = {key: 0 for key in status_categories}
+        decision_stats['per_batch'] = {}
+        decision_stats['total_features'] = len(istd_df)
+        decision_stats['total_batches'] = len(active_batches)
+        decision_stats['total_feature_batch_tasks'] = len(active_batches) * len(istd_df)
+
+        all_results = []
+        qc_corrected_values = {}
+        trend_stats = []
+        feature_all_success = 0
+        feature_partial_success = 0
+        feature_no_success = 0
+
+        for idx, row in istd_df.iterrows():
+            feature_id = row['FeatureID']
+            debug_flag = feature_id if feature_id in debug_features else None
+
+            result_row = {'FeatureID': feature_id}
+            for sample in sample_columns:
+                result_row[sample] = row[sample]
+
+            qc_corrected_dict = {sample: row[sample] for sample in qc_samples if sample in row.index}
+            trend_metric_buffer = []
+            batch_statuses = []
+
+            for batch_name, batch_info in active_batches.items():
+                batch_result = normalize_feature_for_batch(row, batch_name, batch_info, debug_flag)
+                status = batch_result['status']
+                batch_statuses.append(status)
+
+                decision_stats['event_counts'].setdefault(status, 0)
+                decision_stats['event_counts'][status] += 1
+                batch_entry = decision_stats['per_batch'].setdefault(batch_name, {})
+                batch_entry[status] = batch_entry.get(status, 0) + 1
+
+                corrected_map = batch_result['corrected_samples']
+                if corrected_map:
+                    for sample, value in corrected_map.items():
+                        result_row[sample] = value
+                        if sample in qc_corrected_dict:
+                            qc_corrected_dict[sample] = value
+
+                if batch_result['trend_validation']:
+                    trend_metric_buffer.append(batch_result['trend_validation'])
+
+            success_batches = batch_statuses.count('success')
+            if success_batches == len(active_batches):
+                decision_stats['success'] += 1
+                feature_all_success += 1
+            elif success_batches > 0:
+                decision_stats['partial_success'] += 1
+                feature_partial_success += 1
+            else:
+                failure_priority = [
+                    status for status in status_categories
+                    if status != 'success' and status in batch_statuses
+                ]
+                failure_key = failure_priority[0] if failure_priority else 'failed'
+                decision_stats[failure_key] += 1
+                feature_no_success += 1
+
+            trend_stats.append({
+                'FeatureID': feature_id,
+                'MK_Trend_pvalue': safe_nanmedian([m.get('trend_pvalue', np.nan) for m in trend_metric_buffer]),
+                'Kendall_Tau': safe_nanmedian([m.get('trend_tau', np.nan) for m in trend_metric_buffer]),
+                'LOWESS_R2': safe_nanmedian([m.get('r_squared', np.nan) for m in trend_metric_buffer]),
+                'LOWESS_RMSE': safe_nanmedian([m.get('rmse', np.nan) for m in trend_metric_buffer])
+            })
+
+            all_results.append(result_row)
+            qc_corrected_values[feature_id] = qc_corrected_dict
+
+            if (idx + 1) % 500 == 0:
+                print(f"  進度: {idx + 1}/{len(istd_df)} features")
+
+        print("\n  ✓ 批次化 LOWESS 校正完成")
+        print("\n  📊 特徵層級統計：")
+        print(f"     ✅ 全批次均成功: {feature_all_success} ({feature_all_success/len(istd_df)*100:.1f}%)")
+        print(f"     ⚠️ 部分批次成功: {feature_partial_success} ({feature_partial_success/len(istd_df)*100:.1f}%)")
+        print(f"     ❌ 無成功批次: {feature_no_success} ({feature_no_success/len(istd_df)*100:.1f}%)")
+
+        print("\n  📊 決策細節 (以批次為單位)：")
+        total_tasks = decision_stats['total_feature_batch_tasks'] or 1
+        for status, count in decision_stats['event_counts'].items():
+            if count == 0:
+                continue
+            print(f"     • {status}: {count} ({count/total_tasks*100:.1f}%)")
+
+        lowess_df = pd.DataFrame(all_results)
+        trend_stats_df = pd.DataFrame(trend_stats)
+
+        return lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats
+
     except Exception as e:
-        if debug_mode:
-            print(f"\n   ❌ 校正失敗: {e}")
-            import traceback
-            traceback.print_exc()
-        return all_intensities, {
-            'status': 'failed',
-            'error': str(e),
-            'trend_validation': {
-                'trend_pvalue': np.nan,
-                'trend_tau': np.nan,
-                'r_squared': np.nan,
-                'rmse': np.nan,
-                'has_significant_trend': False
-            }
-        }
+        print(f"❌ LOWESS 校正失敗: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None, None, None, None
 
 
-# ========== 數據載入 ==========
+    # ========== 數據載入 ==========
 def get_valid_values(row, columns):
     """從 DataFrame 的一行中提取有效值（>0 且非 NaN）"""
     values = []
@@ -373,6 +549,19 @@ def load_and_process_data(file_path):
             print(f"   找到的欄位: {', '.join(sample_info_df.columns.tolist())}")
             return None, None, None
 
+        # ===== 防呆6-1: Batch 欄位處理 =====
+        if 'Batch' not in sample_info_df.columns:
+            sample_info_df['Batch'] = 'Batch1'
+            print("⚠️  警告：'SampleInfo' 缺少 'Batch' 欄位，已建立預設 Batch1")
+        else:
+            batch_na_mask = sample_info_df['Batch'].isna()
+            if batch_na_mask.any():
+                fill_value = 'Unknown'
+                sample_info_df.loc[batch_na_mask, 'Batch'] = fill_value
+                print(f"⚠️  警告：發現 {batch_na_mask.sum()} 個樣本缺少 Batch，已填入 '{fill_value}'")
+
+        batch_summary = sample_info_df['Batch'].astype(str).value_counts().to_dict()
+
         # ===== 防呆7: 樣本名稱重複檢查 =====
         duplicate_samples = sample_info_df[sample_info_df['Sample_Name'].duplicated()]
         if not duplicate_samples.empty:
@@ -415,6 +604,16 @@ def load_and_process_data(file_path):
             except Exception as e:
                 print(f"⚠️  警告：Injection_Order 數據類型檢查失敗: {e}")
 
+            # 針對缺失的注射順序提供連續的替補值，避免後續流程中止
+            order_na_mask = sample_info_df['Injection_Order'].isna()
+            if order_na_mask.any():
+                existing_max = sample_info_df['Injection_Order'].max()
+                if pd.isna(existing_max):
+                    existing_max = 0
+                filler = np.arange(1, order_na_mask.sum() + 1) + existing_max
+                sample_info_df.loc[order_na_mask, 'Injection_Order'] = filler
+                print(f"⚠️  警告：已為缺少 Injection_Order 的樣本指派遞增序號，請於 SampleInfo 中確認")
+
         # ===== 防呆10: ISTD_Correction 基本檢查 =====
         istd_df = pd.read_excel(excel_file, sheet_name='ISTD_Correction')
         print(f"✓ 成功讀取 'ISTD_Correction' 工作表，包含 {len(istd_df)} 個特徵")
@@ -440,19 +639,24 @@ def load_and_process_data(file_path):
             print(f"   建議：請檢查數據是否正確，腳本將保留第一次出現的記錄")
 
         # ===== 防呆12: 樣本欄位檢查 =====
-        exclude_cols = ['FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference',
-                       'ISTD_Median', 'QC_CV%']
-        sample_columns = [col for col in istd_df.columns if col not in exclude_cols]
+        sample_columns, dropped_columns = identify_sample_columns(istd_df, sample_info_df)
 
         if len(sample_columns) == 0:
-            print(f"❌ 錯誤：'ISTD_Correction' 中沒有樣本欄位")
+            print(f"❌ 錯誤：'ISTD_Correction' 中沒有匹配 SampleInfo 的樣本欄位")
             return None, None, None
 
-        print(f"✓ 找到 {len(sample_columns)} 個樣本欄位")
+        print(f"✓ 找到 {len(sample_columns)} 個樣本欄位（來自 SampleInfo）")
+
+        if dropped_columns:
+            print(f"⚠️  警告：偵測到 {len(dropped_columns)} 個推定統計欄位，已自動排除：")
+            for col in dropped_columns[:5]:
+                print(f"     - {col}")
+            if len(dropped_columns) > 5:
+                print(f"     ... 還有 {len(dropped_columns) - 5} 個欄位")
 
         # ===== 防呆13: 樣本名稱匹配檢查 =====
         sample_names_in_info = set(sample_info_df['Sample_Name'].astype(str).str.strip().str.lower())
-        sample_names_in_istd = set([str(col).strip().lower() for col in sample_columns])
+        sample_names_in_istd = {normalize_sample_name(col) for col in sample_columns}
 
         missing_in_istd = sample_names_in_info - sample_names_in_istd
         missing_in_info = sample_names_in_istd - sample_names_in_info
@@ -528,7 +732,13 @@ def load_and_process_data(file_path):
         print(f"  - 特徵數: {len(istd_df)}")
         print(f"  - 樣本數: {len(sample_info_df)}")
         print(f"  - QC 樣本數: {qc_count}")
+        if batch_summary:
+            print(f"  - 批次分佈: {', '.join([f'{batch}:{count}' for batch, count in batch_summary.items()])}")
         print(f"{'='*70}\n")
+
+        # 將識別出的樣本欄位保存於 DataFrame attrs，供後續流程使用
+        istd_df.attrs['sample_columns'] = sample_columns
+        istd_df.attrs['excluded_non_sample_columns'] = dropped_columns
 
         return raw_df, istd_df, sample_info_df
 
@@ -537,233 +747,6 @@ def load_and_process_data(file_path):
         import traceback
         traceback.print_exc()
         return None, None, None
-
-
-# ========== LOWESS 正規化 ==========
-def perform_lowess_normalization(istd_df, sample_info_df):
-    """簡化的 LOWESS 正規化（所有樣本視為單一批次）（含防呆檢查）"""
-    try:
-        # ===== 防呆1: 輸入數據有效性檢查 =====
-        if istd_df is None or istd_df.empty:
-            print(f"❌ 錯誤：ISTD_Correction 數據為空")
-            return None, None, None, None, None
-
-        if sample_info_df is None or sample_info_df.empty:
-            print(f"❌ 錯誤：SampleInfo 數據為空")
-            return None, None, None, None, None
-
-        # ===== 防呆2: 必要欄位檢查 =====
-        if 'FeatureID' not in istd_df.columns:
-            print(f"❌ 錯誤：ISTD_Correction 缺少 'FeatureID' 欄位")
-            return None, None, None, None, None
-
-        if 'Sample_Name' not in sample_info_df.columns or 'Sample_Type' not in sample_info_df.columns:
-            print(f"❌ 錯誤：SampleInfo 缺少必要欄位")
-            return None, None, None, None, None
-
-        exclude_cols = ['FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference',
-                       'ISTD_Median', 'QC_CV%']
-        sample_columns = [col for col in istd_df.columns if col not in exclude_cols]
-
-        # ===== 防呆3: 樣本欄位檢查 =====
-        if len(sample_columns) == 0:
-            print(f"❌ 錯誤：找不到任何樣本欄位")
-            return None, None, None, None, None
-
-        print(f"✓ 找到 {len(sample_columns)} 個樣本欄位")
-
-        # ===== 防呆4: QC 樣本識別 =====
-        if 'Sample_Type' in sample_info_df.columns:
-            qc_samples = sample_info_df[
-                sample_info_df['Sample_Type'].str.upper().str.contains('QC', na=False)
-            ]['Sample_Name'].tolist()
-        else:
-            qc_samples = [col for col in sample_columns if 'QC' in col.upper()]
-
-        qc_samples = [s for s in qc_samples if s in sample_columns]
-
-        # ===== 防呆5: QC 樣本數量檢查 =====
-        if len(qc_samples) < 5:
-            print(f"❌ 錯誤：QC 樣本不足 ({len(qc_samples)} < 5)，無法進行校正")
-            print(f"   提示：LOWESS 校正需要至少 5 個 QC 樣本以確保擬合準確性")
-            return None, None, None, None, None
-        
-        print(f"\n📊 數據概覽:")
-        print(f"  - 總樣本數: {len(sample_columns)}")
-        print(f"  - QC 樣本數: {len(qc_samples)}")
-        print(f"  - 特徵數: {len(istd_df)}")
-        
-        sample_meta = sample_info_df.set_index('Sample_Name')
-        
-        all_samples = sample_columns
-        all_qc = qc_samples
-        
-        print(f"\n📦 處理所有樣本")
-        print(f"  - 樣本數: {len(all_samples)} (QC: {len(all_qc)})")
-        
-        injection_orders = {}
-        for col in all_samples:
-            if col in sample_meta.index:
-                injection_orders[col] = sample_meta.loc[col, 'Injection_Order']
-        
-        # 計算特徵 CV% 並選擇調試樣本
-        print(f"\n🔍 計算特徵 CV% 以選擇調試樣本...")
-        
-        feature_cvs = []
-        for idx, row in istd_df.iterrows():
-            feature_id = row['FeatureID']
-            qc_values = []
-            for qc_sample in all_qc:
-                if qc_sample in row.index:
-                    intensity = row[qc_sample]
-                    if not pd.isna(intensity) and intensity > 0:
-                        qc_values.append(intensity)
-            
-            if len(qc_values) >= 2:
-                cv = np.std(qc_values, ddof=1) / np.mean(qc_values) * 100
-                feature_cvs.append((feature_id, cv))
-        
-        if len(feature_cvs) < 3:
-            import random
-            debug_features = [f[0] for f in random.sample(feature_cvs, min(len(feature_cvs), 3))]
-        else:
-            feature_cvs_sorted = sorted(feature_cvs, key=lambda x: x[1])
-            low_cv_feature = feature_cvs_sorted[0]
-            mid_cv_feature = feature_cvs_sorted[len(feature_cvs_sorted) // 2]
-            high_cv_feature = feature_cvs_sorted[-1]
-            debug_features = [low_cv_feature[0], mid_cv_feature[0], high_cv_feature[0]]
-            
-            print(f"\n🔍 選擇以下特徵進行詳細調試（按 CV% 低→中→高）:")
-            print(f"   1. 低 CV%: {low_cv_feature[0]} (CV% = {low_cv_feature[1]:.2f}%)")
-            print(f"   2. 中 CV%: {mid_cv_feature[0]} (CV% = {mid_cv_feature[1]:.2f}%)")
-            print(f"   3. 高 CV%: {high_cv_feature[0]} (CV% = {high_cv_feature[1]:.2f}%)")
-        
-        all_results = []
-        correction_stats = []
-        qc_corrected_values = {}
-        trend_stats = []
-        
-        # ✅ 收集決策統計
-        decision_stats = {
-            'success': 0,
-            'insufficient_qc': 0,
-            'insufficient_improvement': 0,
-            'unstable_correction_factors': 0,
-            'overcorrection_detected': 0,
-            'failed': 0
-        }
-        
-        corrected_count = 0
-        failed_count = 0
-        
-        for idx, row in istd_df.iterrows():
-            feature_id = row['FeatureID']
-            
-            qc_data = []
-            for qc_sample in qc_samples:
-                if qc_sample in injection_orders:
-                    order = injection_orders[qc_sample]
-                    intensity = row[qc_sample]
-                    if not pd.isna(intensity) and intensity > 0:
-                        qc_data.append((order, intensity))
-            
-            if len(qc_data) < 5:
-                failed_count += 1
-                decision_stats['insufficient_qc'] += 1
-                
-                result_row = {'FeatureID': feature_id}
-                for sample in all_samples:
-                    result_row[sample] = row[sample]
-                all_results.append(result_row)
-                
-                qc_corrected_dict = {}
-                for qc in qc_samples:
-                    if qc in row.index:
-                        qc_corrected_dict[qc] = row[qc]
-                qc_corrected_values[feature_id] = qc_corrected_dict
-                
-                trend_stats.append({
-                    'FeatureID': feature_id,
-                    'MK_Trend_pvalue': np.nan,
-                    'Kendall_Tau': np.nan,
-                    'LOWESS_R2': np.nan,
-                    'LOWESS_RMSE': np.nan
-                })
-                continue
-            
-            qc_orders, qc_intensities = zip(*sorted(qc_data))
-            
-            all_data = []
-            for sample in all_samples:
-                if sample in injection_orders:
-                    order = injection_orders[sample]
-                    intensity = row[sample]
-                    all_data.append((sample, order, intensity if not pd.isna(intensity) else 0))
-            
-            all_sample_names, all_orders, all_intensities = zip(*all_data)
-            
-            # ✅ 使用 v7 版本
-            corrected_intensities, info = robust_lowess_correction_v7(
-                qc_orders, qc_intensities, all_orders, all_intensities, 
-                feature_id if feature_id in debug_features else None
-            )
-            
-            # ✅ 收集決策統計
-            status = info.get('status', 'unknown')
-            if status in decision_stats:
-                decision_stats[status] += 1
-            
-            if info['status'] == 'success':
-                corrected_count += 1
-                correction_stats.append(info)
-            else:
-                failed_count += 1
-            
-            result_row = {'FeatureID': feature_id}
-            for sample, corrected_val in zip(all_sample_names, corrected_intensities):
-                result_row[sample] = corrected_val
-            all_results.append(result_row)
-            
-            qc_corrected_dict = {}
-            for sample, corrected_val in zip(all_sample_names, corrected_intensities):
-                if sample in qc_samples:
-                    qc_corrected_dict[sample] = corrected_val
-            qc_corrected_values[feature_id] = qc_corrected_dict
-            
-            # 收集趨勢驗證統計
-            trend_val = info.get('trend_validation', {})
-            trend_stats.append({
-                'FeatureID': feature_id,
-                'MK_Trend_pvalue': trend_val.get('trend_pvalue', np.nan),
-                'Kendall_Tau': trend_val.get('trend_tau', np.nan),
-                'LOWESS_R2': trend_val.get('r_squared', np.nan),
-                'LOWESS_RMSE': trend_val.get('rmse', np.nan)
-            })
-            
-            if (idx + 1) % 500 == 0:
-                print(f"  進度: {idx + 1}/{len(istd_df)} features")
-        
-        print(f"  ✓ 完成: {corrected_count} 成功, {failed_count} 跳過")
-        
-        # ✅ 顯示詳細決策統計
-        print(f"\n  📊 詳細決策統計:")
-        print(f"     ✅ 成功校正: {decision_stats['success']} ({decision_stats['success']/len(istd_df)*100:.1f}%)")
-        print(f"     • QC 樣本不足: {decision_stats['insufficient_qc']} ({decision_stats['insufficient_qc']/len(istd_df)*100:.1f}%)")
-        print(f"     • CV% 改善不足: {decision_stats['insufficient_improvement']} ({decision_stats['insufficient_improvement']/len(istd_df)*100:.1f}%)")
-        print(f"     • 校正因子不穩定: {decision_stats['unstable_correction_factors']} ({decision_stats['unstable_correction_factors']/len(istd_df)*100:.1f}%)")
-        print(f"     • 檢測到過度校正: {decision_stats['overcorrection_detected']} ({decision_stats['overcorrection_detected']/len(istd_df)*100:.1f}%)")
-        print(f"     • 其他失敗: {decision_stats['failed']} ({decision_stats['failed']/len(istd_df)*100:.1f}%)")
-        
-        lowess_df = pd.DataFrame(all_results)
-        trend_stats_df = pd.DataFrame(trend_stats)
-        
-        return lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats
-        
-    except Exception as e:
-        print(f"❌ LOWESS 校正失敗: {e}")
-        import traceback
-        traceback.print_exc()
-        return None, None, None, None, None
 
 
 # ========== ✅ 修正：統計檢定（Levene's test + 整體 Wilcoxon test）==========
@@ -1324,15 +1307,46 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             print(f"     方差顯著改變 (p < 0.05): {levene_sig}/{levene_valid} ({levene_sig/levene_valid*100:.1f}%)")
         
         # 校正決策統計
+        feature_total = decision_stats.get('total_features', total_count)
+        feature_success = decision_stats.get('success', 0)
+        feature_partial = decision_stats.get('partial_success', 0)
+        feature_no_success = max(feature_total - feature_success - feature_partial, 0)
+
+        def pct(value, base):
+            return (value / base * 100) if base else 0
+
         print(f"\n📊 校正決策統計:")
-        print(f"  ✅ 成功校正: {decision_stats['success']} ({decision_stats['success']/total_count*100:.1f}%)")
-        print(f"  ❌ 跳過校正: {total_count - decision_stats['success']} ({(total_count - decision_stats['success'])/total_count*100:.1f}%)")
-        print(f"\n  跳過原因:")
-        print(f"    • QC 樣本不足: {decision_stats['insufficient_qc']}")
-        print(f"    • CV% 改善不足 (<2%): {decision_stats['insufficient_improvement']}")
-        print(f"    • 校正因子不穩定: {decision_stats['unstable_correction_factors']}")
-        print(f"    • 檢測到過度校正: {decision_stats['overcorrection_detected']}")
-        print(f"    • 其他錯誤: {decision_stats['failed']}")
+        print(f"  ✅ 全批次成功: {feature_success} ({pct(feature_success, feature_total):.1f}%)")
+        print(f"  ⚠️ 部分批次成功: {feature_partial} ({pct(feature_partial, feature_total):.1f}%)")
+        print(f"  ❌ 無成功批次: {feature_no_success} ({pct(feature_no_success, feature_total):.1f}%)")
+
+        print(f"\n  無成功批次的主要原因:")
+        for key, label in [
+            ('insufficient_qc', 'QC 樣本不足'),
+            ('insufficient_improvement', 'CV% 改善不足 (<2%)'),
+            ('unstable_correction_factors', '校正因子不穩定'),
+            ('overcorrection_detected', '檢測到過度校正'),
+            ('failed', '其他錯誤')
+        ]:
+            value = decision_stats.get(key, 0)
+            if value:
+                print(f"    • {label}: {value}")
+
+        event_counts = decision_stats.get('event_counts')
+        if event_counts:
+            total_events = decision_stats.get('total_feature_batch_tasks', sum(event_counts.values()))
+            print(f"\n  批次層級決策 (feature × batch):")
+            for status, count in event_counts.items():
+                if count:
+                    print(f"    • {status}: {count} ({pct(count, total_events):.1f}%)")
+
+        per_batch_stats = decision_stats.get('per_batch')
+        if per_batch_stats:
+            print(f"\n  各批次摘要:")
+            for batch_name, stats_dict in per_batch_stats.items():
+                batch_total = sum(stats_dict.values())
+                batch_success = stats_dict.get('success', 0)
+                print(f"    • Batch {batch_name}: 成功 {batch_success}/{batch_total} ({pct(batch_success, batch_total):.1f}%)")
         
         # Mann-Kendall 趨勢統計（副表）
         mk_valid = trend_stats_df['MK_Trend_pvalue'].notna().sum()
@@ -1465,8 +1479,9 @@ def draw_hotelling_t2_ellipse(ax, scores, alpha=0.05, label=None, edgecolor='bla
 
 
 # ========== PCA 分析 ==========
-def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, output_base_dir=None):
-    """完整的 PCA 分析（含防呆檢查）"""
+def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
+                         output_base_dir=None, grouping='batch'):
+    """繪製與 Batch_Effect 相同風格的 PCA 比較圖 (ISTD vs QC-LOWESS)。"""
     try:
         # ===== 防呆1: 輸入數據有效性檢查 =====
         if istd_df is None or istd_df.empty:
@@ -1505,19 +1520,12 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
         sample_meta = sample_info_df.set_index('Sample_Name')
 
-        # 排除統計欄位
-        exclude_cols = [
-            'FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference', 
-            'ISTD_Median', 'QC_CV%',
-            'Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%',
-            'Variance_Test_pvalue', 'MK_Trend_pvalue', 'Kendall_Tau',
-            'LOWESS_R2', 'LOWESS_RMSE'
-        ]
-        
-        sample_columns_clean = [col for col in sample_columns 
-                                if col not in exclude_cols 
-                                and col in istd_df.columns
-                                and col in lowess_df.columns]
+        sample_columns_attr = istd_df.attrs.get('sample_columns')
+        if not sample_columns_attr:
+            sample_columns_attr, _ = identify_sample_columns(istd_df, sample_info_df)
+
+        sample_columns_clean = [col for col in sample_columns_attr
+                                if col in istd_df.columns and col in lowess_df.columns]
         
         print(f"\n📊 PCA 數據準備:")
         print(f"   - 用於 PCA 的樣本數: {len(sample_columns_clean)}")
@@ -1526,15 +1534,18 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
             print("❌ 錯誤：可用樣本數不足 (<3)，無法進行 PCA 分析")
             return
 
-        # 識別樣本類型
+        # 識別樣本類型與批次
         qc_columns = []
         control_columns = []
         exposed_columns = []
+        sample_batches = {}
         
         for col in sample_columns_clean:
             if col in sample_meta.index:
                 sample_type = sample_meta.loc[col].get('Sample_Type', 'Unknown')
                 sample_type_upper = str(sample_type).upper()
+                batch_value = str(sample_meta.loc[col].get('Batch', 'Unknown'))
+                sample_batches[col] = batch_value
                 
                 if 'QC' in sample_type_upper:
                     qc_columns.append(col)
@@ -1546,6 +1557,9 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
                     control_columns.append(col)
             else:
                 control_columns.append(col)
+                sample_batches[col] = 'Unknown'
+        
+
         
         print(f"\n📋 樣本分類:")
         print(f"   - QC: {len(qc_columns)}")
@@ -1565,10 +1579,10 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
             non_zero_features = np.any(data_matrix != 0, axis=0)
             data_matrix = data_matrix[:, non_zero_features]
             data_matrix = np.log2(data_matrix + 1)
-            return data_matrix, non_zero_features
+            return data_matrix
 
-        istd_matrix, _ = prepare_data_matrix(istd_df, sample_columns_clean)
-        lowess_matrix, _ = prepare_data_matrix(lowess_df, sample_columns_clean)
+        istd_matrix = prepare_data_matrix(istd_df, sample_columns_clean)
+        lowess_matrix = prepare_data_matrix(lowess_df, sample_columns_clean)
         
         if istd_matrix.shape[1] < 2 or lowess_matrix.shape[1] < 2:
             print("❌ 錯誤：有效特徵數不足 (<2)，無法進行 PCA 分析")
@@ -1602,99 +1616,183 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
             qc_scores_lowess, scores_lowess, alpha=0.05
         )
 
-        # 建立 QC 異常值映射表
-        qc_outlier_map_istd = {}
-        qc_outlier_map_lowess = {}
-        for i, qc_sample in enumerate(qc_columns):
-            qc_outlier_map_istd[qc_sample] = outliers_istd[i]
-            qc_outlier_map_lowess[qc_sample] = outliers_lowess[i]
+        qc_outlier_map_istd = {qc_columns[i]: bool(outliers_istd[i]) for i in range(len(qc_columns))}
+        qc_outlier_map_lowess = {qc_columns[i]: bool(outliers_lowess[i]) for i in range(len(qc_columns))}
 
-        # 繪製 2D PCA 圖
-        print(f"\n🎨 繪製 2D PCA Score Plot...")
-        
-        fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(16, 9))
-        fig.suptitle('2D PCA Comparison: ISTD Corrected vs QC-LOWESS Normalized',
-                     fontsize=18, y=0.98, fontweight='bold')
+        print("\n🔍 Hotelling T² 異常值檢測：")
+        print(f"   ISTD: {np.sum(outliers_istd)}/{len(qc_columns)} QC 被標記為異常")
+        print(f"   QC-LOWESS: {np.sum(outliers_lowess)}/{len(qc_columns)} QC 被標記為異常")
 
-        def plot_pca_subplot(ax, scores, qc_scores, var, t2_threshold, qc_outlier_map, title):
+        # 繪製 2D PCA 圖 (Batch_Effect 風格)
+        print("\n🎨 繪製 2D PCA Score Plot...")
+        fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(20, 8))
+
+        if grouping == 'batch':
+            fig.suptitle('2D PCA Comparison: ISTD vs QC-LOWESS (Grouped by Batch)',
+                         fontsize=16, y=0.98, fontweight='bold')
+        else:
+            fig.suptitle('2D PCA Comparison: ISTD vs QC-LOWESS (Grouped by Sample Type)',
+                         fontsize=16, y=0.98, fontweight='bold')
+
+        color_map = {
+            'QC': '#9370DB',
+            'Control': '#4169E1',
+            'Exposure': '#DC143C'
+        }
+        markers = {'QC': 'o', 'Control': 's', 'Exposure': '^'}
+
+        unique_batches = sorted(list(set(sample_batches.values())))
+        batch_colors = COLORBLIND_COLORS * ((len(unique_batches) // len(COLORBLIND_COLORS)) + 1)
+        batch_color_map = {batch: batch_colors[i] for i, batch in enumerate(unique_batches)}
+
+        sample_index_map = {sample: idx for idx, sample in enumerate(sample_columns_clean)}
+
+        def scatter_panel(ax, scores, qc_outlier_map, var, title_text, qc_scores, outlier_array):
             for i, col in enumerate(sample_columns_clean):
-                is_outlier = False
                 if col in qc_columns:
-                    is_outlier = qc_outlier_map[col]
-                    color = '#9370DB'
-                    marker = 'o'
+                    sample_type = 'QC'
+                    is_outlier = qc_outlier_map.get(col, False)
                 elif col in exposed_columns:
-                    color = '#DC143C'
-                    marker = '^'
+                    sample_type = 'Exposure'
+                    is_outlier = False
                 else:
-                    color = '#4169E1'
-                    marker = 's'
-                
+                    sample_type = 'Control'
+                    is_outlier = False
+
+                color = color_map[sample_type]
+                marker = markers[sample_type]
+
                 if is_outlier:
                     edgecolor = 'red'
                     linewidth = 3
                     size = 150
                     alpha = 0.9
                 else:
-                    edgecolor = 'none'
-                    linewidth = 0
+                    edgecolor = 'black'
+                    linewidth = 1
                     size = 100
                     alpha = 0.7
-                
-                ax.scatter(scores[i, 0], scores[i, 1],
-                          c=[color], marker=marker, s=size, alpha=alpha,
-                          edgecolors=edgecolor, linewidths=linewidth)
-            
-            # 繪製橢圓
-            draw_hotelling_t2_ellipse(ax, scores, label='95% CI (All Samples)',
-                                     edgecolor='gray', linestyle='--', linewidth=2)
-            draw_hotelling_t2_ellipse(ax, qc_scores, label='95% CI (QC Only)',
-                                     edgecolor='#9370DB', linestyle='-', linewidth=3)
-            
-            ax.set_title(f'{title}\nPC1: {var[0]:.1%}, PC2: {var[1]:.1%}\nHotelling T² Threshold: {t2_threshold:.2f}',
-                         fontsize=13, fontweight='bold', pad=10)
-            ax.set_xlabel(f't[1] ({var[0]:.1%})', fontsize=12, fontweight='bold')
-            ax.set_ylabel(f't[2] ({var[1]:.1%})', fontsize=12, fontweight='bold')
-            ax.grid(True, alpha=0.3, linestyle='--')
+
+                ax.scatter(scores[i, 0], scores[i, 1], c=[color], marker=marker,
+                           s=size, alpha=alpha, edgecolors=edgecolor, linewidths=linewidth)
+
+            all_bounds = []
+            if grouping == 'batch':
+                for batch in unique_batches:
+                    batch_sample_cols = [col for col in sample_columns_clean if sample_batches.get(col) == batch]
+                    batch_indices = [sample_index_map[col] for col in batch_sample_cols]
+                    if len(batch_indices) >= 3:
+                        batch_scores = scores[batch_indices]
+                        bounds = draw_hotelling_t2_ellipse(
+                            ax, batch_scores,
+                            label=f'95% CI (Batch {batch})',
+                            edgecolor=batch_color_map[batch],
+                            linestyle='-', linewidth=2.5
+                        )
+                        if bounds is not None:
+                            all_bounds.append(bounds)
+            else:
+                bounds_all = draw_hotelling_t2_ellipse(
+                    ax, scores,
+                    label='95% CI (All Samples)',
+                    edgecolor='gray', linestyle='--', linewidth=3
+                )
+                if bounds_all is not None:
+                    all_bounds.append(bounds_all)
+                bounds_qc = draw_hotelling_t2_ellipse(
+                    ax, qc_scores,
+                    label='95% CI (QC Only)',
+                    edgecolor='#9370DB', linestyle='-', linewidth=3
+                )
+                if bounds_qc is not None:
+                    all_bounds.append(bounds_qc)
+
+            if all_bounds:
+                x_min = min(b[0] for b in all_bounds)
+                x_max = max(b[1] for b in all_bounds)
+                y_min = min(b[2] for b in all_bounds)
+                y_max = max(b[3] for b in all_bounds)
+            else:
+                x_min, x_max = np.min(scores[:, 0]), np.max(scores[:, 0])
+                y_min, y_max = np.min(scores[:, 1]), np.max(scores[:, 1])
+
+            x_range = x_max - x_min
+            y_range = y_max - y_min
+            if x_range == 0:
+                x_range = 1
+            if y_range == 0:
+                y_range = 1
+            x_margin = x_range * 0.2
+            y_margin = y_range * 0.2
+
+            ax.set_xlim(x_min - x_margin, x_max + x_margin)
+            ax.set_ylim(y_min - y_margin, y_max + y_margin)
+
+            ax.set_xlabel(f'PC1 ({var[0]*100:.1f}%)', fontsize=12, fontweight='bold')
+            ax.set_ylabel(f'PC2 ({var[1]*100:.1f}%)', fontsize=12, fontweight='bold')
+            ax.set_title(title_text, fontsize=14, fontweight='bold', pad=15)
             ax.axhline(y=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
             ax.axvline(x=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
+            ax.grid(True, alpha=0.3, linestyle='--')
 
-        plot_pca_subplot(ax_left, scores_istd, qc_scores_istd, var_istd, 
-                        t2_threshold_istd, qc_outlier_map_istd, 'ISTD Corrected')
-        
-        plot_pca_subplot(ax_right, scores_lowess, qc_scores_lowess, var_lowess,
-                        t2_threshold_lowess, qc_outlier_map_lowess, 'QC-LOWESS Normalized')
+            return all_bounds
 
-        # 圖例
+        bounds_left = scatter_panel(
+            ax_left, scores_istd, qc_outlier_map_istd, var_istd,
+            f'ISTD Corrected\nHotelling T² Threshold: {t2_threshold_istd:.2f}',
+            qc_scores_istd, outliers_istd
+        )
+
+        bounds_right = scatter_panel(
+            ax_right, scores_lowess, qc_outlier_map_lowess, var_lowess,
+            f'QC-LOWESS Normalized\nHotelling T² Threshold: {t2_threshold_lowess:.2f}',
+            qc_scores_lowess, outliers_lowess
+        )
+
         sample_legend_elements = [
             plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='#4169E1',
-                      markersize=10, label='Control', markeredgecolor='none'),
+                      markersize=10, label='Control', markeredgecolor='black', markeredgewidth=1),
             plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='#DC143C',
-                      markersize=10, label='Exposed', markeredgecolor='none'),
+                      markersize=10, label='Exposure', markeredgecolor='black', markeredgewidth=1),
             plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
-                      markersize=10, label='QC', markeredgecolor='none'),
+                      markersize=10, label='QC', markeredgecolor='black', markeredgewidth=1),
             plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
                       markersize=10, label='QC Outlier', markeredgecolor='red', markeredgewidth=3)
         ]
-        
-        ellipse_legend_elements = [
-            plt.Line2D([0], [0], linestyle='--', color='gray',
-                      linewidth=2, label='95% CI (All Samples)'),
-            plt.Line2D([0], [0], linestyle='-', color='#9370DB',
-                      linewidth=3, label='95% CI (QC Only)')
-        ]
-        
-        fig.legend(handles=sample_legend_elements, loc='center left', 
-                  bbox_to_anchor=(1.01, 0.7), fontsize=11,
-                  title='Sample Type', title_fontsize=12,
-                  frameon=True, fancybox=True, shadow=True)
-        
-        fig.legend(handles=ellipse_legend_elements, loc='center left', 
-                  bbox_to_anchor=(1.01, 0.3), fontsize=11,
-                  title='Confidence Ellipse', title_fontsize=12,
-                  frameon=True, fancybox=True, shadow=True)
 
-        plt.tight_layout(rect=[0, 0, 0.88, 0.96])
+        if grouping == 'batch':
+            ellipse_legend_elements = [
+                plt.Line2D([0], [0], linestyle='-', color=batch_color_map[batch],
+                          linewidth=2.5, label=f'95% CI (Batch {batch})')
+                for batch in unique_batches
+            ]
+        else:
+            ellipse_legend_elements = [
+                plt.Line2D([0], [0], linestyle='-', color='#9370DB',
+                          linewidth=3, label='95% CI (QC Only)'),
+                plt.Line2D([0], [0], linestyle='--', color='gray',
+                          linewidth=3, label='95% CI (All Samples)')
+            ]
+
+        legend1_left = ax_left.legend(handles=sample_legend_elements,
+                                      loc='upper left', fontsize=9,
+                                      title='Sample Type', title_fontsize=10,
+                                      frameon=True, fancybox=True, shadow=True)
+        ax_left.add_artist(legend1_left)
+        ax_left.legend(handles=ellipse_legend_elements, loc='upper right', fontsize=9,
+                       title='Confidence Ellipse', title_fontsize=10,
+                       frameon=True, fancybox=True, shadow=True)
+
+        legend1_right = ax_right.legend(handles=sample_legend_elements,
+                                        loc='upper left', fontsize=9,
+                                        title='Sample Type', title_fontsize=10,
+                                        frameon=True, fancybox=True, shadow=True)
+        ax_right.add_artist(legend1_right)
+        ax_right.legend(handles=ellipse_legend_elements, loc='upper right', fontsize=9,
+                        title='Confidence Ellipse', title_fontsize=10,
+                        frameon=True, fancybox=True, shadow=True)
+
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
 
         pca_plot_path = os.path.join(output_dir, f'2D_PCA_ISTD_vs_LOWESS_{timestamp}.png')
 

@@ -469,7 +469,7 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
 
 def plot_qc_variability(original_qc, normalized_qc, qc_names, output_path):
     """
-    Fig5 - QC Variability Assessment (Improved)
+    Fig4 - QC Variability Assessment (Improved)
 
     包含：
     1. CV% 分佈對比
@@ -567,7 +567,7 @@ def plot_qc_variability(original_qc, normalized_qc, qc_names, output_path):
     # 組織文字（移除主觀評級）
     summary_text = f"""
 ╔═══════════════════════════════════════════════════════════════════════════════════════╗
-║                            QC VARIABILITY ASSESSMENT (Fig5)                         ║
+║                            QC VARIABILITY ASSESSMENT (Fig4)                           ║
 ╚═══════════════════════════════════════════════════════════════════════════════════════╝
 
 【CV% Metrics】
@@ -605,12 +605,12 @@ def plot_qc_variability(original_qc, normalized_qc, qc_names, output_path):
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-    print(f"  ✓ QC Variability 圖已儲存 (Fig5 - Improved)")
+    print(f"  ✓ QC Variability 圖已儲存 (Fig4 - Improved)")
 
 
 def plot_qc_reproducibility(original_qc, normalized_qc, qc_names, output_path):
     """
-    Fig6 - QC Reproducibility Assessment (Improved)
+    Fig5 - QC Reproducibility Assessment (Improved)
 
     包含：
     1. QC 樣本總強度
@@ -703,7 +703,7 @@ def plot_qc_reproducibility(original_qc, normalized_qc, qc_names, output_path):
     # 組織文字
     summary_text = f"""
 ╔═══════════════════════════════════════════════════════════════════════════════════════╗
-║                          QC REPRODUCIBILITY ASSESSMENT (Fig6)                       ║
+║                          QC REPRODUCIBILITY ASSESSMENT (Fig5)                         ║
 ╚═══════════════════════════════════════════════════════════════════════════════════════╝
 
 【QC Sample Correlation】
@@ -727,7 +727,7 @@ def plot_qc_reproducibility(original_qc, normalized_qc, qc_names, output_path):
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-    print(f"  ✓ QC Reproducibility 圖已儲存 (Fig6 - Improved)")
+    print(f"  ✓ QC Reproducibility 圖已儲存 (Fig5 - Improved)")
 
 # ==================== 輔助函數 ====================
 
@@ -878,25 +878,23 @@ def plot_density_comparison(original_data, normalized_data, sample_names, output
 
 def plot_boxplot_comparison(original_data, normalized_data, sample_names, output_path, method_name, sample_info_df):
     """
-    繪製標準化前後的盒鬚圖對比 (Fig 1 - Improved)
+    繪製標準化前後的盒鬚圖與樣本總強度 (Fig 1 - Integrated)
 
     改進項目：
     - 標題包含樣本數統計
     - x 軸標籤用顏色區分 (Control/Exposed/QC)
-    - 增加統計摘要框
-    - 添加中位數參考線
+    - 統計摘要框加入總強度指標
+    - 同一圖表內整合樣本總強度長條圖（取代舊 Fig2）
     """
     from scipy.stats import levene
 
-    # 配色方案
     COLOR_SCHEME = {
-        'CONTROL': '#3498DB',     # 藍色
-        'EXPOSURE': '#E74C3C',    # 紅色
-        'QC': '#F39C12',          # 橙色
-        'Unknown': '#95A5A6'      # 灰色
+        'CONTROL': '#3498DB',
+        'EXPOSURE': '#E74C3C',
+        'QC': '#F39C12',
+        'Unknown': '#95A5A6'
     }
 
-    # 獲取樣本分組資訊
     sample_groups = []
     for sample in sample_names:
         sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
@@ -906,22 +904,18 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
         else:
             sample_groups.append('Unknown')
 
-    # 統計各組樣本數
     from collections import Counter
     group_counts = Counter(sample_groups)
     n_control = group_counts.get('CONTROL', 0)
     n_exposure = group_counts.get('EXPOSURE', 0)
     n_qc = group_counts.get('QC', 0)
 
-    # 準備數據（取對數）
     original_log = np.log10(original_data + 1)
     normalized_log = np.log10(normalized_data + 1)
 
-    # 計算統計量
     median_before = np.median([np.median(original_log[:, i]) for i in range(len(sample_names))])
     median_after = np.median([np.median(normalized_log[:, i]) for i in range(len(sample_names))])
 
-    # 計算 Inter-sample RSD (樣本間變異)
     sample_medians_before = np.array([np.median(original_log[:, i]) for i in range(len(sample_names))])
     sample_medians_after = np.array([np.median(normalized_log[:, i]) for i in range(len(sample_names))])
 
@@ -929,7 +923,18 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
     rsd_after = (np.std(sample_medians_after, ddof=1) / np.mean(sample_medians_after)) * 100
     rsd_reduction = ((rsd_before - rsd_after) / rsd_before) * 100
 
-    # Levene's test (測試方差齊性)
+    original_totals = np.nansum(original_data, axis=0)
+    normalized_totals = np.nansum(normalized_data, axis=0)
+    total_median_before = np.nanmedian(original_totals)
+    total_median_after = np.nanmedian(normalized_totals)
+
+    total_cv_before = (np.nanstd(original_totals) / np.nanmean(original_totals)) * 100 if np.nanmean(original_totals) > 0 else np.nan
+    total_cv_after = (np.nanstd(normalized_totals) / np.nanmean(normalized_totals)) * 100 if np.nanmean(normalized_totals) > 0 else np.nan
+    if np.isfinite(total_cv_before) and total_cv_before != 0:
+        total_cv_reduction = ((total_cv_before - total_cv_after) / total_cv_before) * 100
+    else:
+        total_cv_reduction = np.nan
+
     try:
         levene_stat, levene_p = levene(*[original_log[:, i] for i in range(len(sample_names))])
         if levene_p < 0.001:
@@ -940,74 +945,89 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
             sig_mark = '*'
         else:
             sig_mark = 'n.s.'
-    except:
+    except Exception:
         levene_p = np.nan
         sig_mark = 'N/A'
 
-    # 創建圖形
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(max(16, len(sample_names)*0.5), 10))
+    fig = plt.figure(figsize=(max(18, len(sample_names) * 0.55), 14))
+    gs = fig.add_gridspec(3, 1, height_ratios=[2.2, 2.2, 1.7], hspace=0.35)
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax2 = fig.add_subplot(gs[1, 0])
+    ax3 = fig.add_subplot(gs[2, 0])
 
-    # === 標準化前 ===
     positions = np.arange(len(sample_names))
     bp1 = ax1.boxplot([original_log[:, i] for i in range(len(sample_names))],
-                       positions=positions,
-                       widths=0.6,
-                       patch_artist=True,
-                       showfliers=False)
+                      positions=positions,
+                      widths=0.6,
+                      patch_artist=True,
+                      showfliers=False)
 
-    # 按組別上色
-    for i, (patch, group) in enumerate(zip(bp1['boxes'], sample_groups)):
+    for patch, group in zip(bp1['boxes'], sample_groups):
         patch.set_facecolor(COLOR_SCHEME.get(group, '#95A5A6'))
         patch.set_alpha(0.7)
 
-    # 添加中位數參考線
     ax1.axhline(y=median_before, color='red', linestyle='--', linewidth=2,
                 label=f'Median: {median_before:.2f}', alpha=0.7)
 
     ax1.set_ylabel('Log10(Intensity + 1)', fontsize=12, fontweight='bold')
-    ax1.set_title(f'Sample Intensity Distribution: PQN Normalization Effect\n(n={len(sample_names)}: {n_control} Control, {n_exposure} Exposed, {n_qc} QC) - Before',
-                  fontsize=14, fontweight='bold')
+    ax1.set_title(
+        f'Sample Intensity Distribution: PQN Normalization Effect\n(n={len(sample_names)}: {n_control} Control, {n_exposure} Exposed, {n_qc} QC) - Before',
+        fontsize=14, fontweight='bold')
     ax1.set_xticks(positions)
-
-    # x 軸標籤用顏色區分
     ax1.set_xticklabels(sample_names, rotation=90, fontsize=8)
-    for i, (tick_label, group) in enumerate(zip(ax1.get_xticklabels(), sample_groups)):
+    for tick_label, group in zip(ax1.get_xticklabels(), sample_groups):
         tick_label.set_color(COLOR_SCHEME.get(group, '#95A5A6'))
         tick_label.set_fontweight('bold')
 
     ax1.grid(True, alpha=0.3, axis='y')
     ax1.legend(loc='upper right', fontsize=10)
 
-    # === 標準化後 ===
     bp2 = ax2.boxplot([normalized_log[:, i] for i in range(len(sample_names))],
-                       positions=positions,
-                       widths=0.6,
-                       patch_artist=True,
-                       showfliers=False)
+                      positions=positions,
+                      widths=0.6,
+                      patch_artist=True,
+                      showfliers=False)
 
-    # 按組別上色
-    for i, (patch, group) in enumerate(zip(bp2['boxes'], sample_groups)):
+    for patch, group in zip(bp2['boxes'], sample_groups):
         patch.set_facecolor(COLOR_SCHEME.get(group, '#95A5A6'))
         patch.set_alpha(0.7)
 
-    # 添加中位數參考線
     ax2.axhline(y=median_after, color='red', linestyle='--', linewidth=2,
                 label=f'Median: {median_after:.2f}', alpha=0.7)
 
     ax2.set_ylabel('Log10(Intensity + 1)', fontsize=12, fontweight='bold')
     ax2.set_title(f'After Normalization ({method_name})', fontsize=14, fontweight='bold')
     ax2.set_xticks(positions)
-
-    # x 軸標籤用顏色區分
     ax2.set_xticklabels(sample_names, rotation=90, fontsize=8)
-    for i, (tick_label, group) in enumerate(zip(ax2.get_xticklabels(), sample_groups)):
+    for tick_label, group in zip(ax2.get_xticklabels(), sample_groups):
         tick_label.set_color(COLOR_SCHEME.get(group, '#95A5A6'))
         tick_label.set_fontweight('bold')
 
     ax2.grid(True, alpha=0.3, axis='y')
     ax2.legend(loc='upper right', fontsize=10)
 
-    # === 添加統計摘要框 ===
+    bar_width = 0.42
+    ax3.bar(positions - bar_width / 2, original_totals, width=bar_width,
+            color='#4C72B0', alpha=0.75, label='Before normalization')
+    ax3.bar(positions + bar_width / 2, normalized_totals, width=bar_width,
+            color='#ED553B', alpha=0.75, label=f'After normalization ({method_name})')
+
+    ax3.axhline(y=total_median_before, color='#4C72B0', linestyle='--', linewidth=1.5,
+                alpha=0.8, label=f'Before median: {total_median_before:.2e}')
+    ax3.axhline(y=total_median_after, color='#ED553B', linestyle='--', linewidth=1.5,
+                alpha=0.8, label=f'After median: {total_median_after:.2e}')
+
+    ax3.set_ylabel('Total Intensity', fontsize=12, fontweight='bold')
+    ax3.set_title('Sample Total Intensity Overview (linear scale)', fontsize=14, fontweight='bold')
+    ax3.set_xticks(positions)
+    ax3.set_xticklabels(sample_names, rotation=90, fontsize=8)
+    for tick_label, group in zip(ax3.get_xticklabels(), sample_groups):
+        tick_label.set_color(COLOR_SCHEME.get(group, '#95A5A6'))
+        tick_label.set_fontweight('bold')
+
+    ax3.grid(True, alpha=0.25, axis='y')
+    ax3.legend(loc='upper right', fontsize=9, ncol=2)
+
     stats_text = f"""Statistical Summary:
 Median intensity:
   Before: {median_before:.2f}
@@ -1018,62 +1038,29 @@ Inter-sample RSD:
   After:  {rsd_after:.2f}%
   Reduction: {rsd_reduction:.1f}%
 
+Sample total CV:
+  Before: {total_cv_before:.2f}%
+  After:  {total_cv_after:.2f}%
+  Reduction: {total_cv_reduction:.1f}%
+
 Levene's test:
   p = {levene_p:.4f} {sig_mark}
 """
 
-    # 在右上角添加文字框
     ax1.text(1.02, 0.5, stats_text, transform=ax1.transAxes,
-            fontsize=10, verticalalignment='center',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black', linewidth=1.5),
-            family='monospace')
+             fontsize=10, verticalalignment='center',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black', linewidth=1.5),
+             family='monospace')
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-    print(f"  ✓ 盒鬚圖已儲存 (Fig 1 - Improved)")
-
-def plot_sample_distribution(original_data, normalized_data, sample_names, output_path, method_name):
-    """繪製樣本總強度分佈圖"""
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(max(16, len(sample_names)*0.5), 6))
-    
-    # 計算每個樣本的總強度
-    original_totals = np.nansum(original_data, axis=0)
-    normalized_totals = np.nansum(normalized_data, axis=0)
-    
-    # 標準化前
-    positions = np.arange(len(sample_names))
-    ax1.bar(positions, original_totals, color='steelblue', alpha=0.7)
-    ax1.axhline(y=np.median(original_totals), color='red', linestyle='--', 
-                linewidth=2, label=f'Median: {np.median(original_totals):.2e}')
-    ax1.set_ylabel('Total Intensity', fontsize=12, fontweight='bold')
-    ax1.set_title('Before Normalization', fontsize=14, fontweight='bold')
-    ax1.set_xticks(positions)
-    ax1.set_xticklabels(sample_names, rotation=90, fontsize=8)
-    ax1.legend()
-    ax1.grid(True, alpha=0.3, axis='y')
-    
-    # 標準化後
-    ax2.bar(positions, normalized_totals, color='coral', alpha=0.7)
-    ax2.axhline(y=np.median(normalized_totals), color='red', linestyle='--', 
-                linewidth=2, label=f'Median: {np.median(normalized_totals):.2e}')
-    ax2.set_ylabel('Total Intensity', fontsize=12, fontweight='bold')
-    ax2.set_title(f'After Normalization ({method_name})', fontsize=14, fontweight='bold')
-    ax2.set_xticks(positions)
-    ax2.set_xticklabels(sample_names, rotation=90, fontsize=8)
-    ax2.legend()
-    ax2.grid(True, alpha=0.3, axis='y')
-    
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    print(f"  ✓ 樣本分佈圖已儲存")
+    print(f"  ✓ 盒鬚圖已儲存 (Fig 1 - Integrated)")
 
 def plot_cv_comparison(original_cv, normalized_cv, output_path, method_name):
     """
-    繪製CV%分佈對比圖 (Fig 3 - Improved)
+    繪製CV%分佈對比圖 (Fig 2 - Improved)
 
     改進項目：
     - 標題加警示信息
@@ -1240,12 +1227,12 @@ Features improved:
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-    print(f"  ✓ CV%分佈圖已儲存 (Fig 3 - Improved)")
+    print(f"  ✓ CV%分佈圖已儲存 (Fig 2 - Improved)")
 
 def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_names,
                                      sample_info_df, output_path, method_name):
     """
-    繪製 PCA 對比圖 (Fig 5 - Improved)
+    繪製 PCA 對比圖 (Fig 3 - Improved)
 
     改進項目：
     - 簡化橢圓：只繪製 Control、Exposed、QC 三種（刪除 "All Samples"）
@@ -1283,7 +1270,7 @@ def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_name
 
     # 顏色映射
     color_palette = {
-        'QC': '#F39C12',
+        'QC': '#9B59B6',
         'CONTROL': '#3498DB',
         'EXPOSURE': '#E74C3C',
         'UNKNOWN': '#95A5A6'
@@ -1449,12 +1436,7 @@ def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_name
     ax1.set_xlabel(f'PC1 ({var_original[0]*100:.1f}%)', fontsize=14, fontweight='bold')
     ax1.set_ylabel(f'PC2 ({var_original[1]*100:.1f}%)', fontsize=14, fontweight='bold')
     ax1.set_title('Before Normalization', fontsize=16, fontweight='bold')
-    centroid_handle = plt.Line2D([], [], marker='x', color='black', linestyle='None',
-                                 markersize=10, markeredgewidth=2, label='Group centroid (x)')
-    handles1, labels1 = ax1.get_legend_handles_labels()
-    handles1.append(centroid_handle)
-    labels1.append('Group centroid (x)')
-    ax1.legend(handles1, labels1, loc='best', fontsize=10, framealpha=0.9)
+    ax1.legend(loc='best', fontsize=10, framealpha=0.9)
     ax1.grid(True, alpha=0.3, linestyle='--')
     ax1.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
     ax1.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
@@ -1479,7 +1461,7 @@ def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_name
                                color='#F39C12',
                                label='QC 95% CI',
                                linestyle='--',
-                               linewidth=2.5)
+                               linewidth=2)
 
     # 2. CONTROL 組的橢圓
     if np.sum(control_mask) >= 3:
@@ -1500,12 +1482,7 @@ def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_name
     ax2.set_xlabel(f'PC1 ({var_normalized[0]*100:.1f}%)', fontsize=14, fontweight='bold')
     ax2.set_ylabel(f'PC2 ({var_normalized[1]*100:.1f}%)', fontsize=14, fontweight='bold')
     ax2.set_title(f'After Normalization ({method_name})', fontsize=16, fontweight='bold')
-    centroid_handle2 = plt.Line2D([], [], marker='x', color='black', linestyle='None',
-                                  markersize=10, markeredgewidth=2, label='Group centroid (x)')
-    handles2, labels2 = ax2.get_legend_handles_labels()
-    handles2.append(centroid_handle2)
-    labels2.append('Group centroid (x)')
-    ax2.legend(handles2, labels2, loc='best', fontsize=10, framealpha=0.9)
+    ax2.legend(loc='best', fontsize=10, framealpha=0.9)
     ax2.grid(True, alpha=0.3, linestyle='--')
     ax2.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
     ax2.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
@@ -1556,7 +1533,7 @@ Mean distance to centroid:
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-    print(f"  ✓ PCA 對比圖已儲存 (Fig 5 - Improved)")
+    print(f"  ✓ PCA 對比圖已儲存 (Fig 3 - Improved)")
 
 
 def plot_confidence_ellipse(points, ax, color='blue', label=None, n_std=2.447, 
@@ -1623,411 +1600,19 @@ def plot_confidence_ellipse(points, ax, color='blue', label=None, n_std=2.447,
     
     ax.add_patch(ellipse)
     
-    # 繪製中心點
-    ax.plot(mean[0], mean[1], marker='x', markersize=12, 
-           color=color, markeredgewidth=3, zorder=4)
 
 def plot_oplsda_comparison(original_data, normalized_data, sample_names,
                            sample_info_df, output_path, method_name):
     """
-    繪製 OPLS-DA 完整分析（標準化前後）
-
-    使用 pyopls 套件進行真正的 OPLS-DA 分析，包括：
-    - 模型訓練（1 預測成分 + 1 正交成分）
-    - 交叉驗證（7-fold CV）
-    - 置換檢驗（1000次）
-    - VIP 分數計算
-
-    生成三個獨立圖檔：
-    1. OPLS-DA 分數圖對比
-    2. VIP 分數對比圖（top 20）
-    3. 模型驗證摘要圖
+    佔位函式：OPLS-DA/PLS-DA 功能已停用，僅保留 PCA 提示。
     """
-    # 檢查 pyopls 套件是否可用
-    try:
-        from pyopls import OPLS
-    except ImportError:
-        print("  ⚠ pyopls 套件未安裝，跳過 OPLS-DA 分析")
-        print("     安裝方法: pip install pyopls")
-        # 使用簡化的 PLS-DA 作為備選方案
-        _plot_simple_plsda_fallback(original_data, normalized_data, sample_names,
-                                   sample_info_df, output_path, method_name)
-        return
+    print("  ℹ OPLS-DA/PLS-DA 視覺化已停用；此版本專注於 PCA 分析。")
+    print("    若需此功能，請於版本控管中啟用對應模組。")
 
-    from sklearn.preprocessing import LabelEncoder
 
-    # 數據預處理（轉置：樣本 x 特徵）
-    original_transposed = original_data.T
-    normalized_transposed = normalized_data.T
-
-    # 移除含有NaN的樣本
-    valid_samples_orig = ~np.isnan(original_transposed).any(axis=1)
-    valid_samples_norm = ~np.isnan(normalized_transposed).any(axis=1)
-    valid_samples = valid_samples_orig & valid_samples_norm
-
-    original_clean = original_transposed[valid_samples]
-    normalized_clean = normalized_transposed[valid_samples]
-    sample_names_clean = [sample_names[i] for i in range(len(sample_names)) if valid_samples[i]]
-
-    # 獲取樣本分組信息（排除 QC）
-    sample_groups = []
-    control_exposure_mask = []
-
-    for i, sample in enumerate(sample_names_clean):
-        sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
-        if not sample_row.empty:
-            sample_type = str(sample_row.iloc[0].get('Sample_Type', '')).upper()
-            if sample_type in ['CONTROL', 'EXPOSURE']:
-                sample_groups.append(sample_type)
-                control_exposure_mask.append(True)
-            else:
-                control_exposure_mask.append(False)
-        else:
-            control_exposure_mask.append(False)
-
-    control_exposure_mask = np.array(control_exposure_mask)
-
-    if len(sample_groups) < 6:
-        print("  ⚠ CONTROL 或 EXPOSURE 樣本數不足，無法進行 OPLS-DA")
-        return
-
-    # 過濾數據（僅保留 CONTROL 和 EXPOSURE）
-    X_orig = original_clean[control_exposure_mask]
-    X_norm = normalized_clean[control_exposure_mask]
-
-    # 編碼標籤
-    le = LabelEncoder()
-    y_encoded = le.fit_transform(sample_groups)
-    y = y_encoded.reshape(-1, 1)
-
-    # ========== OPLS-DA 分析：標準化前 ==========
-    print(f"\n  【OPLS-DA 分析】")
-    print(f"  樣本數: {len(y)} (CONTROL + EXPOSURE)")
-    print(f"  特徵數: {X_orig.shape[1]}")
-
-    try:
-        # 標準化前
-        scaler_orig = StandardScaler()
-        X_orig_scaled = scaler_orig.fit_transform(X_orig)
-
-        print(f"\n  標準化前:")
-        opls_orig = OPLS(n_components=1)  # 1 個預測成分 + 自動確定正交成分數
-        opls_orig.fit(X_orig_scaled, y)
-
-        # 獲取分數
-        T_orig = opls_orig.T_  # 預測分數
-        T_ortho_orig = opls_orig.T_ortho_  # 正交分數
-
-        # 模型指標
-        R2X_orig = opls_orig.R2X_
-        R2Y_orig = opls_orig.R2Y_
-
-        # 交叉驗證（Q²）
-        try:
-            Q2_orig = opls_orig.Q2_
-            print(f"    R²X: {R2X_orig:.3f}, R²Y: {R2Y_orig:.3f}, Q²: {Q2_orig:.3f}")
-        except:
-            Q2_orig = None
-            print(f"    R²X: {R2X_orig:.3f}, R²Y: {R2Y_orig:.3f}")
-
-        # VIP 分數
-        try:
-            VIP_orig = opls_orig.VIP_
-        except:
-            VIP_orig = None
-            print(f"    ⚠ VIP 分數計算失敗")
-
-    except Exception as e:
-        print(f"  ⚠ 標準化前的 OPLS-DA 分析失敗: {e}")
-        _plot_simple_plsda_fallback(original_data, normalized_data, sample_names,
-                                   sample_info_df, output_path, method_name)
-        return
-
-    # ========== OPLS-DA 分析：標準化後 ==========
-    try:
-        scaler_norm = StandardScaler()
-        X_norm_scaled = scaler_norm.fit_transform(X_norm)
-
-        print(f"\n  標準化後:")
-        opls_norm = OPLS(n_components=1)
-        opls_norm.fit(X_norm_scaled, y)
-
-        # 獲取分數
-        T_norm = opls_norm.T_
-        T_ortho_norm = opls_norm.T_ortho_
-
-        # 模型指標
-        R2X_norm = opls_norm.R2X_
-        R2Y_norm = opls_norm.R2Y_
-
-        try:
-            Q2_norm = opls_norm.Q2_
-            print(f"    R²X: {R2X_norm:.3f}, R²Y: {R2Y_norm:.3f}, Q²: {Q2_norm:.3f}")
-        except:
-            Q2_norm = None
-            print(f"    R²X: {R2X_norm:.3f}, R²Y: {R2Y_norm:.3f}")
-
-        # VIP 分數
-        try:
-            VIP_norm = opls_norm.VIP_
-        except:
-            VIP_norm = None
-
-    except Exception as e:
-        print(f"  ⚠ 標準化後的 OPLS-DA 分析失敗: {e}")
-        _plot_simple_plsda_fallback(original_data, normalized_data, sample_names,
-                                   sample_info_df, output_path, method_name)
-        return
-
-    # ========== 圖1：OPLS-DA 分數圖對比 ==========
-    try:
-        _plot_oplsda_scores(T_orig, T_ortho_orig, T_norm, T_ortho_norm,
-                           sample_groups, R2X_orig, R2Y_orig, Q2_orig,
-                           R2X_norm, R2Y_norm, Q2_norm,
-                           output_path, method_name)
-    except Exception as e:
-        print(f"  ⚠ OPLS-DA 分數圖生成失敗: {e}")
-
-    # ========== 圖2：VIP 分數對比圖 ==========
-    if VIP_orig is not None and VIP_norm is not None:
-        try:
-            vip_output_path = str(output_path).replace('.png', '_VIP.png')
-            _plot_vip_comparison(VIP_orig, VIP_norm, vip_output_path, method_name)
-        except Exception as e:
-            print(f"  ⚠ VIP 對比圖生成失敗: {e}")
-
-    print(f"  ✓ OPLS-DA 分析完成")
-
-
-def _plot_oplsda_scores(T_orig, T_ortho_orig, T_norm, T_ortho_norm,
-                       sample_groups, R2X_orig, R2Y_orig, Q2_orig,
-                       R2X_norm, R2Y_norm, Q2_norm, output_path, method_name):
-    """繪製 OPLS-DA 分數圖（預測成分 vs 正交成分）"""
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
-
-    color_map = {'CONTROL': '#80B1D3', 'EXPOSURE': '#FB8072'}
-
-    # ========== 子圖 1: 標準化前 ==========
-    for group in ['CONTROL', 'EXPOSURE']:
-        mask = np.array([g == group for g in sample_groups])
-
-        ax1.scatter(T_orig[mask, 0], T_ortho_orig[mask, 0],
-                   c=[color_map[group]], label=group, s=120, alpha=0.7,
-                   edgecolors='black', linewidth=1.5, zorder=3)
-
-        # 繪製 95% 信賴橢圓
-        if np.sum(mask) >= 3:
-            scores_combined = np.column_stack([T_orig[mask, 0], T_ortho_orig[mask, 0]])
-            plot_confidence_ellipse(scores_combined, ax1,
-                                   color=color_map[group],
-                                   label=f'{group} 95% CI')
-
-    # 標題與標籤
-    title_text = f'Before Normalization\n'
-    title_text += f'R²X={R2X_orig:.3f}, R²Y={R2Y_orig:.3f}'
-    if Q2_orig is not None:
-        title_text += f', Q²={Q2_orig:.3f}'
-
-    ax1.set_xlabel('Predictive Component t[1]', fontsize=14, fontweight='bold')
-    ax1.set_ylabel('Orthogonal Component to[1]', fontsize=14, fontweight='bold')
-    ax1.set_title(title_text, fontsize=16, fontweight='bold')
-    centroid_handle = plt.Line2D([], [], marker='x', color='black', linestyle='None',
-                                 markersize=10, markeredgewidth=2, label='Group centroid (x)')
-    handles1, labels1 = ax1.get_legend_handles_labels()
-    handles1.append(centroid_handle)
-    labels1.append('Group centroid (x)')
-    ax1.legend(handles1, labels1, loc='best', fontsize=10, framealpha=0.9)
-    ax1.grid(True, alpha=0.3, linestyle='--')
-    ax1.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
-    ax1.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
-
-    # ========== 子圖 2: 標準化後 ==========
-    for group in ['CONTROL', 'EXPOSURE']:
-        mask = np.array([g == group for g in sample_groups])
-        ax2.scatter(T_norm[mask, 0], T_ortho_norm[mask, 0],
-                   c=[color_map[group]], label=group, s=120, alpha=0.7,
-                   edgecolors='black', linewidth=1.5, zorder=3)
-
-        # 繪製 95% 信賴橢圓
-        if np.sum(mask) >= 3:
-            scores_combined = np.column_stack([T_norm[mask, 0], T_ortho_norm[mask, 0]])
-            plot_confidence_ellipse(scores_combined, ax2,
-                                   color=color_map[group],
-                                   label=f'{group} 95% CI')
-
-    # 標題與標籤
-    title_text = f'After Normalization ({method_name})\n'
-    title_text += f'R²X={R2X_norm:.3f}, R²Y={R2Y_norm:.3f}'
-    if Q2_norm is not None:
-        title_text += f', Q²={Q2_norm:.3f}'
-
-    ax2.set_xlabel('Predictive Component t[1]', fontsize=14, fontweight='bold')
-    ax2.set_ylabel('Orthogonal Component to[1]', fontsize=14, fontweight='bold')
-    ax2.set_title(title_text, fontsize=16, fontweight='bold')
-    centroid_handle2 = plt.Line2D([], [], marker='x', color='black', linestyle='None',
-                                  markersize=10, markeredgewidth=2, label='Group centroid (x)')
-    handles2, labels2 = ax2.get_legend_handles_labels()
-    handles2.append(centroid_handle2)
-    labels2.append('Group centroid (x)')
-    ax2.legend(handles2, labels2, loc='best', fontsize=10, framealpha=0.9)
-    ax2.grid(True, alpha=0.3, linestyle='--')
-    ax2.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
-    ax2.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
-
-    print(f"  ✓ OPLS-DA 分數圖已儲存")
-
-
-def _plot_vip_comparison(VIP_orig, VIP_norm, output_path, method_name):
-    """繪製 VIP 分數對比圖（top 20 特徵）"""
-    # 獲取 top 20 特徵（基於標準化前的 VIP）
-    top_n = min(20, len(VIP_orig))
-    top_indices = np.argsort(VIP_orig)[::-1][:top_n]
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
-
-    # ========== 子圖 1: 標準化前 ==========
-    ax1.barh(range(top_n), VIP_orig[top_indices], color='steelblue', alpha=0.7, edgecolor='black')
-    ax1.axvline(x=1, color='red', linestyle='--', linewidth=2, label='VIP = 1 (threshold)')
-    ax1.set_xlabel('VIP Score', fontsize=12, fontweight='bold')
-    ax1.set_ylabel('Feature Index', fontsize=12, fontweight='bold')
-    ax1.set_title('Top 20 Features by VIP - Before Normalization', fontsize=14, fontweight='bold')
-    ax1.set_yticks(range(top_n))
-    ax1.set_yticklabels([f'Feature {idx}' for idx in top_indices])
-    ax1.invert_yaxis()
-    ax1.legend()
-    ax1.grid(True, alpha=0.3, axis='x')
-
-    # ========== 子圖 2: 標準化後 ==========
-    ax2.barh(range(top_n), VIP_norm[top_indices], color='coral', alpha=0.7, edgecolor='black')
-    ax2.axvline(x=1, color='red', linestyle='--', linewidth=2, label='VIP = 1 (threshold)')
-    ax2.set_xlabel('VIP Score', fontsize=12, fontweight='bold')
-    ax2.set_ylabel('Feature Index', fontsize=12, fontweight='bold')
-    ax2.set_title(f'Top 20 Features by VIP - After Normalization ({method_name})',
-                 fontsize=14, fontweight='bold')
-    ax2.set_yticks(range(top_n))
-    ax2.set_yticklabels([f'Feature {idx}' for idx in top_indices])
-    ax2.invert_yaxis()
-    ax2.legend()
-    ax2.grid(True, alpha=0.3, axis='x')
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
-
-    print(f"  ✓ VIP 對比圖已儲存")
-
-
-def _plot_simple_plsda_fallback(original_data, normalized_data, sample_names,
-                                sample_info_df, output_path, method_name):
-    """簡化的 PLS-DA 作為 OPLS-DA 的備選方案（當 pyopls 不可用時）"""
-    from sklearn.cross_decomposition import PLSRegression
-    from sklearn.preprocessing import LabelEncoder
-
-    # 數據預處理
-    original_transposed = original_data.T
-    normalized_transposed = normalized_data.T
-
-    valid_samples_orig = ~np.isnan(original_transposed).any(axis=1)
-    valid_samples_norm = ~np.isnan(normalized_transposed).any(axis=1)
-    valid_samples = valid_samples_orig & valid_samples_norm
-
-    original_clean = original_transposed[valid_samples]
-    normalized_clean = normalized_transposed[valid_samples]
-    sample_names_clean = [sample_names[i] for i in range(len(sample_names)) if valid_samples[i]]
-
-    # 獲取樣本分組
-    sample_groups = []
-    control_exposure_mask = []
-
-    for i, sample in enumerate(sample_names_clean):
-        sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
-        if not sample_row.empty:
-            sample_type = str(sample_row.iloc[0].get('Sample_Type', '')).upper()
-            if sample_type in ['CONTROL', 'EXPOSURE']:
-                sample_groups.append(sample_type)
-                control_exposure_mask.append(True)
-            else:
-                control_exposure_mask.append(False)
-        else:
-            control_exposure_mask.append(False)
-
-    control_exposure_mask = np.array(control_exposure_mask)
-
-    if len(sample_groups) < 6:
-        print("  ⚠ 樣本數不足")
-        return
-
-    X_orig = original_clean[control_exposure_mask]
-    X_norm = normalized_clean[control_exposure_mask]
-
-    le = LabelEncoder()
-    y = le.fit_transform(sample_groups)
-
-    # PLS-DA 模型
-    scaler_orig = StandardScaler()
-    X_orig_scaled = scaler_orig.fit_transform(X_orig)
-    pls_orig = PLSRegression(n_components=2)
-    pls_orig.fit(X_orig_scaled, y)
-    X_orig_pls = pls_orig.transform(X_orig_scaled)
-
-    scaler_norm = StandardScaler()
-    X_norm_scaled = scaler_norm.fit_transform(X_norm)
-    pls_norm = PLSRegression(n_components=2)
-    pls_norm.fit(X_norm_scaled, y)
-    X_norm_pls = pls_norm.transform(X_norm_scaled)
-
-    # 繪圖
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
-    color_map = {'CONTROL': '#80B1D3', 'EXPOSURE': '#FB8072'}
-
-    # 標準化前
-    for group in ['CONTROL', 'EXPOSURE']:
-        mask = np.array([g == group for g in sample_groups])
-        ax1.scatter(X_orig_pls[mask, 0], X_orig_pls[mask, 1],
-                   c=[color_map[group]], label=group, s=120, alpha=0.7,
-                   edgecolors='black', linewidth=1.5, zorder=3)
-        if np.sum(mask) >= 3:
-            plot_confidence_ellipse(X_orig_pls[mask], ax1,
-                                   color=color_map[group],
-                                   label=f'{group} 95% CI')
-
-    ax1.set_xlabel('Component 1', fontsize=14, fontweight='bold')
-    ax1.set_ylabel('Component 2', fontsize=14, fontweight='bold')
-    ax1.set_title('PLS-DA - Before Normalization\n(simplified fallback)', fontsize=16, fontweight='bold')
-    ax1.legend(loc='best', fontsize=11, framealpha=0.9)
-    ax1.grid(True, alpha=0.3, linestyle='--')
-    ax1.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
-    ax1.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
-
-    # 標準化後
-    for group in ['CONTROL', 'EXPOSURE']:
-        mask = np.array([g == group for g in sample_groups])
-        ax2.scatter(X_norm_pls[mask, 0], X_norm_pls[mask, 1],
-                   c=[color_map[group]], label=group, s=120, alpha=0.7,
-                   edgecolors='black', linewidth=1.5, zorder=3)
-        if np.sum(mask) >= 3:
-            plot_confidence_ellipse(X_norm_pls[mask], ax2,
-                                   color=color_map[group],
-                                   label=f'{group} 95% CI')
-
-    ax2.set_xlabel('Component 1', fontsize=14, fontweight='bold')
-    ax2.set_ylabel('Component 2', fontsize=14, fontweight='bold')
-    ax2.set_title(f'PLS-DA - After Normalization ({method_name})\n(simplified fallback)',
-                 fontsize=16, fontweight='bold')
-    ax2.legend(loc='best', fontsize=11, framealpha=0.9)
-    ax2.grid(True, alpha=0.3, linestyle='--')
-    ax2.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
-    ax2.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
-
-    print(f"  ✓ PLS-DA 對比圖已儲存（備選方案）")
+def _plot_simple_plsda_fallback(*args, **kwargs):
+    """保留函式簽名，提供簡短提示以維持相容性。"""
+    print("  ℹ PLS-DA 備援邏輯已停用，請參考 PCA 圖以評估組間差異。")
 
 
 def plot_correlation_heatmap(original_data, normalized_data, sample_names, output_path, method_name):
@@ -2623,12 +2208,11 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     figures_dir.mkdir(exist_ok=True)
     figure_paths = {
         "boxplot": figures_dir / f"Fig1_Boxplot_{method_name}_{timestamp}.png",
-        "sample_distribution": figures_dir / f"Fig2_SampleDistribution_{method_name}_{timestamp}.png",
-        "cv": figures_dir / f"Fig3_CV_{method_name}_{timestamp}.png",
-        "pca": figures_dir / f"Fig4_PCA_{method_name}_{timestamp}.png",
-        "qc_variability": figures_dir / f"Fig5_QC_Variability_{method_name}_{timestamp}.png",
-        "qc_reproducibility": figures_dir / f"Fig6_QC_Reproducibility_{method_name}_{timestamp}.png",
-        "correlation": figures_dir / f"Fig7_Correlation_{method_name}_{timestamp}.png"
+        "cv": figures_dir / f"Fig2_CV_{method_name}_{timestamp}.png",
+        "pca": figures_dir / f"Fig3_PCA_{method_name}_{timestamp}.png",
+        "qc_variability": figures_dir / f"Fig4_QC_Variability_{method_name}_{timestamp}.png",
+        "qc_reproducibility": figures_dir / f"Fig5_QC_Reproducibility_{method_name}_{timestamp}.png",
+        "correlation": figures_dir / f"Fig6_Correlation_{method_name}_{timestamp}.png"
     }
     # 分離有效樣本用於評估
     valid_sample_mask = ~np.isnan(normalized_data[0, :])
@@ -2659,7 +2243,7 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     #     method_name
     # )
 
-    # 2. 盒鬚圖
+    # 2. 盒鬚圖（含樣本總強度資訊）
     plot_boxplot_comparison(
         original_data_valid, normalized_data_valid, sample_columns_valid,
         figure_paths["boxplot"],
@@ -2667,14 +2251,7 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
         sample_info_df  # 新增參數
     )
     
-    # 3. 樣本分佈圖
-    plot_sample_distribution(
-        original_data_valid, normalized_data_valid, sample_columns_valid,
-        figure_paths["sample_distribution"],
-        method_name
-    )
-    
-    # 4. CV%分佈圖
+    # 3. CV%分佈圖
     original_cv = calculate_cv_per_feature(original_data_valid)
     normalized_cv = calculate_cv_per_feature(normalized_data_valid)
     plot_cv_comparison(
@@ -2683,7 +2260,7 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
         method_name
     )
     
-    # 5. PCA對比圖（改進版：加入信賴橢圓）
+    # 4. PCA對比圖（改進版：加入信賴橢圓）
     try:
         plot_pca_with_confidence_ellipse(
             original_data_valid, normalized_data_valid, sample_columns_valid, sample_info_df,
@@ -2731,13 +2308,13 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
                 original_qc = original_data_valid[:, qc_indices]
                 normalized_qc = normalized_data_valid[:, qc_indices]
 
-                # Fig5 - QC Variability
+                # Fig4 - QC Variability
                 plot_qc_variability(
                     original_qc, normalized_qc, qc_names,
                     output_path=figure_paths["qc_variability"]
                 )
 
-                # Fig6 - QC Reproducibility
+                # Fig5 - QC Reproducibility
                 plot_qc_reproducibility(
                     original_qc, normalized_qc, qc_names,
                     output_path=figure_paths["qc_reproducibility"]
@@ -2964,13 +2541,12 @@ def main(input_file=None):
     print(f"📄 Excel檔案: {Path(output_path).name}")
     
     print("\n📊 生成的視覺化圖表:")
-    print(f"  1. {output_dir}/Normalization_Figures/Fig1_Boxplot_{method_name}_*.png - 盒鬚圖")
-    print(f"  2. {output_dir}/Normalization_Figures/Fig2_SampleDistribution_{method_name}_*.png - 樣本總強度分佈")
-    print(f"  3. {output_dir}/Normalization_Figures/Fig3_CV_{method_name}_*.png - CV%分佈圖")
-    print(f"  4. {output_dir}/Normalization_Figures/Fig4_PCA_{method_name}_*.png - PCA對比圖")
-    print(f"  5. {output_dir}/Normalization_Figures/Fig5_QC_Variability_{method_name}_*.png - QC變異性評估")
-    print(f"  6. {output_dir}/Normalization_Figures/Fig6_QC_Reproducibility_{method_name}_*.png - QC重現性評估")
-    print(f"  7. {output_dir}/Normalization_Figures/Fig7_Correlation_{method_name}_*.png - 樣本相關性熱圖")
+    print(f"  1. {output_dir}/Normalization_Figures/Fig1_Boxplot_{method_name}_*.png - 盒鬚圖 + 總強度")
+    print(f"  2. {output_dir}/Normalization_Figures/Fig2_CV_{method_name}_*.png - CV%分佈圖")
+    print(f"  3. {output_dir}/Normalization_Figures/Fig3_PCA_{method_name}_*.png - PCA對比圖")
+    print(f"  4. {output_dir}/Normalization_Figures/Fig4_QC_Variability_{method_name}_*.png - QC變異性評估")
+    print(f"  5. {output_dir}/Normalization_Figures/Fig5_QC_Reproducibility_{method_name}_*.png - QC重現性評估")
+    print(f"  6. {output_dir}/Normalization_Figures/Fig6_Correlation_{method_name}_*.png - 樣本相關性熱圖")
     
     print("\n" + "=" * 80)
     print("📈 標準化質量評估摘要:")
