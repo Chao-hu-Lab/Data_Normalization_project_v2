@@ -23,6 +23,10 @@ from scipy.stats import chi2, f as f_dist
 
 warnings.filterwarnings('ignore')
 
+# Centralized naming to avoid magic strings in downstream logic
+SUMMARY_SHEET_NAME = "Batch_Effect_summary"
+PLOT_FOLDER_NAME = "Batch_Effect_plots"
+
 # 設定色盲友善的顏色
 COLORBLIND_COLORS = ['#0173B2', '#DE8F05', '#029E73', '#CC78BC', '#CA9161', '#949494', '#ECE133', '#56B4E9']
 
@@ -1960,7 +1964,7 @@ def create_statistical_summary_sheet(wb, permanova_before, permanova_after,
                                      cohens_d_before, cohens_d_after,
                                      qc_cv_before, qc_cv_after):
     """
-    創建 Statistical_Summary 工作表
+    創建 Batch_Effect_summary 工作表
     
     Parameters:
     -----------
@@ -1993,7 +1997,7 @@ def create_statistical_summary_sheet(wb, permanova_before, permanova_after,
     """
     from openpyxl.styles import Font, PatternFill
     
-    ws = wb.create_sheet('Statistical_Summary', 0)
+    ws = wb.create_sheet(SUMMARY_SHEET_NAME, 0)
     
     # ========== 標題行 ==========
     headers = ['指標類別', '項目', '校正前', '校正後', '改善', '改善%', 'p-value', '顯著性']
@@ -2237,7 +2241,7 @@ def create_statistical_summary_sheet(wb, permanova_before, permanova_after,
     ws.column_dimensions['G'].width = 15
     ws.column_dimensions['H'].width = 12
     
-    print(f"   ✓ 已創建 Statistical_Summary 工作表")
+    print(f"   ✓ 已創建 {SUMMARY_SHEET_NAME} 工作表")
 
 def get_significance_mark(p_value):
     """根據 p-value 返回顯著性標記"""
@@ -2292,7 +2296,7 @@ def save_results_to_excel(input_file, output_file, data, sample_info,
         
         for sheet_name in input_wb.sheetnames:
             # 跳過已經存在的工作表
-            if sheet_name in ['Batch_effect_result', 'SampleInfo', 'Statistical_Summary']:
+            if sheet_name in ['Batch_effect_result', 'SampleInfo', SUMMARY_SHEET_NAME]:
                 continue
             
             # 對於 QC LOWESS result 保留格式
@@ -2390,7 +2394,7 @@ def main(input_file=None):
         print(f"⚠️ 警告：輸出檔案已存在，將被覆蓋")
         print(f"  {output_file}")
 
-    plots_dir = os.path.join(output_dir, 'Batch_Effect_plots')
+    plots_dir = os.path.join(output_dir, PLOT_FOLDER_NAME)
 
     # ===== 防呆39: 圖表目錄創建 =====
     try:
@@ -2403,6 +2407,10 @@ def main(input_file=None):
         print(f"❌ 錯誤：無法創建圖表資料夾")
         print(f"詳細錯誤: {e}")
         raise Exception(f"無法創建圖表目錄: {e}")
+
+    run_plot_dir = os.path.join(plots_dir, f"Batch_Effect_{timestamp}")
+    os.makedirs(run_plot_dir, exist_ok=True)
+    print(f"✓ 本次圖表輸出子資料夾: {run_plot_dir}")
     
     try:
         # ========== 3. 讀取數據 ==========
@@ -2565,7 +2573,7 @@ def main(input_file=None):
         fig1 = plot_permanova_comparison(permanova_before, permanova_after, 
                                         perm_test_permanova)
         if fig1:
-            fig1_file = os.path.join(plots_dir, f'Fig1_PERMANOVA_comparison_{timestamp}.png')
+            fig1_file = os.path.join(run_plot_dir, f'Fig1_PERMANOVA_comparison_{timestamp}.png')
             fig1.savefig(fig1_file, dpi=300, bbox_inches='tight')
             plt.close(fig1)
             print(f"✓ 已儲存: {os.path.basename(fig1_file)}")
@@ -2581,7 +2589,7 @@ def main(input_file=None):
         )
         if result:
             fig2, outliers_orig_batch, outliers_corr_batch = result
-            fig2_file = os.path.join(plots_dir, f'Fig2_PCA_by_batch_{timestamp}.png')
+            fig2_file = os.path.join(run_plot_dir, f'Fig2_PCA_by_batch_{timestamp}.png')
             fig2.savefig(fig2_file, dpi=300, bbox_inches='tight')
             plt.close(fig2)
             print(f"✓ 已儲存: {os.path.basename(fig2_file)}")
@@ -2593,7 +2601,7 @@ def main(input_file=None):
         fig3 = plot_permutation_null_distribution(perm_test_permanova, 
                                                 metric_name='PERMANOVA F')
         if fig3:
-            fig3_file = os.path.join(plots_dir, f'Fig3_Permutation_Test_{timestamp}.png')
+            fig3_file = os.path.join(run_plot_dir, f'Fig3_Permutation_Test_{timestamp}.png')
             fig3.savefig(fig3_file, dpi=300, bbox_inches='tight')
             plt.close(fig3)
             print(f"✓ 已儲存: {os.path.basename(fig3_file)}")
@@ -2607,7 +2615,7 @@ def main(input_file=None):
         )
         if result:
             fig4, outliers_orig_type, outliers_corr_type = result
-            fig4_file = os.path.join(plots_dir, f'Fig4_PCA_by_sample_type_{timestamp}.png')
+            fig4_file = os.path.join(run_plot_dir, f'Fig4_PCA_by_sample_type_{timestamp}.png')
             fig4.savefig(fig4_file, dpi=300, bbox_inches='tight')
             plt.close(fig4)
             print(f"✓ 已儲存: {os.path.basename(fig4_file)}")
@@ -2618,7 +2626,7 @@ def main(input_file=None):
         print("\n生成圖 5: Cohen's d 森林圖...")
         fig5 = plot_cohens_d_forest(cohens_d_before, cohens_d_after)
         if fig5:
-            fig5_file = os.path.join(plots_dir, f'Fig5_Cohens_d_Forest_{timestamp}.png')
+            fig5_file = os.path.join(run_plot_dir, f'Fig5_Cohens_d_Forest_{timestamp}.png')
             fig5.savefig(fig5_file, dpi=300, bbox_inches='tight')
             plt.close(fig5)
             print(f"✓ 已儲存: {os.path.basename(fig5_file)}")
@@ -2627,7 +2635,7 @@ def main(input_file=None):
         print("\n生成圖 6: 批次效應殘差分析...")
         fig6 = plot_batch_residuals(original_scaled, corrected_scaled, batch_info)
         if fig6:
-            fig6_file = os.path.join(plots_dir, f'Fig6_Residual_Analysis_{timestamp}.png')
+            fig6_file = os.path.join(run_plot_dir, f'Fig6_Residual_Analysis_{timestamp}.png')
             fig6.savefig(fig6_file, dpi=300, bbox_inches='tight')
             plt.close(fig6)
             print(f"✓ 已儲存: {os.path.basename(fig6_file)}")
@@ -2641,7 +2649,7 @@ def main(input_file=None):
         corrected_df.insert(0, data.columns[0], feature_ids)
 
         # 🔧 修正：只添加「代謝物層級」的統計指標
-        # 移除整體層級的 PERMANOVA 和 Silhouette（這些只存在於 Statistical_Summary）
+        # 移除整體層級的 PERMANOVA 和 Silhouette（這些只存在於 Batch_Effect_summary）
 
         # Cohen's d（每個代謝物）
         corrected_df['Cohens_d_before'] = cohens_d_before['feature_cohens_d']
@@ -2726,13 +2734,13 @@ def main(input_file=None):
         print(f"\nExcel 檔案: {os.path.basename(output_file)}")
         print(f"   路徑: {output_file}")
         print(f"   工作表:")
-        print(f"     - Statistical_Summary (統計摘要)")
+        print(f"     - {SUMMARY_SHEET_NAME} (統計摘要)")
         print(f"     - Batch_effect_result (校正後數據)")
         print(f"     - SampleInfo (樣本資訊)")
         print(f"     - 其他原始工作表...")
         
-        print(f"\n圖表資料夾: {os.path.basename(plots_dir)}")
-        print(f"   路徑: {plots_dir}")
+        print(f"\n圖表資料夾: {os.path.basename(run_plot_dir)}")
+        print(f"   路徑: {run_plot_dir}")
         print(f"   已生成 {4} 張圖表:")
         print(f"     1. PERMANOVA_comparison_{timestamp}.png")
         print(f"     2. PCA_by_batch_{timestamp}.png")
@@ -2748,7 +2756,7 @@ def main(input_file=None):
             'samples': len(sample_columns),
             'batches': len(unique_batches),
             'output_path': output_file,
-            'plots_dir': plots_dir,
+            'plots_dir': run_plot_dir,
             'permanova_f_before': permanova_before['pseudo_f'],
             'permanova_f_after': permanova_after['pseudo_f'],
             'permanova_p_before': permanova_before['p_value'],

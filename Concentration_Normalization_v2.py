@@ -19,6 +19,11 @@ from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings('ignore')
 
+# Centralized summary metadata to avoid magic strings and ease maintenance
+SUMMARY_SHEET_NAME = "ConcNormalization_Summary"
+SUMMARY_REPORT_SEPARATOR = "-" * 80
+OUTPUT_BASE_DIR = Path(__file__).resolve().parent / "output"
+
 # ==================== 標準化方法 ====================
 
 def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns, reference_values):
@@ -1718,10 +1723,10 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
     str : 格式化的報告文字
     """
     report = []
-    report.append("=" * 80)
+    report.append(SUMMARY_REPORT_SEPARATOR)
     report.append(f"標準化效果摘要報告 - {method_name}")
     report.append(f"報告生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    report.append("=" * 80)
+    report.append(SUMMARY_REPORT_SEPARATOR)
     
     # ========== 基本資訊 ==========
     report.append("")
@@ -2199,20 +2204,23 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     
     print(f"✓ 標準化完成")
     
-    # 創建輸出資料夾
-    output_dir = Path(file_path).parent / f"Normalization_Results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    output_dir.mkdir(exist_ok=True)
-    print(f"✓ 創建輸出資料夾: {output_dir.name}")
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    figures_dir = output_dir / "Normalization_Figures"
-    figures_dir.mkdir(exist_ok=True)
+    # 統一輸出目錄與圖表路徑
+    OUTPUT_BASE_DIR.mkdir(exist_ok=True)
+    output_dir = OUTPUT_BASE_DIR
+    run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    method_slug = method_name.replace(' ', '_')
+    figures_dir = OUTPUT_BASE_DIR / "Normalization_Figures" / f"{method_slug}_{run_timestamp}"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    print(f"✓ Excel 將輸出到: {OUTPUT_BASE_DIR}")
+    print(f"✓ 本次圖表輸出目錄: {figures_dir}")
+
     figure_paths = {
-        "boxplot": figures_dir / f"Fig1_Boxplot_{method_name}_{timestamp}.png",
-        "cv": figures_dir / f"Fig2_CV_{method_name}_{timestamp}.png",
-        "pca": figures_dir / f"Fig3_PCA_{method_name}_{timestamp}.png",
-        "qc_variability": figures_dir / f"Fig4_QC_Variability_{method_name}_{timestamp}.png",
-        "qc_reproducibility": figures_dir / f"Fig5_QC_Reproducibility_{method_name}_{timestamp}.png",
-        "correlation": figures_dir / f"Fig6_Correlation_{method_name}_{timestamp}.png"
+        "boxplot": figures_dir / f"Fig1_Boxplot_{method_slug}_{run_timestamp}.png",
+        "cv": figures_dir / f"Fig2_CV_{method_slug}_{run_timestamp}.png",
+        "pca": figures_dir / f"Fig3_PCA_{method_slug}_{run_timestamp}.png",
+        "qc_variability": figures_dir / f"Fig4_QC_Variability_{method_slug}_{run_timestamp}.png",
+        "qc_reproducibility": figures_dir / f"Fig5_QC_Reproducibility_{method_slug}_{run_timestamp}.png",
+        "correlation": figures_dir / f"Fig6_Correlation_{method_slug}_{run_timestamp}.png"
     }
     # 分離有效樣本用於評估
     valid_sample_mask = ~np.isnan(normalized_data[0, :])
@@ -2236,12 +2244,7 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     # ========== 生成視覺化圖表 ==========
     print("\n生成視覺化圖表...")
 
-    # 1. 密度圖 (已刪除 - 與 Boxplot 信息重複)
-    # plot_density_comparison(
-    #     original_data_valid, normalized_data_valid, sample_columns_valid,
-    #     output_dir / f"Density_Plot_{method_name}.png",
-    #     method_name
-    # )
+    
 
     # 2. 盒鬚圖（含樣本總強度資訊）
     plot_boxplot_comparison(
@@ -2270,15 +2273,7 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     except Exception as e:
         print(f"  ⚠ PCA對比圖生成失敗: {e}")
     
-    # 5b. PLS-DA 對比圖 (已刪除 - 缺少統計指標且與PCA重複)
-    # try:
-    #     plot_oplsda_comparison(
-    #         original_data_valid, normalized_data_valid, sample_columns_valid, sample_info_df,
-    #         output_dir / f"PLSDA_Comparison_{method_name}.png",
-    #         method_name
-    #     )
-    # except Exception as e:
-    #     print(f"  ⚠ PLS-DA對比圖生成失敗: {e}")
+    
 
     # 6. 相關性熱圖
     try:
@@ -2344,7 +2339,7 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     
     print(f"\n{summary_report}")
     
-    return normalized_df, summary_report, method_name, output_dir, quality_metrics
+    return normalized_df, summary_report, method_name, output_dir, quality_metrics, figures_dir
 
 def save_normalization_results(normalized_df, summary_report, file_path, method_name, original_sheets, output_dir):
     """儲存標準化結果到Excel檔案"""
@@ -2386,10 +2381,13 @@ def save_normalization_results(normalized_df, summary_report, file_path, method_
             ws_normalized.column_dimensions[column_letter].width = adjusted_width
         
         # 2. 儲存摘要報告
-        ws_summary = wb_new.create_sheet(title='Summary_Report')
+        ws_summary = wb_new.create_sheet(title=SUMMARY_SHEET_NAME)
         summary_rows = summary_report.split('\n')
         for r_idx, row_text in enumerate(summary_rows, 1):
-            cell = ws_summary.cell(row=r_idx, column=1, value=row_text)
+            cell_value = row_text
+            if row_text.startswith('='):
+                cell_value = f" {row_text}"
+            cell = ws_summary.cell(row=r_idx, column=1, value=cell_value)
             if '=' in row_text and r_idx <= 3:
                 cell.font = Font(bold=True, size=12)
             elif '【' in row_text:
@@ -2403,7 +2401,7 @@ def save_normalization_results(normalized_df, summary_report, file_path, method_
         
         # 3. 複製原始工作表並保留格式
         for sheet_name in wb_original.sheetnames:
-            if sheet_name in [f'{method_name}_Result', 'Summary_Report']:
+            if sheet_name in [f'{method_name}_Result', SUMMARY_SHEET_NAME]:
                 continue
             
             ws_original = wb_original[sheet_name]
@@ -2429,9 +2427,9 @@ def save_normalization_results(normalized_df, summary_report, file_path, method_
         print(f"\n✓ 結果已儲存至: {output_path}")
         print(f"\n包含工作表:")
         print(f"  1. {method_name}_Result (標準化後資料)")
-        print(f"  2. Summary_Report (摘要報告)")
+        print(f"  2. {SUMMARY_SHEET_NAME} (摘要報告)")
         for sheet_name in wb_original.sheetnames:
-            if sheet_name not in [f'{method_name}_Result', 'Summary_Report']:
+            if sheet_name not in [f'{method_name}_Result', SUMMARY_SHEET_NAME]:
                 print(f"  3. {sheet_name} (原始資料)")
         
         return str(output_path)
@@ -2521,7 +2519,7 @@ def main(input_file=None):
         print("\n❌ 標準化失敗")
         raise Exception("標準化失敗")
     
-    normalized_df, summary_report, method_name, output_dir, quality_metrics = result
+    normalized_df, summary_report, method_name, output_dir, quality_metrics, figures_dir = result
     
    
     
@@ -2537,16 +2535,12 @@ def main(input_file=None):
     print("\n" + "=" * 80)
     print("✅ 標準化完成！")
     print("=" * 80)
-    print(f"\n📁 輸出資料夾: {output_dir.name}")
+    print(f"\n📁 輸出資料夾: {output_dir}")
     print(f"📄 Excel檔案: {Path(output_path).name}")
     
     print("\n📊 生成的視覺化圖表:")
-    print(f"  1. {output_dir}/Normalization_Figures/Fig1_Boxplot_{method_name}_*.png - 盒鬚圖 + 總強度")
-    print(f"  2. {output_dir}/Normalization_Figures/Fig2_CV_{method_name}_*.png - CV%分佈圖")
-    print(f"  3. {output_dir}/Normalization_Figures/Fig3_PCA_{method_name}_*.png - PCA對比圖")
-    print(f"  4. {output_dir}/Normalization_Figures/Fig4_QC_Variability_{method_name}_*.png - QC變異性評估")
-    print(f"  5. {output_dir}/Normalization_Figures/Fig5_QC_Reproducibility_{method_name}_*.png - QC重現性評估")
-    print(f"  6. {output_dir}/Normalization_Figures/Fig6_Correlation_{method_name}_*.png - 樣本相關性熱圖")
+    print(f"  - 儲存路徑: {figures_dir}")
+    print("  - 圖檔: Fig1_Boxplot_*.png, Fig2_CV_*.png, Fig3_PCA_*.png, fig4~6 QC 與相關性評估")
     
     print("\n" + "=" * 80)
     print("📈 標準化質量評估摘要:")

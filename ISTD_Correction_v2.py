@@ -836,11 +836,16 @@ def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
     
     return t2_values, threshold, outliers
 
-def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
+def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
     """繪製 p 值分佈圖（驗證統計檢定有效性）"""
     try:
-        # ✅ 修正：圖表儲存在 output/ISTD_Correction_plots/
-        plots_dir = os.path.join(output_dir, 'ISTD_Correction_plots')
+        # ✅ 圖表儲存在指定目錄，必要時建立預設路徑
+        if plots_dir is None:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            base_dir = os.path.join(script_dir, 'output', 'ISTD_Correction_plots')
+            os.makedirs(base_dir, exist_ok=True)
+            plots_dir = os.path.join(base_dir, f"ISTD_Correction_{timestamp}")
+
         os.makedirs(plots_dir, exist_ok=True)
         
         variance_pvalues = cv_results_df['Variance_Test_pvalue'].dropna()
@@ -1002,18 +1007,23 @@ def draw_hotelling_t2_ellipse(ax, scores, alpha=0.05, label=None, edgecolor='bla
 
 
 # ========== 修改：2D PCA 分析（Hotelling T² 異常值檢測 + 橢圓）==========
-def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sample_info_df, output_base_dir):
+def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sample_info_df, plots_dir):
     """
     執行 2D PCA 分析
     - 🔧 使用 Hotelling T² 檢測異常值
     - 使用 Hotelling T² 繪製橢圓（中心固定為原點）
     - 🎨 不同組別使用不同形狀：控制組=方形（無邊框）、暴露組=三角形（無邊框）、QC=圓形（黑邊框）
     """
-    # ✅ 修正：圖表儲存在 output/ISTD_Correction_plots/
-    output_dir = os.path.join(output_base_dir, "ISTD_Correction_plots")
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir, exist_ok=True)
-        print(f"已建立 'ISTD_Correction_plots' 資料夾: {output_dir}")
+    # ✅ 修正：圖表儲存在 output/ISTD_Correction_plots/ 下的指定子資料夾
+    if plots_dir is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.path.join(script_dir, "output", "ISTD_Correction_plots")
+        os.makedirs(base_dir, exist_ok=True)
+        plots_dir = os.path.join(base_dir, f"ISTD_Correction_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+
+    if not os.path.exists(plots_dir):
+        os.makedirs(plots_dir, exist_ok=True)
+        print(f"已建立 'ISTD_Correction_plots' 資料夾: {plots_dir}")
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
     sample_meta = sample_info_df.set_index('Sample_Name')
@@ -1358,7 +1368,7 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
 
         plt.tight_layout(rect=[0, 0, 0.88, 0.96])
 
-        output_path = os.path.join(output_dir, f"2D_PCA_{left_name.replace(' ', '_')}_vs_{right_name.replace(' ', '_')}_{timestamp}.png")
+        output_path = os.path.join(plots_dir, f"2D_PCA_{left_name.replace(' ', '_')}_vs_{right_name.replace(' ', '_')}_{timestamp}.png")
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         print(f"✓ 2D PCA 圖已儲存: {output_path}")
@@ -1391,7 +1401,8 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         print(f"{'='*70}\n")
 
 # ========== 🔧 修改：save_results_to_excel==========
-def save_results_to_excel(original_df, results_df, sample_info_df, output_file, all_sheets, sample_columns, original_workbook):
+def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
+                          all_sheets, sample_columns, original_workbook, plots_dir=None):
     """
     儲存結果到 Excel，使用 Wilcoxon 配對符號等級檢定 + Levene's test
     """
@@ -1415,8 +1426,8 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file, 
         print(f"❌ 錯誤：結果缺少必要欄位: {', '.join(missing_cols)}")
         raise ValueError(f"結果缺少必要欄位: {missing_cols}")
 
-    # ✅ 修正：使用輸出檔案所在的目錄作為基礎目錄
-    output_base_dir = os.path.dirname(output_file)
+    # ✅ 圖表輸出基底（可覆蓋為特定目錄）
+    plot_output_dir = plots_dir or os.path.dirname(output_file)
     
     # ✅ 使用新的統計檢定函數
     cv_results_df = calculate_qc_cv_with_statistical_test(
@@ -1514,7 +1525,7 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file, 
     
     # ✅ 繪製 P 值分佈圖（傳入 output 目錄）
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-    plot_pvalue_distribution(cv_results_df, output_base_dir, timestamp)
+    plot_pvalue_distribution(cv_results_df, plot_output_dir, timestamp)
 
 # ========== main 函數 ==========
 def main(input_file=None):
@@ -1581,10 +1592,15 @@ def main(input_file=None):
         raise Exception("校正計算失敗")
     
     # 🔧 修改：儲存結果到 output 資料夾
+    run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     output_file = os.path.join(
         output_dir,
-        f"ISTD_Results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        f"ISTD_Results_{run_timestamp}.xlsx"
     )
+    plots_root = os.path.join(output_dir, "ISTD_Correction_plots")
+    os.makedirs(plots_root, exist_ok=True)
+    plots_session_dir = os.path.join(plots_root, f"ISTD_Correction_{run_timestamp}")
+    os.makedirs(plots_session_dir, exist_ok=True)
 
     # ===== 防呆17: 输出目录权限检查 =====
     try:
@@ -1606,7 +1622,8 @@ def main(input_file=None):
 
     save_results_to_excel(
         original_df, results_df, sample_info_df,
-        output_file, all_sheets, sample_columns, input_file
+        output_file, all_sheets, sample_columns, input_file,
+        plots_dir=plots_session_dir
     )
     
     # ✅ 執行 2D PCA 分析（傳入 output_dir）
@@ -1614,8 +1631,8 @@ def main(input_file=None):
     print("📊 開始 2D PCA 分析（Hotelling T² 異常值檢測 + 橢圓 + 固定原點）")
     print("="*70 + "\n")
     perform_pca_analysis_2d(
-        original_df, results_df, None, 
-        sample_columns, sample_info_df, output_dir  # ✅ 傳入 output_dir
+        original_df, results_df, None,
+        sample_columns, sample_info_df, plots_session_dir
     )
     
     print("\n" + "="*70)
@@ -1623,7 +1640,7 @@ def main(input_file=None):
     print("="*70)
     print("\n📁 輸出檔案:")
     print(f"  1. Excel 結果: output/{os.path.basename(output_file)}")
-    print(f"  2. PCA 圖表: output/ISTD_Correction_plots/")  # ✅ 更新路徑說明
+    print(f"  2. PCA 圖表: {plots_session_dir}")
     print("\n💡 請使用輸出的檔案進行後續 QC LOWESS 處理。\n")
     
     # 🎯 返回統計資訊給 GUI

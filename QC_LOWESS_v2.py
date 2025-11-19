@@ -16,8 +16,11 @@ import warnings
 import tkinter as tk
 from tkinter import filedialog
 import copy
+from collections import Counter
 
 warnings.filterwarnings('ignore')
+
+QC_LOWESS_ADVANCED_SHEET = "QC_LOWESS_Advanced Statistics"
 
 # Columns that should never be treated as sample intensities
 DEFAULT_NON_SAMPLE_COLUMNS = {
@@ -28,7 +31,8 @@ DEFAULT_NON_SAMPLE_COLUMNS = {
     'Significant_Improvement', 'Decision', 'Trend_Status', 'frac',
     'outliers_removed', 'median_correction_factor', 'correction_factor_cv',
     'correction_factor_std', 'correction_factor_range_low',
-    'correction_factor_range_high'
+    'correction_factor_range_high', 'Frac_Used', 'QC_CV_for_Frac',
+    'Frac_Strategy'
 }
 
 # Keywords that help identify derived statistical columns even if the exact
@@ -88,7 +92,10 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
             'trend_tau': np.nan,
             'r_squared': np.nan,
             'rmse': np.nan
-        }
+        },
+        'frac_used': np.nan,
+        'qc_cv_for_frac': np.nan,
+        'frac_strategy': 'unknown'
     }
 
     if all_orders is None or all_intensities is None:
@@ -107,9 +114,41 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
 
     if valid_x.size < 3 or np.unique(valid_x).size < 2:
         info['status'] = 'insufficient_qc'
+        info['frac_strategy'] = 'insufficient_qc'
         return all_intensities_arr.tolist(), info
 
-    frac = np.clip(valid_x.size / 30, 0.3, 0.8)
+    # ===== 動態 frac 策略 =====
+    def compute_qc_cv(values):
+        values = np.asarray(values, dtype=float)
+        values = values[np.isfinite(values) & (values > 0)]
+        if values.size < 2:
+            return 100.0
+        mean_val = np.nanmean(values)
+        if not np.isfinite(mean_val) or mean_val <= 0:
+            return 100.0
+        std_val = np.nanstd(values, ddof=1)
+        if not np.isfinite(std_val):
+            return 100.0
+        return float(std_val / mean_val * 100)
+
+    qc_cv_for_frac = compute_qc_cv(valid_y)
+    qc_cv_for_frac = 100.0 if not np.isfinite(qc_cv_for_frac) else qc_cv_for_frac
+
+    if qc_cv_for_frac > 30:
+        frac = 0.8
+        frac_strategy = 'high_variation'
+    elif qc_cv_for_frac > 20:
+        frac = 0.7
+        frac_strategy = 'medium_variation'
+    else:
+        dynamic_frac = 0.85 - (valid_x.size / 50.0)
+        frac = float(np.clip(dynamic_frac, 0.5, 0.75))
+        frac_strategy = 'low_variation_dynamic'
+
+    info['frac_used'] = float(frac)
+    info['qc_cv_for_frac'] = float(qc_cv_for_frac)
+    info['frac_strategy'] = frac_strategy
+
     lowess_result = sm.nonparametric.lowess(valid_y, valid_x, frac=frac, it=2, return_sorted=True)
     x_fit, y_fit = lowess_result[:, 0], lowess_result[:, 1]
     median_qc = np.nanmedian(y_fit)
@@ -199,7 +238,13 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
 
     if debug_flag:
         delta = cv_improvement if np.isfinite(cv_improvement) else float('nan')
+        frac_val = info.get('frac_used', np.nan)
+        qc_cv_val = info.get('qc_cv_for_frac', np.nan)
+        strategy = info.get('frac_strategy', 'unknown')
         print(f"     [DEBUG] Feature {debug_flag}: status={status}, ΔCV={delta:.2f}%")
+        print(f"              - QC CV% = {qc_cv_val:.2f}%")
+        print(f"              - Frac used = {frac_val:.3f}")
+        print(f"              - Strategy = {strategy}")
 
     return corrected, info
 
@@ -357,7 +402,12 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 'status': info.get('status', 'unknown'),
                 'corrected_samples': corrected_map,
                 'trend_validation': info.get('trend_validation', None),
-                'qc_samples': qc_batch_samples
+                'qc_samples': qc_batch_samples,
+                'frac_info': {
+                    'frac_used': info.get('frac_used', np.nan),
+                    'qc_cv_for_frac': info.get('qc_cv_for_frac', np.nan),
+                    'frac_strategy': info.get('frac_strategy', 'unknown')
+                }
             }
 
         def safe_nanmedian(values):
@@ -367,6 +417,20 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             if arr.size == 0 or np.all(np.isnan(arr)):
                 return np.nan
             return float(np.nanmedian(arr))
+
+        def choose_frac_strategy(strategies):
+            if not strategies:
+                return 'unknown'
+            valid_strategies = [s for s in strategies if isinstance(s, str)]
+            if not valid_strategies:
+                return 'unknown'
+            strategy_counter = Counter(valid_strategies)
+            priority = ['high_variation', 'medium_variation', 'low_variation_dynamic',
+                        'insufficient_qc', 'unknown']
+            for key in priority:
+                if key in strategy_counter:
+                    return key
+            return strategy_counter.most_common(1)[0][0]
 
         status_categories = [
             'success', 'insufficient_qc', 'insufficient_improvement',
@@ -387,6 +451,8 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         feature_all_success = 0
         feature_partial_success = 0
         feature_no_success = 0
+        frac_usage_counter = Counter()
+        frac_value_list = []
 
         for idx, row in istd_df.iterrows():
             feature_id = row['FeatureID']
@@ -399,6 +465,9 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             qc_corrected_dict = {sample: row[sample] for sample in qc_samples if sample in row.index}
             trend_metric_buffer = []
             batch_statuses = []
+            frac_value_buffer = []
+            frac_cv_buffer = []
+            frac_strategy_buffer = []
 
             for batch_name, batch_info in active_batches.items():
                 batch_result = normalize_feature_for_batch(row, batch_name, batch_info, debug_flag)
@@ -420,6 +489,11 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 if batch_result['trend_validation']:
                     trend_metric_buffer.append(batch_result['trend_validation'])
 
+                frac_info = batch_result.get('frac_info') or {}
+                frac_value_buffer.append(frac_info.get('frac_used'))
+                frac_cv_buffer.append(frac_info.get('qc_cv_for_frac'))
+                frac_strategy_buffer.append(frac_info.get('frac_strategy'))
+
             success_batches = batch_statuses.count('success')
             if success_batches == len(active_batches):
                 decision_stats['success'] += 1
@@ -436,12 +510,25 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 decision_stats[failure_key] += 1
                 feature_no_success += 1
 
+            frac_values_clean = [val for val in frac_value_buffer if val is not None]
+            frac_cvs_clean = [val for val in frac_cv_buffer if val is not None]
+            feature_frac_used = safe_nanmedian(frac_values_clean)
+            feature_qc_cv = safe_nanmedian(frac_cvs_clean)
+            feature_frac_strategy = choose_frac_strategy(frac_strategy_buffer)
+
+            if np.isfinite(feature_frac_used):
+                frac_value_list.append(feature_frac_used)
+            frac_usage_counter[feature_frac_strategy] += 1
+
             trend_stats.append({
                 'FeatureID': feature_id,
                 'MK_Trend_pvalue': safe_nanmedian([m.get('trend_pvalue', np.nan) for m in trend_metric_buffer]),
                 'Kendall_Tau': safe_nanmedian([m.get('trend_tau', np.nan) for m in trend_metric_buffer]),
                 'LOWESS_R2': safe_nanmedian([m.get('r_squared', np.nan) for m in trend_metric_buffer]),
-                'LOWESS_RMSE': safe_nanmedian([m.get('rmse', np.nan) for m in trend_metric_buffer])
+                'LOWESS_RMSE': safe_nanmedian([m.get('rmse', np.nan) for m in trend_metric_buffer]),
+                'Frac_Used': feature_frac_used,
+                'QC_CV_for_Frac': feature_qc_cv,
+                'Frac_Strategy': feature_frac_strategy
             })
 
             all_results.append(result_row)
@@ -463,8 +550,34 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 continue
             print(f"     • {status}: {count} ({count/total_tasks*100:.1f}%)")
 
+        print("\n  📊 Frac 使用統計：")
+        total_features = len(istd_df) or 1
+        high_count = frac_usage_counter.get('high_variation', 0)
+        medium_count = frac_usage_counter.get('medium_variation', 0)
+        low_count = frac_usage_counter.get('low_variation_dynamic', 0)
+        other_count = max(total_features - (high_count + medium_count + low_count), 0)
+        frac_mean = float(np.nanmean(frac_value_list)) if frac_value_list else np.nan
+        frac_median = float(np.nanmedian(frac_value_list)) if frac_value_list else np.nan
+
+        def frac_pct(count):
+            return (count / total_features * 100) if total_features else 0
+
+        def fmt_frac_value(value):
+            return f"{value:.2f}" if np.isfinite(value) else "N/A"
+
+        print(f"     - 高變異策略 (frac=0.8): {high_count} ({frac_pct(high_count):.1f}%)")
+        print(f"     - 中等變異策略 (frac=0.7): {medium_count} ({frac_pct(medium_count):.1f}%)")
+        print(f"     - 低變異動態策略 (frac=0.5~0.75): {low_count} ({frac_pct(low_count):.1f}%)")
+        if other_count:
+            print(f"     - 其他（資料不足）: {other_count} ({frac_pct(other_count):.1f}%)")
+        print(f"     - Frac 平均值: {fmt_frac_value(frac_mean)}")
+        print(f"     - Frac 中位數: {fmt_frac_value(frac_median)}")
+
         lowess_df = pd.DataFrame(all_results)
         trend_stats_df = pd.DataFrame(trend_stats)
+
+        decision_stats['frac_usage_counter'] = dict(frac_usage_counter)
+        decision_stats['frac_value_list'] = frac_value_list
 
         return lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats
 
@@ -897,7 +1010,7 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
 
 
 # ========== ✅ 修正：P 值分佈圖（只繪製 Levene's test）==========
-def plot_pvalue_distribution(cv_results_df, output_base_dir, timestamp):
+def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
     """繪製 Levene's test p 值分佈圖（含防呆檢查）"""
     try:
         # ===== 防呆1: 輸入數據檢查 =====
@@ -910,7 +1023,11 @@ def plot_pvalue_distribution(cv_results_df, output_base_dir, timestamp):
             return
 
         # ===== 防呆2: 輸出目錄檢查 =====
-        plots_dir = os.path.join(output_base_dir, 'QC_LOWESS_plots')
+        if plots_dir is None:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            base_dir = os.path.join(script_dir, 'output', 'QC_LOWESS_plots')
+            os.makedirs(base_dir, exist_ok=True)
+            plots_dir = os.path.join(base_dir, f"QC_LOWESS_{timestamp}")
 
         try:
             os.makedirs(plots_dir, exist_ok=True)
@@ -1028,7 +1145,8 @@ def copy_sheet_with_full_format(source_sheet, target_sheet):
 
 # ========== ✅ 修正：保存結果到 Excel（移除 Wilcoxon_pvalue）==========
 def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_columns,
-                          output_file, input_file, qc_corrected_values, trend_stats_df, decision_stats):
+                          output_file, input_file, qc_corrected_values,
+                          trend_stats_df, decision_stats, plots_dir=None):
     """保存結果到 Excel（含完整防呆檢查）"""
     try:
         # ===== 防呆1: 輸入數據有效性檢查 =====
@@ -1097,7 +1215,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         workbook = input_workbook
         
         # 刪除舊工作表
-        sheets_to_update = ['QC LOWESS result', 'Advanced Statistics', 'SampleInfo']
+        sheets_to_update = ['QC LOWESS result', QC_LOWESS_ADVANCED_SHEET, 'SampleInfo']
         
         for sheet_name in sheets_to_update:
             if sheet_name in workbook.sheetnames:
@@ -1130,7 +1248,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         with pd.ExcelWriter(temp_file, engine='openpyxl') as writer:
             istd_df.to_excel(writer, sheet_name='ISTD_Correction', index=False)
             lowess_with_cv.to_excel(writer, sheet_name='QC LOWESS result', index=False)
-            advanced_stats_df.to_excel(writer, sheet_name='Advanced Statistics', index=False)
+            advanced_stats_df.to_excel(writer, sheet_name=QC_LOWESS_ADVANCED_SHEET, index=False)
             sample_info_df.to_excel(writer, sheet_name='SampleInfo', index=False)
         
         temp_workbook = load_workbook(temp_file)
@@ -1175,7 +1293,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         print(f"  ✓ ISTD_Correction 格式已完整保留")
         
         # 複製其他工作表
-        for sheet_name in ['QC LOWESS result', 'Advanced Statistics', 'SampleInfo']:
+        for sheet_name in ['QC LOWESS result', QC_LOWESS_ADVANCED_SHEET, 'SampleInfo']:
             if sheet_name in temp_workbook.sheetnames:
                 source_sheet = temp_workbook[sheet_name]
                 target_sheet = workbook.create_sheet(sheet_name)
@@ -1190,7 +1308,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         # 科學記號格式
         scientific_format = '0.00E+00'
         
-        for sheet_name in ['ISTD_Correction', 'QC LOWESS result', 'Advanced Statistics', 'SampleInfo']:
+        for sheet_name in ['ISTD_Correction', 'QC LOWESS result', QC_LOWESS_ADVANCED_SHEET, 'SampleInfo']:
             if sheet_name in workbook.sheetnames:
                 worksheet = workbook[sheet_name]
                 for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=1, max_col=worksheet.max_column):
@@ -1225,12 +1343,13 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
                         cell.fill = light_blue_fill
         
         # 副表顏色標記
-        if 'Advanced Statistics' in workbook.sheetnames:
-            worksheet = workbook['Advanced Statistics']
+        if QC_LOWESS_ADVANCED_SHEET in workbook.sheetnames:
+            worksheet = workbook[QC_LOWESS_ADVANCED_SHEET]
             header = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1))]
             
             # 所有進階指標 - 淺綠色
-            for col_name in ['MK_Trend_pvalue', 'Kendall_Tau', 'LOWESS_R2', 'LOWESS_RMSE']:
+            for col_name in ['MK_Trend_pvalue', 'Kendall_Tau', 'LOWESS_R2', 'LOWESS_RMSE',
+                             'Frac_Used', 'QC_CV_for_Frac', 'Frac_Strategy']:
                 if col_name in header:
                     col_idx = header.index(col_name) + 1
                     for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
@@ -1347,6 +1466,32 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
                 batch_total = sum(stats_dict.values())
                 batch_success = stats_dict.get('success', 0)
                 print(f"    • Batch {batch_name}: 成功 {batch_success}/{batch_total} ({pct(batch_success, batch_total):.1f}%)")
+
+        frac_counter = decision_stats.get('frac_usage_counter') or {}
+        frac_values_global = decision_stats.get('frac_value_list', [])
+        if frac_counter:
+            total_features = decision_stats.get('total_features', total_count) or 1
+            high_count = frac_counter.get('high_variation', 0)
+            medium_count = frac_counter.get('medium_variation', 0)
+            low_count = frac_counter.get('low_variation_dynamic', 0)
+            other_count = max(total_features - (high_count + medium_count + low_count), 0)
+            frac_mean = float(np.nanmean(frac_values_global)) if frac_values_global else np.nan
+            frac_median = float(np.nanmedian(frac_values_global)) if frac_values_global else np.nan
+
+            def frac_pct(count):
+                return (count / total_features * 100) if total_features else 0
+
+            def fmt_frac_value(value):
+                return f"{value:.2f}" if np.isfinite(value) else "N/A"
+
+            print(f"\n  📊 Frac 使用統計：")
+            print(f"     - 高變異策略 (frac=0.8): {high_count} ({frac_pct(high_count):.1f}%)")
+            print(f"     - 中等變異策略 (frac=0.7): {medium_count} ({frac_pct(medium_count):.1f}%)")
+            print(f"     - 低變異動態策略 (frac=0.5~0.75): {low_count} ({frac_pct(low_count):.1f}%)")
+            if other_count:
+                print(f"     - 其他（資料不足）: {other_count} ({frac_pct(other_count):.1f}%)")
+            print(f"     - Frac 平均值: {fmt_frac_value(frac_mean)}")
+            print(f"     - Frac 中位數: {fmt_frac_value(frac_median)}")
         
         # Mann-Kendall 趨勢統計（副表）
         mk_valid = trend_stats_df['MK_Trend_pvalue'].notna().sum()
@@ -1369,14 +1514,15 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         
         print(f"\n💡 提示:")
         print(f"  - 主表 (QC LOWESS result): Levene's test + CV%（單一特徵）")
-        print(f"  - 副表 (Advanced Statistics): Mann-Kendall + R²/RMSE（進階評估）")
+        print(f"  - 副表 ({QC_LOWESS_ADVANCED_SHEET}): Mann-Kendall + R²/RMSE（進階評估）")
+        print(f"  - Frac 參數已依代謝物穩定性與 QC 數量動態調整")
+        print(f"  - 新增 Frac_Used / QC_CV_for_Frac / Frac_Strategy 可於 {QC_LOWESS_ADVANCED_SHEET} 交叉檢視")
         print(f"  - 整體評估: Wilcoxon test 已在終端機顯示")
         print(f"\n{'='*70}\n")
         
         # P 值分佈圖
-        output_base_dir = os.path.dirname(output_file)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-        plot_pvalue_distribution(cv_results_df, output_base_dir, timestamp)
+        plot_pvalue_distribution(cv_results_df, plots_dir, timestamp)
         
         return True
 
@@ -1480,7 +1626,7 @@ def draw_hotelling_t2_ellipse(ax, scores, alpha=0.05, label=None, edgecolor='bla
 
 # ========== PCA 分析 ==========
 def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
-                         output_base_dir=None, grouping='batch'):
+                         plots_dir=None, grouping='batch'):
     """繪製與 Batch_Effect 相同風格的 PCA 比較圖 (ISTD vs QC-LOWESS)。"""
     try:
         # ===== 防呆1: 輸入數據有效性檢查 =====
@@ -1500,21 +1646,20 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
             print(f"❌ 錯誤：樣本欄位為空，無法進行 PCA 分析")
             return
         # ===== 防呆2: 輸出目錄設置和檢查 =====
-        if output_base_dir is None:
+        if plots_dir is None:
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            output_base_dir = os.path.join(script_dir, "output")
-
-        output_dir = os.path.join(output_base_dir, "QC_LOWESS_plots")
+            base_dir = os.path.join(script_dir, "output", "QC_LOWESS_plots")
+            os.makedirs(base_dir, exist_ok=True)
+            plots_dir = os.path.join(base_dir, f"QC_LOWESS_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 
         try:
-            os.makedirs(output_dir, exist_ok=True)
+            os.makedirs(plots_dir, exist_ok=True)
         except Exception as e:
             print(f"❌ 錯誤：無法創建輸出目錄: {e}")
             return
 
-        # 檢查目錄可寫性
-        if not os.access(output_dir, os.W_OK):
-            print(f"❌ 錯誤：沒有寫入權限到目錄: {output_dir}")
+        if not os.access(plots_dir, os.W_OK):
+            print(f"❌ 錯誤：沒有寫入權限到目錄: {plots_dir}")
             return
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
@@ -1541,23 +1686,38 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
         sample_batches = {}
         
         for col in sample_columns_clean:
+            col_upper = str(col).upper()
             if col in sample_meta.index:
                 sample_type = sample_meta.loc[col].get('Sample_Type', 'Unknown')
                 sample_type_upper = str(sample_type).upper()
                 batch_value = str(sample_meta.loc[col].get('Batch', 'Unknown'))
                 sample_batches[col] = batch_value
-                
+
                 if 'QC' in sample_type_upper:
                     qc_columns.append(col)
-                elif 'CONTROL' in sample_type_upper or 'CTL' in sample_type_upper:
+                elif any(keyword in sample_type_upper for keyword in ['CONTROL', 'CTL', 'CON']):
                     control_columns.append(col)
-                elif 'EXPOSED' in sample_type_upper or 'EXP' in sample_type_upper:
+                elif any(keyword in sample_type_upper for keyword in ['EXPOSED', 'EXP', 'TREAT']):
+                    exposed_columns.append(col)
+                else:
+                    if 'QC' in col_upper:
+                        qc_columns.append(col)
+                    elif any(keyword in col_upper for keyword in ['CONTROL', 'CTL', 'CON']):
+                        control_columns.append(col)
+                    elif any(keyword in col_upper for keyword in ['EXPOSED', 'EXP', 'TREAT']):
+                        exposed_columns.append(col)
+                    else:
+                        control_columns.append(col)
+            else:
+                sample_batches[col] = 'Unknown'
+                if 'QC' in col_upper:
+                    qc_columns.append(col)
+                elif any(keyword in col_upper for keyword in ['CONTROL', 'CTL', 'CON']):
+                    control_columns.append(col)
+                elif any(keyword in col_upper for keyword in ['EXPOSED', 'EXP', 'TREAT']):
                     exposed_columns.append(col)
                 else:
                     control_columns.append(col)
-            else:
-                control_columns.append(col)
-                sample_batches[col] = 'Unknown'
         
 
         
@@ -1794,12 +1954,13 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
 
         plt.tight_layout(rect=[0, 0, 1, 0.96])
 
-        pca_plot_path = os.path.join(output_dir, f'2D_PCA_ISTD_vs_LOWESS_{timestamp}.png')
+        grouping_tag = 'batch' if grouping == 'batch' else 'sample_type'
+        pca_plot_path = os.path.join(plots_dir, f'2D_PCA_ISTD_vs_LOWESS_{grouping_tag}_{timestamp}.png')
 
         # ===== 防呆3: 圖表保存檢查 =====
         try:
             plt.savefig(pca_plot_path, dpi=300, bbox_inches='tight')
-            print(f"   ✓ 2D PCA 圖表已保存: {pca_plot_path}")
+            print(f"   ✓ 2D PCA 圖表已保存 ({grouping_tag} 分類): {pca_plot_path}")
 
             # 驗證文件是否成功保存
             if not os.path.exists(pca_plot_path):
@@ -1893,10 +2054,16 @@ def main(input_file=None):
     
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     output_file = os.path.join(output_dir, f'QC_LOWESS_{timestamp}.xlsx')
+    plots_root = os.path.join(output_dir, "QC_LOWESS_plots")
+    os.makedirs(plots_root, exist_ok=True)
+    plots_session_dir = os.path.join(plots_root, f"QC_LOWESS_{timestamp}")
+    os.makedirs(plots_session_dir, exist_ok=True)
     
     success = save_results_to_excel(
-        raw_df, istd_df, lowess_df, sample_info_df, 
-        sample_columns, output_file, file_path, qc_corrected_values, trend_stats_df, decision_stats
+        raw_df, istd_df, lowess_df, sample_info_df,
+        sample_columns, output_file, file_path,
+        qc_corrected_values, trend_stats_df, decision_stats,
+        plots_dir=plots_session_dir
     )
     
     if not success:
@@ -1907,7 +2074,14 @@ def main(input_file=None):
     print(f"📊 執行 PCA 分析...")
     print(f"{'='*70}")
     
-    perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, output_dir)
+    perform_pca_analysis(
+        istd_df, lowess_df, sample_columns, sample_info_df,
+        plots_session_dir, grouping='batch'
+    )
+    perform_pca_analysis(
+        istd_df, lowess_df, sample_columns, sample_info_df,
+        plots_session_dir, grouping='sample_type'
+    )
     
     print(f"\n{'='*70}")
     print(f"✅ 所有分析完成！")
@@ -1916,9 +2090,9 @@ def main(input_file=None):
     print(f"  - Excel 結果: output/{os.path.basename(output_file)}")
     print(f"    ├── ISTD_Correction（保留原格式）")
     print(f"    ├── QC LOWESS result（主表：Levene's test + CV%）")
-    print(f"    ├── Advanced Statistics（副表：Mann-Kendall + R²/RMSE）")
+    print(f"    ├── {QC_LOWESS_ADVANCED_SHEET}（副表：Mann-Kendall + R²/RMSE）")
     print(f"    └── SampleInfo")
-    print(f"\n  - 圖表輸出: output/QC_LOWESS_plots/")
+    print(f"\n  - 圖表輸出: {plots_session_dir}")
     print(f"    ├── 2D_PCA_ISTD_vs_LOWESS_*.png")
     print(f"    └── Pvalue_Distribution_Levene_*.png")
     print(f"\n  💡 統計方法:")
