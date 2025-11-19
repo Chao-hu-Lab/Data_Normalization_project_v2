@@ -357,26 +357,34 @@ class DataNormalizationApp:
             row_frame = tk.Frame(steps_wrapper, bg=self.color_scheme['panel_bg'])
             row_frame.pack(fill=tk.X, pady=6)
 
+            # 左側顏色條
             color_bar = tk.Frame(row_frame, bg=step['color'], width=6)
             color_bar.pack(side=tk.LEFT, fill=tk.Y)
 
+            # Step 標籤區（與左側顏色條連接，形成 L 型）
+            step_label_container = tk.Frame(row_frame, bg=step['color'])
+            step_label_container.pack(side=tk.LEFT, fill=tk.Y)
+            
+            step_label = tk.Label(
+                step_label_container, 
+                text=step['name'].split(':')[0], # Step X
+                font=('Times New Roman', 10, 'bold'),
+                fg='black',
+                bg=step['color'],
+                width=8,
+                anchor='center',
+                padx=5,
+                pady=8
+            )
+            step_label.pack(fill=tk.BOTH, expand=True)
+            
+            # 右側內容區
             inner = tk.Frame(row_frame, bg=self.color_scheme['panel_bg'], padx=10, pady=8)
             inner.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             
             # Left Info Area
             left_info = tk.Frame(inner, bg=self.color_scheme['panel_bg'])
             left_info.pack(side=tk.LEFT, fill=tk.X)
-            
-            # Step Name
-            tk.Label(
-                left_info, 
-                text=step['name'].split(':')[0], # Step X
-                font=('Times New Roman', 10, 'bold'),
-                fg=step['color'],
-                bg=self.color_scheme['panel_bg'],
-                width=8,
-                anchor='w'
-            ).pack(side=tk.LEFT)
             
             tk.Label(
                 left_info,
@@ -400,42 +408,45 @@ class DataNormalizationApp:
             status_label.pack(side=tk.LEFT, padx=5)
             self.step_status_labels.append(status_label)
             
-            # Run Button
+            # Run Button (四周邊框)
             btn = tk.Button(
                 right_control,
                 text="▶",
                 command=lambda s=step: self.execute_step(s),
                 font=('Times New Roman', 12, 'bold'),
                 bg=self.color_scheme['background'],
-                relief='raised',
+                relief='solid',
+                borderwidth=1,
                 width=4,
                 state='disabled' if not step['enabled'] else 'normal'
             )
             btn.pack(side=tk.LEFT, padx=2)
             self.step_buttons.append(btn)
             
-            # Excel Button
+            # Excel Button (四周邊框)
             excel_btn = tk.Button(
                 right_control,
                 text="📑",
                 command=lambda s=step: self.open_step_excel(s),
                 font=('Times New Roman', 12),
                 bg=self.color_scheme['background'],
-                relief='raised',
+                relief='solid',
+                borderwidth=1,
                 width=4,
                 state='disabled'
             )
             excel_btn.pack(side=tk.LEFT, padx=2)
             self.step_excel_buttons.append(excel_btn)
             
-            # Plot Button
+            # Plot Button (四周邊框)
             plot_btn = tk.Button(
                 right_control,
-                text="🖼️",
+                text="     🖼️",
                 command=lambda s=step: self.open_step_plots(s),
                 font=('Times New Roman', 12),
                 bg=self.color_scheme['background'],
-                relief='raised',
+                relief='solid',
+                borderwidth=1,
                 width=4,
                 state='disabled'
             )
