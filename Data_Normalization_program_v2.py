@@ -495,51 +495,9 @@ class DataNormalizationApp:
         self.step_input_labels = []  # 新增：輸入來源標籤
         self.step_cards = []  # 新增：卡片容器
 
-        # 使用 Canvas + Frame 實現可滾動區域（確保高度與右側一致）
-        # 外層容器
-        self.left_frame.grid_rowconfigure(0, weight=1)
-        self.left_frame.grid_columnconfigure(0, weight=1)
-
-        # 創建 Canvas 和 Scrollbar
-        self.steps_canvas = tk.Canvas(
-            self.left_frame,
-            bg=self.color_scheme['background'],
-            highlightthickness=0
-        )
-        self.steps_scrollbar = ttk.Scrollbar(
-            self.left_frame,
-            orient='vertical',
-            command=self.steps_canvas.yview
-        )
-
-        # 卡片容器（放在 Canvas 內）
-        cards_container = tk.Frame(self.steps_canvas, bg=self.color_scheme['background'])
-
-        # 設置 Canvas 的滾動區域
-        self.steps_canvas_window = self.steps_canvas.create_window(
-            (0, 0), window=cards_container, anchor='nw'
-        )
-        self.steps_canvas.configure(yscrollcommand=self.steps_scrollbar.set)
-
-        # 佈局
-        self.steps_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.steps_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # 綁定事件以更新滾動區域
-        def configure_scroll_region(event):
-            self.steps_canvas.configure(scrollregion=self.steps_canvas.bbox('all'))
-
-        def configure_canvas_width(event):
-            self.steps_canvas.itemconfig(self.steps_canvas_window, width=event.width)
-
-        cards_container.bind('<Configure>', configure_scroll_region)
-        self.steps_canvas.bind('<Configure>', configure_canvas_width)
-
-        # 滑鼠滾輪支援
-        def on_mousewheel(event):
-            self.steps_canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
-
-        self.steps_canvas.bind_all('<MouseWheel>', on_mousewheel)
+        # 簡單的卡片容器（不需要滾動）
+        cards_container = tk.Frame(self.left_frame, bg=self.color_scheme['background'])
+        cards_container.pack(fill=tk.BOTH, expand=True)
         
         for i, step in enumerate(self.steps):
             # === 卡片容器 ===
@@ -551,7 +509,7 @@ class DataNormalizationApp:
                 padx=0,
                 pady=0
             )
-            card_frame.pack(fill=tk.X, pady=6, ipady=0)
+            card_frame.pack(fill=tk.X, pady=8, ipady=4)  # 增加卡片間距和內部高度 (1.25x)
             self.step_cards.append(card_frame)
             
             # 卡片內部佈局
@@ -574,7 +532,7 @@ class DataNormalizationApp:
             step_num_label.pack(expand=True)
             
             # === 中間：步驟資訊區 ===
-            info_section = tk.Frame(card_inner, bg=self.color_scheme['panel_bg'], padx=15, pady=12)
+            info_section = tk.Frame(card_inner, bg=self.color_scheme['panel_bg'], padx=15, pady=15)  # pady: 12 -> 15 (1.25x)
             info_section.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             
             # 步驟名稱
@@ -618,7 +576,7 @@ class DataNormalizationApp:
             self.step_input_labels.append(input_source_label)
             
             # === 右側：控制按鈕區 ===
-            control_section = tk.Frame(card_inner, bg=self.color_scheme['panel_bg'], padx=15, pady=12)
+            control_section = tk.Frame(card_inner, bg=self.color_scheme['panel_bg'], padx=15, pady=15)  # pady: 12 -> 15 (1.25x)
             control_section.pack(side=tk.RIGHT, fill=tk.Y)
             
             # 按鈕行
