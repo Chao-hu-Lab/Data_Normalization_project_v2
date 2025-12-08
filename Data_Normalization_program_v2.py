@@ -261,15 +261,23 @@ class DataNormalizationApp:
                              padding=[12, 6])
 
     def create_main_layout(self):
-        """Create main layout"""
+        """Create main layout - 使用 grid 佈局確保進度條不被遮擋"""
+        # 主容器使用 grid 佈局
+        self.master.grid_rowconfigure(0, weight=1)
+        self.master.grid_columnconfigure(0, weight=1)
+
         self.main_frame = ttk.Frame(self.master, style='Main.TFrame')
-        self.main_frame.pack(padx=20, pady=15, fill=tk.BOTH, expand=True)
+        self.main_frame.grid(row=0, column=0, padx=20, pady=15, sticky='nsew')
+
+        # 主框架內部也使用 grid 佈局
+        self.main_frame.grid_rowconfigure(4, weight=1)  # split_frame 行可擴展
+        self.main_frame.grid_columnconfigure(0, weight=1)
 
     def create_title_section(self):
         """Create title section - 頂部標題區"""
-        # 標題容器
+        # 標題容器 - 使用 grid row 0
         title_container = tk.Frame(self.main_frame, bg=self.color_scheme['background'])
-        title_container.pack(fill=tk.X, pady=(0, 10))
+        title_container.grid(row=0, column=0, sticky='ew', pady=(0, 10))
         
         # 主標題
         main_title = tk.Label(
@@ -291,15 +299,15 @@ class DataNormalizationApp:
         )
         subtitle.pack(anchor='w', pady=(2, 0))
         
-        # 分隔線
+        # 分隔線 - 使用 grid row 1
         separator = tk.Frame(self.main_frame, bg=self.color_scheme['divider'], height=1)
-        separator.pack(fill=tk.X, pady=(5, 15))
+        separator.grid(row=1, column=0, sticky='ew', pady=(5, 15))
 
     def create_hero_section(self):
         """Create Hero Section - 檔案選擇區域 (頂部橫幅)"""
-        # Hero 容器 - 主色調背景
+        # Hero 容器 - 主色調背景 - 使用 grid row 2
         hero_container = tk.Frame(self.main_frame, bg=self.color_scheme['hero_bg'])
-        hero_container.pack(fill=tk.X, pady=(0, 15))
+        hero_container.grid(row=2, column=0, sticky='ew', pady=(0, 15))
         
         hero_inner = tk.Frame(hero_container, bg=self.color_scheme['hero_bg'], padx=24, pady=20)
         hero_inner.pack(fill=tk.X)
@@ -365,8 +373,9 @@ class DataNormalizationApp:
 
     def create_header(self):
         """Create header and control buttons"""
+        # 使用 grid row 3
         header_frame = ttk.Frame(self.main_frame, style='Header.TFrame')
-        header_frame.pack(fill=tk.X, pady=(0, 10))
+        header_frame.grid(row=3, column=0, sticky='ew', pady=(0, 10))
         
         # Left: Title & Notice
         title_frame = ttk.Frame(header_frame, style='Header.TFrame')
@@ -441,16 +450,16 @@ class DataNormalizationApp:
         self.reset_btn.pack(side=tk.LEFT, padx=3)
 
     def create_split_layout(self):
-        """創建左右分欄佈局"""
+        """創建左右分欄佈局 - 使用 grid row 4"""
         # 使用 PanedWindow 確保左右等高
         self.split_frame = tk.PanedWindow(
-            self.main_frame, 
+            self.main_frame,
             orient=tk.HORIZONTAL,
             bg=self.color_scheme['background'],
             sashwidth=8,
             sashrelief='flat'
         )
-        self.split_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        self.split_frame.grid(row=4, column=0, sticky='nsew', pady=5)
         
         # 左側框架（步驟區域）- 卡片式設計
         self.left_frame = tk.Frame(self.split_frame, bg=self.color_scheme['background'])
@@ -469,26 +478,68 @@ class DataNormalizationApp:
         """Create steps area - Card Layout with Input Source Display"""
         # Step Definitions
         self.steps = [
-            {'name': 'Step 1: ISTD Correction', 'script': 'ISTD_Correction_v2.py', 'enabled': True, 
+            {'name': 'Step 1: ISTD Correction', 'script': 'ISTD_Correction_v2.py', 'enabled': True,
              'color': self.color_scheme['step1'], 'accent': self.color_scheme['step1_accent']},
-            {'name': 'Step 2: QC Correction', 'script': 'QC_LOWESS_v2.py', 'enabled': False, 
+            {'name': 'Step 2: QC Correction', 'script': 'QC_LOWESS_v2.py', 'enabled': False,
              'color': self.color_scheme['step2'], 'accent': self.color_scheme['step2_accent']},
-            {'name': 'Step 3: Batch Correction', 'script': 'Batch_Effect_v2.py', 'enabled': False, 
+            {'name': 'Step 3: Batch Correction', 'script': 'Batch_Effect_v2.py', 'enabled': False,
              'color': self.color_scheme['step3'], 'accent': self.color_scheme['step3_accent']},
-            {'name': 'Step 4: Conc. Normalization', 'script': 'Concentration_Normalization_v2.py', 'enabled': False, 
+            {'name': 'Step 4: Conc. Normalization', 'script': 'Concentration_Normalization_v2.py', 'enabled': False,
              'color': self.color_scheme['step4'], 'accent': self.color_scheme['step4_accent']}
         ]
-        
+
         self.step_buttons = []
         self.step_status_labels = []
         self.step_excel_buttons = []
         self.step_plot_buttons = []
         self.step_input_labels = []  # 新增：輸入來源標籤
         self.step_cards = []  # 新增：卡片容器
-        
-        # 卡片容器
-        cards_container = tk.Frame(self.left_frame, bg=self.color_scheme['background'])
-        cards_container.pack(fill=tk.BOTH, expand=True)
+
+        # 使用 Canvas + Frame 實現可滾動區域（確保高度與右側一致）
+        # 外層容器
+        self.left_frame.grid_rowconfigure(0, weight=1)
+        self.left_frame.grid_columnconfigure(0, weight=1)
+
+        # 創建 Canvas 和 Scrollbar
+        self.steps_canvas = tk.Canvas(
+            self.left_frame,
+            bg=self.color_scheme['background'],
+            highlightthickness=0
+        )
+        self.steps_scrollbar = ttk.Scrollbar(
+            self.left_frame,
+            orient='vertical',
+            command=self.steps_canvas.yview
+        )
+
+        # 卡片容器（放在 Canvas 內）
+        cards_container = tk.Frame(self.steps_canvas, bg=self.color_scheme['background'])
+
+        # 設置 Canvas 的滾動區域
+        self.steps_canvas_window = self.steps_canvas.create_window(
+            (0, 0), window=cards_container, anchor='nw'
+        )
+        self.steps_canvas.configure(yscrollcommand=self.steps_scrollbar.set)
+
+        # 佈局
+        self.steps_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.steps_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 綁定事件以更新滾動區域
+        def configure_scroll_region(event):
+            self.steps_canvas.configure(scrollregion=self.steps_canvas.bbox('all'))
+
+        def configure_canvas_width(event):
+            self.steps_canvas.itemconfig(self.steps_canvas_window, width=event.width)
+
+        cards_container.bind('<Configure>', configure_scroll_region)
+        self.steps_canvas.bind('<Configure>', configure_canvas_width)
+
+        # 滑鼠滾輪支援
+        def on_mousewheel(event):
+            self.steps_canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+
+        self.steps_canvas.bind_all('<MouseWheel>', on_mousewheel)
         
         for i, step in enumerate(self.steps):
             # === 卡片容器 ===
@@ -769,10 +820,10 @@ class DataNormalizationApp:
         self.stats_completed_label.pack(anchor='w', pady=(4, 0))
 
     def create_progress_area(self):
-        """Create bottom progress area"""
-        # 使用 side=BOTTOM 確保進度條始終在底部且不會被遮擋
+        """Create bottom progress area - 使用 grid row 5 確保不被遮擋"""
+        # 進度條固定在底部 - 使用 grid row 5
         self.progress_frame = tk.Frame(self.main_frame, bg=self.color_scheme['background'])
-        self.progress_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
+        self.progress_frame.grid(row=5, column=0, sticky='sew', pady=(10, 0))
 
         # 進度條容器
         progress_inner = tk.Frame(
