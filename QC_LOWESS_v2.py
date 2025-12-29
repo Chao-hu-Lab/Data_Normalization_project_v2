@@ -79,8 +79,17 @@ def identify_sample_columns(istd_df, sample_info_df):
     return sample_columns, dropped_columns
 
 
-def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensities, debug_flag=None):
-    """對單一批次特徵執行 QC-LOWESS 校正並回傳詳細統計。"""
+def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensities, debug_flag=None, global_qc_median=None):
+    """對單一批次特徵執行 QC-LOWESS 校正並回傳詳細統計。
+
+    Args:
+        qc_orders: QC 樣本的 injection order
+        qc_intensities: QC 樣本的強度值
+        all_orders: 所有樣本的 injection order
+        all_intensities: 所有樣本的強度值
+        debug_flag: 除錯標記
+        global_qc_median: 全域 QC 中位數（跨所有批次計算）
+    """
     info = {
         'status': 'failed',
         'cv_before': np.nan,
@@ -95,7 +104,8 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
         },
         'frac_used': np.nan,
         'qc_cv_for_frac': np.nan,
-        'frac_strategy': 'unknown'
+        'frac_strategy': 'unknown',
+        'global_median_used': global_qc_median is not None
     }
 
     if all_orders is None or all_intensities is None:
@@ -151,11 +161,16 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
 
     lowess_result = sm.nonparametric.lowess(valid_y, valid_x, frac=frac, it=2, return_sorted=True)
     x_fit, y_fit = lowess_result[:, 0], lowess_result[:, 1]
-    median_qc = np.nanmedian(y_fit)
-    if not np.isfinite(median_qc) or median_qc <= 0:
-        median_qc = np.nanmedian(valid_y)
-    if not np.isfinite(median_qc) or median_qc <= 0:
-        median_qc = 1.0
+
+    # 使用全域 QC 中位數（如果有提供），否則使用批次內中位數
+    if global_qc_median is not None and np.isfinite(global_qc_median) and global_qc_median > 0:
+        median_qc = global_qc_median
+    else:
+        median_qc = np.nanmedian(y_fit)
+        if not np.isfinite(median_qc) or median_qc <= 0:
+            median_qc = np.nanmedian(valid_y)
+        if not np.isfinite(median_qc) or median_qc <= 0:
+            median_qc = 1.0
 
     def predict(x_new):
         if not np.isfinite(x_new):
@@ -245,6 +260,19 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
         print(f"              - QC CV% = {qc_cv_val:.2f}%")
         print(f"              - Frac used = {frac_val:.3f}")
         print(f"              - Strategy = {strategy}")
+
+        # 儲存繪圖數據用於趨勢擬合圖
+        info['plot_data'] = {
+            'qc_orders': valid_x.tolist(),
+            'qc_raw': valid_y.tolist(),
+            'qc_corrected': qc_corrected.tolist(),
+            'lowess_x': x_fit.tolist(),
+            'lowess_y': y_fit.tolist(),
+            'all_orders': all_orders_arr.tolist(),
+            'all_raw': all_intensities_arr.tolist(),
+            'all_corrected': corrected,
+            'median_qc': float(median_qc)
+        }
 
     return corrected, info
 
@@ -363,7 +391,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 if matching:
                     print(f"     - {fid} (CV% = {matching[0][1]:.2f}%)")
 
-        def normalize_feature_for_batch(feature_row, batch_name, batch_info, debug_flag):
+        def normalize_feature_for_batch(feature_row, batch_name, batch_info, debug_flag, global_median=None):
             samples = batch_info['samples']
             injection_orders = batch_info['injection_orders']
             valid_samples = [s for s in samples if s in injection_orders]
@@ -394,11 +422,11 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             qc_intensities = [all_intensities[i] for i in qc_indices]
 
             corrected_intensities, info = apply_lowess_correction(
-                qc_orders, qc_intensities, all_orders, all_intensities, debug_flag
+                qc_orders, qc_intensities, all_orders, all_intensities, debug_flag, global_median
             )
 
             corrected_map = dict(zip(all_sample_names, corrected_intensities))
-            return {
+            result = {
                 'status': info.get('status', 'unknown'),
                 'corrected_samples': corrected_map,
                 'trend_validation': info.get('trend_validation', None),
@@ -409,6 +437,10 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                     'frac_strategy': info.get('frac_strategy', 'unknown')
                 }
             }
+            # 如果有繪圖數據（僅限 debug 特徵），則加入
+            if 'plot_data' in info:
+                result['plot_data'] = info['plot_data']
+            return result
 
         def safe_nanmedian(values):
             if not values:
@@ -445,6 +477,28 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         decision_stats['total_batches'] = len(active_batches)
         decision_stats['total_feature_batch_tasks'] = len(active_batches) * len(istd_df)
 
+        # ===== 計算全域 QC 中位數（跨所有批次）=====
+        print("\n🌐 計算全域 QC 中位數（跨所有批次）...")
+        global_qc_medians = {}
+        for idx, row in istd_df.iterrows():
+            feature_id = row['FeatureID']
+            all_qc_values = []
+
+            for qc_sample in qc_samples:
+                if qc_sample in row.index:
+                    intensity = row[qc_sample]
+                    if not pd.isna(intensity) and intensity > 0:
+                        all_qc_values.append(float(intensity))
+
+            if len(all_qc_values) >= 3:
+                global_median = np.nanmedian(all_qc_values)
+                global_qc_medians[feature_id] = global_median
+            else:
+                global_qc_medians[feature_id] = None
+
+        valid_global_medians = sum(1 for v in global_qc_medians.values() if v is not None)
+        print(f"  - 成功計算全域中位數的特徵數: {valid_global_medians}/{len(istd_df)}")
+
         all_results = []
         qc_corrected_values = {}
         trend_stats = []
@@ -453,10 +507,12 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         feature_no_success = 0
         frac_usage_counter = Counter()
         frac_value_list = []
+        trend_plot_data = {}  # 儲存趨勢擬合圖的數據
 
         for idx, row in istd_df.iterrows():
             feature_id = row['FeatureID']
             debug_flag = feature_id if feature_id in debug_features else None
+            global_median = global_qc_medians.get(feature_id)
 
             result_row = {'FeatureID': feature_id}
             for sample in sample_columns:
@@ -470,7 +526,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             frac_strategy_buffer = []
 
             for batch_name, batch_info in active_batches.items():
-                batch_result = normalize_feature_for_batch(row, batch_name, batch_info, debug_flag)
+                batch_result = normalize_feature_for_batch(row, batch_name, batch_info, debug_flag, global_median)
                 status = batch_result['status']
                 batch_statuses.append(status)
 
@@ -493,6 +549,10 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 frac_value_buffer.append(frac_info.get('frac_used'))
                 frac_cv_buffer.append(frac_info.get('qc_cv_for_frac'))
                 frac_strategy_buffer.append(frac_info.get('frac_strategy'))
+
+                # 收集趨勢擬合圖數據（僅限 debug 特徵）
+                if debug_flag and 'plot_data' in batch_result:
+                    trend_plot_data[(feature_id, batch_name)] = batch_result['plot_data']
 
             success_batches = batch_statuses.count('success')
             if success_batches == len(active_batches):
@@ -579,7 +639,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         decision_stats['frac_usage_counter'] = dict(frac_usage_counter)
         decision_stats['frac_value_list'] = frac_value_list
 
-        return lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats
+        return lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats, trend_plot_data
 
     except Exception as e:
         print(f"❌ LOWESS 校正失敗: {e}")
@@ -1111,6 +1171,115 @@ def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
         traceback.print_exc()
 
 
+def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp):
+    """
+    繪製 LOWESS 擬合趨勢圖，用於視覺化檢查過度擬合
+
+    Args:
+        trend_data_dict: 字典，格式為 {(feature_id, batch_name): plot_data}
+        plots_dir: 輸出目錄
+        timestamp: 時間戳記
+    """
+    try:
+        if not trend_data_dict:
+            print("  ⚠️  警告：沒有趨勢擬合數據可繪製")
+            return
+
+        # 確保輸出目錄存在
+        if plots_dir is None:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            base_dir = os.path.join(script_dir, 'output', 'QC_LOWESS_plots')
+            os.makedirs(base_dir, exist_ok=True)
+            plots_dir = os.path.join(base_dir, f"QC_LOWESS_{timestamp}")
+
+        try:
+            os.makedirs(plots_dir, exist_ok=True)
+        except Exception as e:
+            print(f"  ⚠️  警告：無法創建輸出目錄: {e}")
+            return
+
+        if not os.access(plots_dir, os.W_OK):
+            print(f"  ⚠️  警告：沒有寫入權限到目錄: {plots_dir}")
+            return
+
+        print(f"\n📊 繪製 LOWESS 擬合趨勢圖 ({len(trend_data_dict)} 個特徵)...")
+
+        for (feature_id, batch_name), plot_data in trend_data_dict.items():
+            try:
+                qc_orders = np.array(plot_data['qc_orders'])
+                qc_raw = np.array(plot_data['qc_raw'])
+                qc_corrected = np.array(plot_data['qc_corrected'])
+                lowess_x = np.array(plot_data['lowess_x'])
+                lowess_y = np.array(plot_data['lowess_y'])
+                median_qc = plot_data['median_qc']
+
+                # 創建圖表
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+
+                # ===== 上圖：Raw vs LOWESS Curve =====
+                ax1.scatter(qc_orders, qc_raw, c='steelblue', s=100, alpha=0.6,
+                           edgecolors='black', linewidth=1.5, label='QC Raw', zorder=3)
+                ax1.plot(lowess_x, lowess_y, 'r-', linewidth=3, label='LOWESS Fit', zorder=2)
+                ax1.axhline(y=median_qc, color='green', linestyle='--', linewidth=2,
+                           label=f'Target Median = {median_qc:.2f}', zorder=1)
+
+                ax1.set_xlabel('Injection Order', fontsize=12, fontweight='bold')
+                ax1.set_ylabel('Intensity (Raw)', fontsize=12, fontweight='bold')
+                ax1.set_title(f'LOWESS Trend Fitting - {feature_id} ({batch_name})\n[Raw vs Fitted Curve]',
+                             fontsize=14, fontweight='bold')
+                ax1.legend(fontsize=10, loc='best')
+                ax1.grid(True, alpha=0.3, linestyle='--')
+
+                # ===== 下圖：Corrected vs Target Median =====
+                ax2.scatter(qc_orders, qc_raw, c='lightgray', s=100, alpha=0.5,
+                           edgecolors='black', linewidth=1.5, label='QC Raw', zorder=2)
+                ax2.scatter(qc_orders, qc_corrected, c='orange', s=100, alpha=0.7,
+                           edgecolors='black', linewidth=1.5, label='QC Corrected', zorder=3)
+                ax2.axhline(y=median_qc, color='green', linestyle='--', linewidth=2,
+                           label=f'Target Median = {median_qc:.2f}', zorder=1)
+
+                ax2.set_xlabel('Injection Order', fontsize=12, fontweight='bold')
+                ax2.set_ylabel('Intensity', fontsize=12, fontweight='bold')
+                ax2.set_title(f'LOWESS Correction Result\n[Before vs After]',
+                             fontsize=14, fontweight='bold')
+                ax2.legend(fontsize=10, loc='best')
+                ax2.grid(True, alpha=0.3, linestyle='--')
+
+                # 調整佈局
+                plt.tight_layout()
+
+                # 保存圖表
+                safe_feature_id = str(feature_id).replace('/', '_').replace('\\', '_')
+                safe_batch_name = str(batch_name).replace('/', '_').replace('\\', '_')
+                plot_path = os.path.join(plots_dir,
+                                        f'Trend_Fitting_{safe_feature_id}_{safe_batch_name}_{timestamp}.png')
+
+                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+                plt.close()
+
+                # 驗證文件是否成功保存
+                if os.path.exists(plot_path):
+                    plot_size = os.path.getsize(plot_path)
+                    if plot_size > 0:
+                        print(f"  ✓ 已保存: {safe_feature_id} ({batch_name}) - {plot_size / 1024:.2f} KB")
+                    else:
+                        print(f"  ⚠️  警告：{safe_feature_id} 圖表大小為 0 bytes")
+                else:
+                    print(f"  ⚠️  警告：{safe_feature_id} 圖表保存失敗")
+
+            except Exception as e:
+                print(f"  ⚠️  警告：繪製 {feature_id} ({batch_name}) 時發生錯誤: {e}")
+                plt.close()
+                continue
+
+        print(f"✓ LOWESS 擬合趨勢圖繪製完成")
+
+    except Exception as e:
+        print(f"  ⚠️ 繪製 LOWESS 擬合趨勢圖時發生錯誤: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 # ========== 完整複製工作表格式 ==========
 def copy_sheet_with_full_format(source_sheet, target_sheet):
     """完整複製工作表（包含所有格式、合併儲存格、列寬行高）"""
@@ -1146,7 +1315,7 @@ def copy_sheet_with_full_format(source_sheet, target_sheet):
 # ========== ✅ 修正：保存結果到 Excel（移除 Wilcoxon_pvalue）==========
 def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_columns,
                           output_file, input_file, qc_corrected_values,
-                          trend_stats_df, decision_stats, plots_dir=None):
+                          trend_stats_df, decision_stats, plots_dir=None, trend_plot_data=None):
     """保存結果到 Excel（含完整防呆檢查）"""
     try:
         # ===== 防呆1: 輸入數據有效性檢查 =====
@@ -1523,7 +1692,11 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         # P 值分佈圖
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
         plot_pvalue_distribution(cv_results_df, plots_dir, timestamp)
-        
+
+        # LOWESS 擬合趨勢圖（僅限 debug 特徵）
+        if trend_plot_data:
+            plot_lowess_trend_fitting(trend_plot_data, plots_dir, timestamp)
+
         return True
 
     except Exception as e:
@@ -2046,24 +2219,24 @@ def main(input_file=None):
         print("❌ LOWESS 校正失敗,程式結束")
         return
     
-    lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats = result
-    
+    lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats, trend_plot_data = result
+
     print(f"\n{'='*70}")
     print(f"💾 保存結果...")
     print(f"{'='*70}")
-    
+
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     output_file = os.path.join(output_dir, f'QC_LOWESS_{timestamp}.xlsx')
     plots_root = os.path.join(output_dir, "QC_LOWESS_plots")
     os.makedirs(plots_root, exist_ok=True)
     plots_session_dir = os.path.join(plots_root, f"QC_LOWESS_{timestamp}")
     os.makedirs(plots_session_dir, exist_ok=True)
-    
+
     success = save_results_to_excel(
         raw_df, istd_df, lowess_df, sample_info_df,
         sample_columns, output_file, file_path,
         qc_corrected_values, trend_stats_df, decision_stats,
-        plots_dir=plots_session_dir
+        plots_dir=plots_session_dir, trend_plot_data=trend_plot_data
     )
     
     if not success:

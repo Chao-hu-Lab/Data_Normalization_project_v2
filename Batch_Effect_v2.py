@@ -321,6 +321,114 @@ def prepare_data_for_combat(data, sample_info):
 
     return data_matrix, valid_batches, valid_samples, feature_ids
 
+def check_batch_confounding(sample_info):
+    """
+    檢測批次與樣本類型之間的混淆（Confounding）
+
+    使用卡方檢定（Chi-square test）和 Cramer's V 檢測 Batch 與 Sample_Type 的關聯性
+
+    Returns:
+        dict: 包含檢測結果的字典
+            - 'is_confounded': bool, 是否存在高度關聯
+            - 'chi2_statistic': float, 卡方統計量
+            - 'p_value': float, p值
+            - 'cramers_v': float, Cramer's V 係數（0-1）
+            - 'contingency_table': DataFrame, 列聯表
+            - 'warning_message': str, 警告訊息
+    """
+    try:
+        print("\n🔍 執行批次混淆檢測...")
+
+        # 檢查必要欄位
+        if 'Batch' not in sample_info.columns or 'Sample_Type' not in sample_info.columns:
+            print("  ⚠️  警告：缺少 'Batch' 或 'Sample_Type' 欄位，跳過混淆檢測")
+            return {'is_confounded': False, 'warning_message': '缺少必要欄位'}
+
+        # 排除 QC 樣本（只檢查真實樣本的混淆）
+        real_samples = sample_info[~sample_info['Sample_Type'].str.upper().str.contains('QC', na=False)].copy()
+
+        if len(real_samples) < 10:
+            print("  ⚠️  警告：真實樣本數量過少（< 10），跳過混淆檢測")
+            return {'is_confounded': False, 'warning_message': '樣本數量不足'}
+
+        # 建立列聯表（Contingency Table）
+        contingency_table = pd.crosstab(real_samples['Batch'], real_samples['Sample_Type'])
+        print(f"\n  列聯表（Batch vs Sample_Type）:")
+        print(contingency_table)
+
+        # 執行卡方檢定
+        chi2, p_value, dof, expected = stats.chi2_contingency(contingency_table)
+
+        # 計算 Cramer's V（標準化的關聯強度指標，範圍 0-1）
+        n = real_samples.shape[0]
+        min_dim = min(contingency_table.shape[0] - 1, contingency_table.shape[1] - 1)
+        cramers_v = np.sqrt(chi2 / (n * min_dim)) if min_dim > 0 else 0
+
+        print(f"\n  卡方檢定結果:")
+        print(f"    - χ² 統計量: {chi2:.4f}")
+        print(f"    - p-value: {p_value:.4e}")
+        print(f"    - Cramer's V: {cramers_v:.4f}")
+
+        # 判斷標準
+        is_confounded = False
+        warning_message = ""
+
+        # Cramer's V 解釋（Cohen's 標準）：
+        # 0.00-0.10: 微弱關聯
+        # 0.10-0.30: 中等關聯
+        # 0.30-0.50: 強關聯
+        # >0.50: 非常強關聯
+
+        if cramers_v > 0.5:
+            is_confounded = True
+            warning_message = f"⚠️ 嚴重警告：Batch 與 Sample_Type 高度混淆（Cramer's V = {cramers_v:.4f}）"
+        elif cramers_v > 0.3:
+            is_confounded = True
+            warning_message = f"⚠️ 警告：Batch 與 Sample_Type 存在明顯關聯（Cramer's V = {cramers_v:.4f}）"
+        elif cramers_v > 0.1:
+            warning_message = f"⚠️ 提示：Batch 與 Sample_Type 存在弱關聯（Cramer's V = {cramers_v:.4f}）"
+        else:
+            warning_message = f"✓ Batch 與 Sample_Type 無明顯關聯（Cramer's V = {cramers_v:.4f}）"
+
+        print(f"\n  {warning_message}")
+
+        if is_confounded:
+            print(f"\n  {'='*70}")
+            print(f"  ⚠️⚠️⚠️ 批次混淆警告 ⚠️⚠️⚠️")
+            print(f"  {'='*70}")
+            print(f"  檢測到 Batch 與 Sample_Type 高度相關！")
+            print(f"  這意味著批次效應可能與生物效應混淆。")
+            print(f"  ")
+            print(f"  範例：")
+            print(f"    - Batch 1 幾乎全是 Control 樣本")
+            print(f"    - Batch 2 幾乎全是 Treated 樣本")
+            print(f"  ")
+            print(f"  在這種情況下，ComBat 可能會：")
+            print(f"    1. 移除真正的生物訊號（Treatment effect）")
+            print(f"    2. 導致假陰性結果（Type II error）")
+            print(f"  ")
+            print(f"  建議：")
+            print(f"    - ❌ 不要使用 ComBat 批次校正")
+            print(f"    - ✓ 改用 QC-LOWESS 的全域校正結果")
+            print(f"    - ✓ 或在統計分析中將 Batch 作為協變量（covariate）")
+            print(f"  {'='*70}\n")
+
+        return {
+            'is_confounded': is_confounded,
+            'chi2_statistic': float(chi2),
+            'p_value': float(p_value),
+            'cramers_v': float(cramers_v),
+            'contingency_table': contingency_table,
+            'warning_message': warning_message
+        }
+
+    except Exception as e:
+        print(f"  ⚠️  警告：批次混淆檢測失敗: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'is_confounded': False, 'warning_message': f'檢測失敗: {e}'}
+
+
 def perform_combat_correction(data_matrix, batch_info):
     """
     執行Combat批次效應校正
@@ -2473,6 +2581,24 @@ def main(input_file=None):
         print("\n" + "="*70)
         print("⚙️ 執行 Combat 批次效應校正")
         print("="*70)
+
+        # 🆕 檢測批次混淆
+        confounding_result = check_batch_confounding(sample_info)
+
+        # 如果檢測到高度混淆，詢問使用者是否繼續
+        if confounding_result.get('is_confounded', False):
+            print("\n⚠️⚠️⚠️ 警告：檢測到批次與樣本類型高度混淆！⚠️⚠️⚠️\n")
+            print("是否仍要繼續執行 ComBat 校正？")
+            print("  [Y] 是，繼續執行 ComBat（可能移除生物訊號）")
+            print("  [N] 否，中止 ComBat（建議使用 QC-LOWESS 結果）")
+
+            user_choice = input("\n請輸入選擇 (Y/N): ").strip().upper()
+
+            if user_choice != 'Y':
+                print("\n❌ 使用者選擇中止 ComBat 校正")
+                print("建議：請使用 QC-LOWESS 的校正結果進行後續分析")
+                return
+
         corrected_data = perform_combat_correction(data_matrix, batch_info)
         print("✓ 批次效應校正完成")
         

@@ -1063,6 +1063,150 @@ Levene's test:
 
     print(f"  ✓ 盒鬚圖已儲存 (Fig 1 - Integrated)")
 
+
+def plot_rle(original_data, normalized_data, sample_names, output_path, method_name):
+    """
+    繪製 RLE (Relative Log Expression) Plot
+
+    RLE 是組學數據正規化品質評估的黃金標準
+    顯示每個樣本相對於中位數的偏差分佈
+
+    Args:
+        original_data: 原始數據矩陣 (features × samples)
+        normalized_data: 正規化後數據矩陣 (features × samples)
+        sample_names: 樣本名稱列表
+        output_path: 輸出路徑
+        method_name: 正規化方法名稱
+    """
+    print(f"\n  繪製 RLE Plot...")
+
+    # 計算 RLE
+    def calculate_rle(data):
+        """
+        計算 Relative Log Expression
+
+        對每個 feature，計算 log2(sample_intensity / median_intensity)
+        """
+        # 移除全為 0 或 NaN 的 features
+        valid_features = ~np.all((data == 0) | np.isnan(data), axis=1)
+        data_valid = data[valid_features, :]
+
+        if data_valid.shape[0] == 0:
+            print("    ⚠️  警告：沒有有效的 features，無法計算 RLE")
+            return None
+
+        # 對數據進行 log2 轉換（加 1 避免 log(0)）
+        data_log = np.log2(data_valid + 1)
+
+        # 計算每個 feature 的中位數（跨所有樣本）
+        median_per_feature = np.median(data_log, axis=1, keepdims=True)
+
+        # 計算 RLE：log2(sample) - log2(median)
+        rle = data_log - median_per_feature
+
+        return rle
+
+    original_rle = calculate_rle(original_data)
+    normalized_rle = calculate_rle(normalized_data)
+
+    if original_rle is None or normalized_rle is None:
+        print("    ⚠️  警告：RLE 計算失敗，跳過繪圖")
+        return
+
+    # 創建圖表
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(max(20, len(sample_names) * 0.6), 16))
+
+    # ===== 上圖：Original RLE =====
+    bp1 = ax1.boxplot([original_rle[:, i] for i in range(original_rle.shape[1])],
+                       labels=sample_names, patch_artist=True,
+                       widths=0.6, showfliers=False)
+
+    # 設定箱型圖顏色
+    for patch in bp1['boxes']:
+        patch.set_facecolor('lightcoral')
+        patch.set_alpha(0.7)
+        patch.set_edgecolor('darkred')
+        patch.set_linewidth(1.5)
+
+    for whisker in bp1['whiskers']:
+        whisker.set(color='darkred', linewidth=1.5, linestyle='-')
+
+    for cap in bp1['caps']:
+        cap.set(color='darkred', linewidth=1.5)
+
+    for median in bp1['medians']:
+        median.set(color='red', linewidth=2.5)
+
+    # 添加基準線（理想狀態應該在 0）
+    ax1.axhline(y=0, color='green', linestyle='--', linewidth=2, label='理想基準 (RLE = 0)', zorder=1)
+
+    ax1.set_xlabel('Sample', fontsize=14, fontweight='bold')
+    ax1.set_ylabel('RLE (Log2 Ratio)', fontsize=14, fontweight='bold')
+    ax1.set_title(f'RLE Plot - Original Data\n(Before {method_name} Normalization)',
+                  fontsize=16, fontweight='bold', pad=20)
+    ax1.tick_params(axis='x', rotation=90, labelsize=10)
+    ax1.tick_params(axis='y', labelsize=12)
+    ax1.legend(fontsize=12, loc='upper right')
+    ax1.grid(True, alpha=0.3, linestyle='--', axis='y')
+
+    # 計算 RLE 中位數絕對偏差 (MAD) - 品質指標
+    original_mad = np.median([np.median(np.abs(original_rle[:, i])) for i in range(original_rle.shape[1])])
+    ax1.text(0.02, 0.98, f'Median Absolute Deviation: {original_mad:.4f}',
+             transform=ax1.transAxes, fontsize=12, verticalalignment='top',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    # ===== 下圖：Normalized RLE =====
+    bp2 = ax2.boxplot([normalized_rle[:, i] for i in range(normalized_rle.shape[1])],
+                       labels=sample_names, patch_artist=True,
+                       widths=0.6, showfliers=False)
+
+    # 設定箱型圖顏色
+    for patch in bp2['boxes']:
+        patch.set_facecolor('lightblue')
+        patch.set_alpha(0.7)
+        patch.set_edgecolor('darkblue')
+        patch.set_linewidth(1.5)
+
+    for whisker in bp2['whiskers']:
+        whisker.set(color='darkblue', linewidth=1.5, linestyle='-')
+
+    for cap in bp2['caps']:
+        cap.set(color='darkblue', linewidth=1.5)
+
+    for median in bp2['medians']:
+        median.set(color='blue', linewidth=2.5)
+
+    # 添加基準線
+    ax2.axhline(y=0, color='green', linestyle='--', linewidth=2, label='理想基準 (RLE = 0)', zorder=1)
+
+    ax2.set_xlabel('Sample', fontsize=14, fontweight='bold')
+    ax2.set_ylabel('RLE (Log2 Ratio)', fontsize=14, fontweight='bold')
+    ax2.set_title(f'RLE Plot - Normalized Data\n(After {method_name} Normalization)',
+                  fontsize=16, fontweight='bold', pad=20)
+    ax2.tick_params(axis='x', rotation=90, labelsize=10)
+    ax2.tick_params(axis='y', labelsize=12)
+    ax2.legend(fontsize=12, loc='upper right')
+    ax2.grid(True, alpha=0.3, linestyle='--', axis='y')
+
+    # 計算 Normalized RLE 的 MAD
+    normalized_mad = np.median([np.median(np.abs(normalized_rle[:, i])) for i in range(normalized_rle.shape[1])])
+    improvement = ((original_mad - normalized_mad) / original_mad * 100) if original_mad > 0 else 0
+
+    ax2.text(0.02, 0.98, f'Median Absolute Deviation: {normalized_mad:.4f}\n'
+                          f'Improvement: {improvement:.1f}%',
+             transform=ax2.transAxes, fontsize=12, verticalalignment='top',
+             bbox=dict(boxstyle='round', facecolor='lightgreen' if improvement > 0 else 'wheat', alpha=0.8))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print(f"    ✓ RLE Plot 已儲存")
+    print(f"    - Original MAD: {original_mad:.4f}")
+    print(f"    - Normalized MAD: {normalized_mad:.4f}")
+    print(f"    - Improvement: {improvement:.1f}%")
+
+
 def plot_cv_comparison(original_cv, normalized_cv, output_path, method_name):
     """
     繪製CV%分佈對比圖 (Fig 2 - Improved)
@@ -2217,10 +2361,11 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     figure_paths = {
         "boxplot": figures_dir / f"Fig1_Boxplot_{method_slug}_{run_timestamp}.png",
         "cv": figures_dir / f"Fig2_CV_{method_slug}_{run_timestamp}.png",
-        "pca": figures_dir / f"Fig3_PCA_{method_slug}_{run_timestamp}.png",
-        "qc_variability": figures_dir / f"Fig4_QC_Variability_{method_slug}_{run_timestamp}.png",
-        "qc_reproducibility": figures_dir / f"Fig5_QC_Reproducibility_{method_slug}_{run_timestamp}.png",
-        "correlation": figures_dir / f"Fig6_Correlation_{method_slug}_{run_timestamp}.png"
+        "rle": figures_dir / f"Fig3_RLE_{method_slug}_{run_timestamp}.png",
+        "pca": figures_dir / f"Fig4_PCA_{method_slug}_{run_timestamp}.png",
+        "qc_variability": figures_dir / f"Fig5_QC_Variability_{method_slug}_{run_timestamp}.png",
+        "qc_reproducibility": figures_dir / f"Fig6_QC_Reproducibility_{method_slug}_{run_timestamp}.png",
+        "correlation": figures_dir / f"Fig7_Correlation_{method_slug}_{run_timestamp}.png"
     }
     # 分離有效樣本用於評估
     valid_sample_mask = ~np.isnan(normalized_data[0, :])
@@ -2262,7 +2407,17 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
         figure_paths["cv"],
         method_name
     )
-    
+
+    # 3b. RLE Plot（組學正規化品質評估黃金標準）
+    try:
+        plot_rle(
+            original_data_valid, normalized_data_valid, sample_columns_valid,
+            figure_paths["rle"],
+            method_name
+        )
+    except Exception as e:
+        print(f"  ⚠ RLE Plot 生成失敗: {e}")
+
     # 4. PCA對比圖（改進版：加入信賴橢圓）
     try:
         plot_pca_with_confidence_ellipse(
