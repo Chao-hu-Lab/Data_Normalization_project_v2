@@ -909,29 +909,17 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     
     # 生成視覺化圖表
     print("\n生成視覺化圖表...")
-    
-    # 1. 密度圖
-    plot_density_comparison(
-        original_data_valid, normalized_data_valid, sample_columns_valid,
-        output_dir / f"Density_Plot_{method_name}.png",
-        method_name
-    )
-    
-    # 2. 盒鬚圖
+
+    # ===== 核心圖表 (必須) =====
+
+    # 1. 盒鬚圖
     plot_boxplot_comparison(
         original_data_valid, normalized_data_valid, sample_columns_valid,
         output_dir / f"Boxplot_{method_name}.png",
         method_name
     )
-    
-    # 3. 樣本分佈圖
-    plot_sample_distribution(
-        original_data_valid, normalized_data_valid, sample_columns_valid,
-        output_dir / f"Sample_Distribution_{method_name}.png",
-        method_name
-    )
-    
-    # 4. CV%分佈圖
+
+    # 2. CV%分佈圖
     original_cv = calculate_cv_per_feature(original_data_valid)
     normalized_cv = calculate_cv_per_feature(normalized_data_valid)
     plot_cv_comparison(
@@ -939,8 +927,8 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
         output_dir / f"CV_Distribution_{method_name}.png",
         method_name
     )
-    
-    # 5. PCA對比圖
+
+    # 3. PCA對比圖
     try:
         plot_pca_comparison(
             original_data_valid, normalized_data_valid, sample_columns_valid, sample_info_df,
@@ -949,16 +937,32 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
         )
     except Exception as e:
         print(f"  ⚠ PCA對比圖生成失敗: {e}")
-    
-    # 6. 相關性熱圖
-    try:
-        plot_correlation_heatmap(
-            original_data_valid, normalized_data_valid, sample_columns_valid,
-            output_dir / f"Correlation_Heatmap_{method_name}.png",
-            method_name
-        )
-    except Exception as e:
-        print(f"  ⚠ 相關性熱圖生成失敗: {e}")
+
+    # ===== 可選圖表 (已註解，可在需要時啟用) =====
+
+    # # 密度圖
+    # plot_density_comparison(
+    #     original_data_valid, normalized_data_valid, sample_columns_valid,
+    #     output_dir / f"Density_Plot_{method_name}.png",
+    #     method_name
+    # )
+
+    # # 樣本分佈圖
+    # plot_sample_distribution(
+    #     original_data_valid, normalized_data_valid, sample_columns_valid,
+    #     output_dir / f"Sample_Distribution_{method_name}.png",
+    #     method_name
+    # )
+
+    # # 相關性熱圖
+    # try:
+    #     plot_correlation_heatmap(
+    #         original_data_valid, normalized_data_valid, sample_columns_valid,
+    #         output_dir / f"Correlation_Heatmap_{method_name}.png",
+    #         method_name
+    #     )
+    # except Exception as e:
+    #     print(f"  ⚠ 相關性熱圖生成失敗: {e}")
     
     # 創建結果DataFrame（只包含樣本數據和CV%）
     normalized_df = pd.DataFrame()
@@ -1174,13 +1178,11 @@ def main(input_file=None):
     print(f"\n📁 輸出資料夾: {output_dir.name}")
     print(f"📄 Excel檔案: {Path(output_path).name}")
     
-    print("\n📊 生成的視覺化圖表:")
-    print(f"  1. Density_Plot_{method_name}.png - 密度分佈圖")
-    print(f"  2. Boxplot_{method_name}.png - 盒鬚圖")
-    print(f"  3. Sample_Distribution_{method_name}.png - 樣本總強度分佈")
-    print(f"  4. CV_Distribution_{method_name}.png - CV%分佈圖")
-    print(f"  5. PCA_Comparison_{method_name}.png - PCA對比圖")
-    print(f"  6. Correlation_Heatmap_{method_name}.png - 樣本相關性熱圖")
+    print("\n📊 生成的視覺化圖表 (核心):")
+    print(f"  1. Boxplot_{method_name}.png - 盒鬚圖對比")
+    print(f"  2. CV_Distribution_{method_name}.png - CV%分佈對比圖")
+    print(f"  3. PCA_Comparison_{method_name}.png - PCA對比圖")
+    print("\n  註：密度圖、樣本分佈圖、相關性熱圖已設為可選（需要時可在程式碼中啟用）")
     
     print("\n" + "=" * 80)
     print("📈 標準化質量評估摘要:")

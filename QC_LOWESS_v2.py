@@ -5,7 +5,7 @@ from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 import statsmodels.api as sm
-from scipy.stats import ttest_rel, levene, shapiro, kendalltau
+from scipy.stats import ttest_rel, shapiro, kendalltau, f as f_dist
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from scipy.stats import chi2
@@ -445,9 +445,19 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         return None, None, None, None
 
 
-# ========== ✅ 修正：統計檢定（配對 t 檢定 + Levene's test）==========
+# ========== ✅ 修正：統計檢定（配對 t 檢定 + F-test）==========
 def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sample_info_df, qc_corrected_values):
-    """計算 QC CV% 並進行正確的統計檢定"""
+    """
+    計算 QC CV% 並進行正確的統計檢定
+
+    統計方法：
+    1. 配對 t 檢定（檢驗均值偏移）
+    2. F-test（檢驗方差比值，適用於配對數據）
+    3. Shapiro-Wilk test（檢驗正態性）
+
+    註：已修正原先誤用 Levene's test（用於獨立樣本）的問題，
+        改用 F-test 進行配對數據的方差比較。
+    """
     istd_df = istd_df.reset_index(drop=True)
     lowess_df = lowess_df.reset_index(drop=True)
     
@@ -505,7 +515,7 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
                     'Corrected_QC_CV%': np.nan,
                     'CV_Improvement%': np.nan,
                     'Mean_Shift_pvalue': np.nan,
-                    'Variance_Test_pvalue': np.nan,
+                    'F_test_pvalue': np.nan,
                     'Normality_pvalue': np.nan,
                     'Significant_Improvement': 'N/A'
                 })
@@ -522,19 +532,40 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
                 t_stat, mean_shift_pvalue = ttest_rel(qc_values_istd, qc_values_lowess)
             except Exception:
                 mean_shift_pvalue = np.nan
-            
+
+            # F-test（檢驗方差比值）- 修正：原先誤用 Levene's test
             try:
-                levene_stat, variance_test_pvalue = levene(qc_values_istd, qc_values_lowess)
+                var_istd = np.var(qc_values_istd, ddof=1)
+                var_lowess = np.var(qc_values_lowess, ddof=1)
+
+                if var_lowess > 0 and var_istd > 0:
+                    # F統計量 = 較大方差 / 較小方差
+                    if var_istd >= var_lowess:
+                        f_stat = var_istd / var_lowess
+                        df1 = len(qc_values_istd) - 1
+                        df2 = len(qc_values_lowess) - 1
+                    else:
+                        f_stat = var_lowess / var_istd
+                        df1 = len(qc_values_lowess) - 1
+                        df2 = len(qc_values_istd) - 1
+
+                    # 計算雙尾 p 值
+                    f_test_pvalue = 2 * min(
+                        f_dist.cdf(f_stat, df1, df2),
+                        1 - f_dist.cdf(f_stat, df1, df2)
+                    )
+                else:
+                    f_test_pvalue = np.nan
             except Exception:
-                variance_test_pvalue = np.nan
-            
+                f_test_pvalue = np.nan
+
             try:
                 shapiro_stat, normality_pvalue = shapiro(qc_values_istd)
             except Exception:
                 normality_pvalue = np.nan
-            
-            if not np.isnan(variance_test_pvalue) and cv_improvement > 5:
-                if variance_test_pvalue < 0.05:
+
+            if not np.isnan(f_test_pvalue) and cv_improvement > 5:
+                if f_test_pvalue < 0.05:
                     significant = 'Yes'
                 else:
                     significant = 'Marginal'
@@ -542,14 +573,14 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
                 significant = 'Yes (CV% only)'
             else:
                 significant = 'No'
-            
+
             cv_results.append({
                 'FeatureID': feature_id,
                 'Original_QC_CV%': original_cv,
                 'Corrected_QC_CV%': corrected_cv,
                 'CV_Improvement%': cv_improvement,
                 'Mean_Shift_pvalue': mean_shift_pvalue,
-                'Variance_Test_pvalue': variance_test_pvalue,
+                'F_test_pvalue': f_test_pvalue,
                 'Normality_pvalue': normality_pvalue,
                 'Significant_Improvement': significant
             })
@@ -570,7 +601,7 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
 def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
     """繪製 p 值分佈圖"""
     try:
-        variance_pvalues = cv_results_df['Variance_Test_pvalue'].dropna()
+        variance_pvalues = cv_results_df['F_test_pvalue'].dropna()
         
         if len(variance_pvalues) < 10:
             print("  ⚠️ 有效 p 值數量不足，跳過 p 值分佈圖")
@@ -581,9 +612,9 @@ def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
         ax1.hist(variance_pvalues, bins=20, color='steelblue', edgecolor='black', alpha=0.7)
         ax1.axhline(y=len(variance_pvalues)/20, color='red', linestyle='--', linewidth=2,
                    label='Uniform Distribution Expected')
-        ax1.set_xlabel('P-value (Levene\'s Test)', fontsize=12, fontweight='bold')
+        ax1.set_xlabel('P-value (F-test)', fontsize=12, fontweight='bold')
         ax1.set_ylabel('Frequency', fontsize=12, fontweight='bold')
-        ax1.set_title('P-value Distribution\n(Variance Homogeneity Test)', 
+        ax1.set_title('P-value Distribution\n(F-test for Variance Ratio)',
                      fontsize=14, fontweight='bold')
         ax1.legend(fontsize=10)
         ax1.grid(True, alpha=0.3, linestyle='--')
@@ -683,7 +714,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             'Corrected_QC_CV%', 
             'CV_Improvement%',
             'Mean_Shift_pvalue', 
-            'Variance_Test_pvalue', 
+            'F_test_pvalue', 
             'Normality_pvalue',
             'Significant_Improvement',
             'MK_Trend_pvalue',
@@ -816,7 +847,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
                         for cell in row:
                             cell.fill = orange_fill
             
-            for col_name in ['Mean_Shift_pvalue', 'Variance_Test_pvalue']:
+            for col_name in ['Mean_Shift_pvalue', 'F_test_pvalue']:
                 if col_name in header:
                     col_idx = header.index(col_name) + 1
                     for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
@@ -880,11 +911,11 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             print(f"  - 均值顯著改變 (p < 0.05): {mean_shift_sig}/{mean_shift_valid} ({mean_shift_sig/mean_shift_valid*100:.1f}%)")
             print(f"  - 均值無顯著改變: {mean_shift_valid - mean_shift_sig}/{mean_shift_valid} ({(mean_shift_valid-mean_shift_sig)/mean_shift_valid*100:.1f}%)")
         
-        variance_valid = cv_results_df['Variance_Test_pvalue'].notna().sum()
-        variance_sig = ((cv_results_df['Variance_Test_pvalue'] < 0.05) & 
-                        (cv_results_df['Variance_Test_pvalue'].notna())).sum()
+        variance_valid = cv_results_df['F_test_pvalue'].notna().sum()
+        variance_sig = ((cv_results_df['F_test_pvalue'] < 0.05) &
+                        (cv_results_df['F_test_pvalue'].notna())).sum()
         
-        print(f"\n🔬 Levene's Test（方差齊性）:")
+        print(f"\n🔬 F-test（方差比值檢定）:")
         print(f"  - 成功執行: {variance_valid}/{total_count} ({variance_valid/total_count*100:.1f}%)")
         if variance_valid > 0:
             print(f"  - 方差顯著改變 (p < 0.05): {variance_sig}/{variance_valid} ({variance_sig/variance_valid*100:.1f}%)")
@@ -949,6 +980,207 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         import traceback
         traceback.print_exc()
         return False
+
+
+# ========== 🔴 新增：QC樣本LOWESS擬合趨勢圖 ==========
+def plot_qc_lowess_fitting_curves(istd_df, lowess_df, sample_info_df, sample_columns, output_dir=None):
+    """
+    繪製QC樣本的LOWESS擬合趨勢圖
+    - 選擇3個代表性特徵（低/中/高CV%）
+    - 展示校正前後的QC強度隨注射順序的變化
+    - 展示LOWESS擬合曲線
+    """
+    try:
+        if output_dir is None:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            output_dir = os.path.join(script_dir, "QC_LOWESS_plots")
+        os.makedirs(output_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+
+        print(f"\n{'='*70}")
+        print(f"📊 繪製QC樣本LOWESS擬合趨勢圖")
+        print(f"{'='*70}")
+
+        # 識別QC樣本
+        if 'Sample_Type' in sample_info_df.columns:
+            qc_samples = sample_info_df[
+                sample_info_df['Sample_Type'].str.upper().str.contains('QC', na=False)
+            ]['Sample_Name'].tolist()
+        else:
+            qc_samples = [col for col in sample_columns if 'QC' in col.upper()]
+
+        qc_samples = [s for s in qc_samples if s in sample_columns]
+
+        if len(qc_samples) < 5:
+            print(f"  ⚠️ QC樣本數不足 ({len(qc_samples)} < 5)，無法繪製擬合圖")
+            return
+
+        print(f"  - QC樣本數: {len(qc_samples)}")
+
+        # 獲取注射順序
+        sample_meta = sample_info_df.set_index('Sample_Name')
+        qc_injection_orders = []
+        for qc in qc_samples:
+            if qc in sample_meta.index:
+                qc_injection_orders.append(sample_meta.loc[qc, 'Injection_Order'])
+
+        # 計算每個特徵的QC CV%
+        feature_cvs = []
+        for idx, row in istd_df.iterrows():
+            feature_id = row['FeatureID']
+            qc_values = []
+            for qc_sample in qc_samples:
+                if qc_sample in row.index:
+                    intensity = row[qc_sample]
+                    if not pd.isna(intensity) and intensity > 0:
+                        qc_values.append(intensity)
+
+            if len(qc_values) >= 3:
+                cv = np.std(qc_values, ddof=1) / np.mean(qc_values) * 100
+                feature_cvs.append((feature_id, cv, idx))
+
+        if len(feature_cvs) < 3:
+            print(f"  ⚠️ 有效特徵數不足，無法繪製")
+            return
+
+        # 選擇3個代表性特徵（低/中/高CV%）
+        feature_cvs_sorted = sorted(feature_cvs, key=lambda x: x[1])
+        low_cv_feature = feature_cvs_sorted[0]
+        mid_cv_feature = feature_cvs_sorted[len(feature_cvs_sorted) // 2]
+        high_cv_feature = feature_cvs_sorted[-1]
+
+        selected_features = [low_cv_feature, mid_cv_feature, high_cv_feature]
+
+        print(f"\n  選擇的代表性特徵:")
+        print(f"    1. 低 CV%: {low_cv_feature[0]} (CV% = {low_cv_feature[1]:.2f}%)")
+        print(f"    2. 中 CV%: {mid_cv_feature[0]} (CV% = {mid_cv_feature[1]:.2f}%)")
+        print(f"    3. 高 CV%: {high_cv_feature[0]} (CV% = {high_cv_feature[1]:.2f}%)")
+
+        # 創建圖表
+        fig, axes = plt.subplots(3, 1, figsize=(14, 12))
+
+        for plot_idx, (feature_id, original_cv, row_idx) in enumerate(selected_features):
+            ax = axes[plot_idx]
+
+            # 獲取原始數據
+            istd_row = istd_df.iloc[row_idx]
+            lowess_row = lowess_df.iloc[row_idx]
+
+            qc_data_original = []
+            qc_data_lowess = []
+            qc_orders = []
+
+            for qc, order in zip(qc_samples, qc_injection_orders):
+                if qc in istd_row.index and qc in lowess_row.index:
+                    orig_val = istd_row[qc]
+                    lowess_val = lowess_row[qc]
+                    if not pd.isna(orig_val) and orig_val > 0 and not pd.isna(lowess_val):
+                        qc_data_original.append(orig_val)
+                        qc_data_lowess.append(lowess_val)
+                        qc_orders.append(order)
+
+            if len(qc_data_original) < 5:
+                ax.text(0.5, 0.5, 'Insufficient QC data',
+                       ha='center', va='center', fontsize=14)
+                continue
+
+            qc_orders = np.array(qc_orders)
+            qc_data_original = np.array(qc_data_original)
+            qc_data_lowess = np.array(qc_data_lowess)
+
+            # 執行LOWESS擬合（用於繪圖）
+            n_qc = len(qc_orders)
+            if n_qc < 8:
+                frac = 1.0
+            elif n_qc < 12:
+                frac = 0.8
+            elif n_qc < 20:
+                frac = 0.6
+            else:
+                frac = 0.4
+
+            try:
+                lowess_result = sm.nonparametric.lowess(
+                    qc_data_original,
+                    qc_orders,
+                    frac=frac,
+                    it=3,
+                    delta=0.0,
+                    return_sorted=True
+                )
+
+                # 計算統計指標
+                from scipy.stats import kendalltau
+                tau, mk_pvalue = kendalltau(qc_orders, qc_data_original)
+
+                fitted_values = np.interp(qc_orders, lowess_result[:, 0], lowess_result[:, 1])
+                ss_res = np.sum((qc_data_original - fitted_values) ** 2)
+                ss_tot = np.sum((qc_data_original - np.mean(qc_data_original)) ** 2)
+                r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+                r_squared = max(0, r_squared)
+
+                # 繪圖
+                # 1. 原始QC數據（藍色散點）
+                ax.scatter(qc_orders, qc_data_original,
+                          color='steelblue', s=100, alpha=0.6,
+                          edgecolors='black', linewidth=1.5,
+                          label='Original QC', zorder=3)
+
+                # 2. LOWESS擬合曲線（紅色實線）
+                ax.plot(lowess_result[:, 0], lowess_result[:, 1],
+                       color='red', linewidth=3,
+                       label=f'LOWESS Fit (frac={frac})', zorder=2)
+
+                # 3. 校正後QC數據（綠色散點）
+                ax.scatter(qc_orders, qc_data_lowess,
+                          color='green', s=100, alpha=0.6,
+                          marker='s', edgecolors='black', linewidth=1.5,
+                          label='Corrected QC', zorder=3)
+
+                # 設置標題和標籤
+                title_text = f'{feature_id}\nOriginal CV% = {original_cv:.2f}%'
+                ax.set_title(title_text, fontsize=13, fontweight='bold', pad=10)
+                ax.set_xlabel('Injection Order', fontsize=11, fontweight='bold')
+                ax.set_ylabel('Intensity', fontsize=11, fontweight='bold')
+                ax.legend(loc='best', fontsize=9)
+                ax.grid(True, alpha=0.3, linestyle='--')
+
+                # 添加統計信息文本框
+                stats_text = f"Kendall's τ = {tau:.4f}\np-value = {mk_pvalue:.4e}\nR² = {r_squared:.4f}"
+                ax.text(0.02, 0.98, stats_text,
+                       transform=ax.transAxes,
+                       fontsize=9, verticalalignment='top',
+                       bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+
+                # 計算CV%改善
+                cv_corrected = np.std(qc_data_lowess, ddof=1) / np.mean(qc_data_lowess) * 100
+                cv_improvement = original_cv - cv_corrected
+
+                improvement_text = f"CV% Improvement:\n{original_cv:.2f}% → {cv_corrected:.2f}%\n(Δ = {cv_improvement:.2f}%)"
+                ax.text(0.98, 0.98, improvement_text,
+                       transform=ax.transAxes,
+                       fontsize=9, verticalalignment='top', horizontalalignment='right',
+                       bbox=dict(boxstyle='round', facecolor='lightgreen' if cv_improvement > 0 else 'lightcoral', alpha=0.7))
+
+            except Exception as e:
+                ax.text(0.5, 0.5, f'LOWESS fitting failed:\n{str(e)}',
+                       ha='center', va='center', fontsize=10)
+
+        plt.tight_layout()
+
+        # 保存圖表
+        output_path = os.path.join(output_dir, f'QC_LOWESS_Fitting_Curves_{timestamp}.png')
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"\n  ✓ QC擬合趨勢圖已儲存: {output_path}")
+        print(f"{'='*70}\n")
+
+    except Exception as e:
+        print(f"  ❌ 繪製QC擬合趨勢圖時發生錯誤: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 # ========== Hotelling T² 異常值檢測 ==========
@@ -1075,7 +1307,7 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df, out
             'FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference', 
             'ISTD_Median', 'QC_CV%',
             'Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%',
-            'Mean_Shift_pvalue', 'Variance_Test_pvalue', 'Normality_pvalue',
+            'Mean_Shift_pvalue', 'F_test_pvalue', 'Normality_pvalue',
             'Significant_Improvement', 'MK_Trend_pvalue', 'Kendall_Tau',
             'LOWESS_R2', 'LOWESS_RMSE'
         ]
@@ -1516,9 +1748,13 @@ def main():
         return
     
     print(f"\n{'='*70}")
-    print(f"📊 執行 PCA 分析...")
+    print(f"📊 執行視覺化分析...")
     print(f"{'='*70}")
-    
+
+    # 1. 繪製QC擬合趨勢圖
+    plot_qc_lowess_fitting_curves(istd_df, lowess_df, sample_info_df, sample_columns)
+
+    # 2. 執行PCA分析
     perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df)
     
     print(f"\n{'='*70}")
@@ -1530,12 +1766,18 @@ def main():
     print(f"    ├── QC LOWESS result (含趨勢驗證指標)")
     print(f"    └── SampleInfo")
     print(f"\n  - 圖表輸出:")
-    print(f"    ├── 2D_PCA_ISTD_vs_LOWESS_*.png (舊版風格)")
+    print(f"    ├── QC_LOWESS_Fitting_Curves_*.png (🔴 新增核心圖表)")
+    print(f"    │   ├── 選擇3個代表性特徵（低/中/高CV%）")
+    print(f"    │   ├── 原始QC強度 vs 注射順序")
+    print(f"    │   ├── LOWESS擬合曲線")
+    print(f"    │   ├── 校正後QC強度")
+    print(f"    │   └── 統計指標（R², Kendall's τ, p-value）")
+    print(f"    ├── 2D_PCA_ISTD_vs_LOWESS_*.png")
     print(f"    │   ├── 信賴橢圓（All Samples + QC Only）")
     print(f"    │   ├── 異常值標記")
     print(f"    │   └── 完整圖例")
-    print(f"    ├── Scree_Plot_*.png")
-    print(f"    └── Pvalue_Distribution_*.png")
+    print(f"    ├── Scree_Plot_*.png (可選)")
+    print(f"    └── Pvalue_Distribution_*.png (可選)")
     print(f"\n  💡 提示：")
     print(f"    - 包含兩個信賴橢圓：全樣本 + QC 專用")
     print(f"    - 異常值以紅色邊框標記")

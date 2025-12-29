@@ -232,22 +232,25 @@ def calculate_corrected_ratios(df, sample_info_df):
 
 
 
-from scipy.stats import ttest_rel, levene, shapiro
+from scipy.stats import ttest_rel, shapiro, f as f_dist
 
 def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_info_df, original_df):
     """
     計算 QC 樣本的 CV%，並進行正確的統計檢定
-    
+
     統計方法：
     1. 配對 t 檢定（檢驗均值偏移）
-    2. Levene's test（檢驗方差齊性）
+    2. F-test（檢驗方差比值，適用於配對數據）
     3. Shapiro-Wilk test（檢驗正態性）
+
+    註：已修正原先誤用 Levene's test（用於獨立樣本）的問題，
+        改用 F-test 進行配對數據的方差比較。
     """
     qc_samples = sample_info_df[sample_info_df['Sample_Type'].str.upper().str.contains('QC')]['Sample_Name'].tolist()
     qc_columns = [col for col in sample_columns if col in qc_samples]
     
     print(f"\n{'='*70}")
-    print(f"🔬 開始統計檢定（配對 t 檢定 + Levene's test）")
+    print(f"🔬 開始統計檢定（配對 t 檢定 + F-test）")
     print(f"{'='*70}")
     print(f"  - QC 樣本數: {len(qc_columns)}")
     print(f"  - Feature 總數: {len(results_df)}")
@@ -277,7 +280,7 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
                 'Corrected_QC_CV%': np.nan,
                 'CV_Improvement%': np.nan,
                 'Mean_Shift_pvalue': np.nan,
-                'Variance_Test_pvalue': np.nan,
+                'F_test_pvalue': np.nan,
                 'Normality_pvalue': np.nan,
                 'Significant_Improvement': 'N/A'
             })
@@ -296,12 +299,32 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
             t_stat, mean_shift_pvalue = ttest_rel(qc_values_original, qc_values_corrected)
         except Exception:
             mean_shift_pvalue = np.nan
-        
-        # ✅ 2. Levene's test（檢驗方差齊性）
+
+        # ✅ 2. F-test（檢驗方差比值）- 修正：原先誤用 Levene's test
         try:
-            levene_stat, variance_test_pvalue = levene(qc_values_original, qc_values_corrected)
+            var_original = np.var(qc_values_original, ddof=1)
+            var_corrected = np.var(qc_values_corrected, ddof=1)
+
+            if var_corrected > 0 and var_original > 0:
+                # F統計量 = 較大方差 / 較小方差
+                if var_original >= var_corrected:
+                    f_stat = var_original / var_corrected
+                    df1 = len(qc_values_original) - 1
+                    df2 = len(qc_values_corrected) - 1
+                else:
+                    f_stat = var_corrected / var_original
+                    df1 = len(qc_values_corrected) - 1
+                    df2 = len(qc_values_original) - 1
+
+                # 計算雙尾 p 值
+                f_test_pvalue = 2 * min(
+                    f_dist.cdf(f_stat, df1, df2),
+                    1 - f_dist.cdf(f_stat, df1, df2)
+                )
+            else:
+                f_test_pvalue = np.nan
         except Exception:
-            variance_test_pvalue = np.nan
+            f_test_pvalue = np.nan
         
         # ✅ 3. Shapiro-Wilk test（檢驗正態性）
         try:
@@ -310,8 +333,8 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
             normality_pvalue = np.nan
         
         # ✅ 判斷顯著性
-        if not np.isnan(variance_test_pvalue) and cv_improvement > 5:
-            if variance_test_pvalue < 0.05:
+        if not np.isnan(f_test_pvalue) and cv_improvement > 5:
+            if f_test_pvalue < 0.05:
                 significant = 'Yes'
             else:
                 significant = 'Marginal'
@@ -319,14 +342,14 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
             significant = 'Yes (CV% only)'
         else:
             significant = 'No'
-        
+
         cv_results.append({
             'FeatureID': feature_id,
             'Original_QC_CV%': original_cv,
             'Corrected_QC_CV%': corrected_cv,
             'CV_Improvement%': cv_improvement,
             'Mean_Shift_pvalue': mean_shift_pvalue,
-            'Variance_Test_pvalue': variance_test_pvalue,
+            'F_test_pvalue': f_test_pvalue,
             'Normality_pvalue': normality_pvalue,
             'Significant_Improvement': significant
         })
@@ -363,12 +386,12 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
         print(f"  - 均值顯著改變 (p < 0.05): {mean_shift_sig}/{mean_shift_valid} ({mean_shift_sig/mean_shift_valid*100:.1f}%)")
         print(f"  - 均值無顯著改變: {mean_shift_valid - mean_shift_sig}/{mean_shift_valid} ({(mean_shift_valid-mean_shift_sig)/mean_shift_valid*100:.1f}%)")
     
-    # Levene's test 統計
-    variance_valid = cv_results_df['Variance_Test_pvalue'].notna().sum()
-    variance_sig = ((cv_results_df['Variance_Test_pvalue'] < 0.05) & 
-                    (cv_results_df['Variance_Test_pvalue'].notna())).sum()
-    
-    print(f"\n🔬 Levene's Test（方差齊性）:")
+    # F-test 統計（修正：原為 Levene's test）
+    variance_valid = cv_results_df['F_test_pvalue'].notna().sum()
+    variance_sig = ((cv_results_df['F_test_pvalue'] < 0.05) &
+                    (cv_results_df['F_test_pvalue'].notna())).sum()
+
+    print(f"\n🔬 F-test（方差比值檢定）:")
     print(f"  - 成功執行: {variance_valid}/{total_count} ({variance_valid/total_count*100:.1f}%)")
     if variance_valid > 0:
         print(f"  - 方差顯著改變 (p < 0.05): {variance_sig}/{variance_valid} ({variance_sig/variance_valid*100:.1f}%)")
@@ -468,7 +491,7 @@ def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
 def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
     """繪製 p 值分佈圖（驗證統計檢定有效性）"""
     try:
-        variance_pvalues = cv_results_df['Variance_Test_pvalue'].dropna()
+        variance_pvalues = cv_results_df['F_test_pvalue'].dropna()
         
         if len(variance_pvalues) < 10:
             print("  ⚠️ 有效 p 值數量不足，跳過 p 值分佈圖")
@@ -480,9 +503,9 @@ def plot_pvalue_distribution(cv_results_df, output_dir, timestamp):
         ax1.hist(variance_pvalues, bins=20, color='steelblue', edgecolor='black', alpha=0.7)
         ax1.axhline(y=len(variance_pvalues)/20, color='red', linestyle='--', linewidth=2,
                    label='Uniform Distribution Expected')
-        ax1.set_xlabel('P-value (Levene\'s Test)', fontsize=12, fontweight='bold')
+        ax1.set_xlabel('P-value (F-test)', fontsize=12, fontweight='bold')
         ax1.set_ylabel('Frequency', fontsize=12, fontweight='bold')
-        ax1.set_title('P-value Distribution\n(Variance Homogeneity Test)', 
+        ax1.set_title('P-value Distribution\n(F-test for Variance Ratio)',
                      fontsize=14, fontweight='bold')
         ax1.legend(fontsize=10)
         ax1.grid(True, alpha=0.3, linestyle='--')
@@ -1057,7 +1080,7 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file, 
                         cell.fill = orange_fill
         
         # ✅ 統計檢定欄位塗淡藍色
-        for col_name in ['Mean_Shift_pvalue', 'Variance_Test_pvalue']:
+        for col_name in ['Mean_Shift_pvalue', 'F_test_pvalue']:
             if col_name in header:
                 col_idx = header.index(col_name) + 1
                 for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
