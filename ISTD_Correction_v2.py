@@ -1400,6 +1400,56 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
             print("  ✓ 無異常樣本")
         print(f"{'='*70}\n")
 
+def apply_fdr_correction(pvalues):
+    """
+    使用 Benjamini-Hochberg 方法進行 FDR 校正
+
+    Args:
+        pvalues: p 值的 array 或 Series
+
+    Returns:
+        qvalues: 校正後的 q 值（FDR-adjusted p-values）
+    """
+    # 移除 NaN 值
+    pvalues_array = np.array(pvalues)
+    valid_mask = ~np.isnan(pvalues_array)
+
+    # 初始化 q-values 為 NaN
+    qvalues = np.full_like(pvalues_array, np.nan, dtype=float)
+
+    if np.sum(valid_mask) == 0:
+        return qvalues
+
+    # 提取有效的 p-values
+    valid_pvalues = pvalues_array[valid_mask]
+    n = len(valid_pvalues)
+
+    # Benjamini-Hochberg 方法
+    # 1. 對 p 值排序，記錄原始索引
+    sorted_indices = np.argsort(valid_pvalues)
+    sorted_pvalues = valid_pvalues[sorted_indices]
+
+    # 2. 計算 q 值：q_i = p_i * n / rank_i
+    ranks = np.arange(1, n + 1)
+    sorted_qvalues = sorted_pvalues * n / ranks
+
+    # 3. 確保單調性（從後往前取最小值）
+    for i in range(n - 2, -1, -1):
+        sorted_qvalues[i] = min(sorted_qvalues[i], sorted_qvalues[i + 1])
+
+    # 4. q 值不能超過 1
+    sorted_qvalues = np.minimum(sorted_qvalues, 1.0)
+
+    # 5. 恢復原始順序
+    unsorted_qvalues = np.empty_like(sorted_qvalues)
+    unsorted_qvalues[sorted_indices] = sorted_qvalues
+
+    # 6. 將結果填回包含 NaN 的陣列
+    qvalues[valid_mask] = unsorted_qvalues
+
+    return qvalues
+
+
 # ========== 🔧 修改：save_results_to_excel==========
 def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
                           all_sheets, sample_columns, original_workbook, plots_dir=None):
@@ -1436,11 +1486,43 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
     
     # 合併結果
     results_with_cv = results_df.merge(cv_results_df, on='FeatureID', how='left')
-    
-    # ✅ 調整欄位順序
+
+    # 🆕 應用 FDR 校正（Benjamini-Hochberg 方法）
+    print("\n📊 應用 FDR 校正（Benjamini-Hochberg 方法）...")
+
+    # 對 Wilcoxon p-value 進行 FDR 校正
+    if 'Wilcoxon_pvalue' in results_with_cv.columns:
+        results_with_cv['Wilcoxon_qvalue'] = apply_fdr_correction(results_with_cv['Wilcoxon_pvalue'])
+        wilcoxon_valid = results_with_cv['Wilcoxon_pvalue'].notna().sum()
+        wilcoxon_sig_p = ((results_with_cv['Wilcoxon_pvalue'] < 0.05) &
+                          (results_with_cv['Wilcoxon_pvalue'].notna())).sum()
+        wilcoxon_sig_q = ((results_with_cv['Wilcoxon_qvalue'] < 0.05) &
+                          (results_with_cv['Wilcoxon_qvalue'].notna())).sum()
+        print(f"  Wilcoxon test:")
+        print(f"    - 有效檢定數: {wilcoxon_valid}")
+        print(f"    - p < 0.05: {wilcoxon_sig_p} ({wilcoxon_sig_p/wilcoxon_valid*100:.1f}%)")
+        print(f"    - q < 0.05 (FDR 校正後): {wilcoxon_sig_q} ({wilcoxon_sig_q/wilcoxon_valid*100:.1f}%)")
+
+    # 對 Variance Test p-value 進行 FDR 校正
+    if 'Variance_Test_pvalue' in results_with_cv.columns:
+        results_with_cv['Variance_Test_qvalue'] = apply_fdr_correction(results_with_cv['Variance_Test_pvalue'])
+        variance_valid = results_with_cv['Variance_Test_pvalue'].notna().sum()
+        variance_sig_p = ((results_with_cv['Variance_Test_pvalue'] < 0.05) &
+                          (results_with_cv['Variance_Test_pvalue'].notna())).sum()
+        variance_sig_q = ((results_with_cv['Variance_Test_qvalue'] < 0.05) &
+                          (results_with_cv['Variance_Test_qvalue'].notna())).sum()
+        print(f"  Levene's test:")
+        print(f"    - 有效檢定數: {variance_valid}")
+        print(f"    - p < 0.05: {variance_sig_p} ({variance_sig_p/variance_valid*100:.1f}%)")
+        print(f"    - q < 0.05 (FDR 校正後): {variance_sig_q} ({variance_sig_q/variance_valid*100:.1f}%)")
+
+    print("  ✓ FDR 校正完成\n")
+
+    # ✅ 調整欄位順序（加入 q-value 欄位）
     cols_order = [
         'Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%',
-        'Wilcoxon_pvalue', 'Variance_Test_pvalue',  # 移除 Normality_pvalue
+        'Wilcoxon_pvalue', 'Wilcoxon_qvalue',
+        'Variance_Test_pvalue', 'Variance_Test_qvalue',
         'Significant_Improvement'
     ]
     other_cols = [col for col in results_with_cv.columns if col not in cols_order]
@@ -1490,8 +1572,8 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
                     for cell in row:
                         cell.fill = orange_fill
         
-        # ✅ 統計檢定欄位塗淡藍色（更新為 Wilcoxon_pvalue）
-        for col_name in ['Wilcoxon_pvalue', 'Variance_Test_pvalue']:
+        # ✅ 統計檢定欄位塗淡藍色（包含 p-value 和 q-value）
+        for col_name in ['Wilcoxon_pvalue', 'Wilcoxon_qvalue', 'Variance_Test_pvalue', 'Variance_Test_qvalue']:
             if col_name in header:
                 col_idx = header.index(col_name) + 1
                 for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
