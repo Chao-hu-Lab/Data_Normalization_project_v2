@@ -5,6 +5,7 @@ import tkinter as tk
 from pathlib import Path
 import warnings
 import os
+import sys
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border
 from openpyxl.utils.dataframe import dataframe_to_rows
@@ -18,6 +19,27 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings('ignore')
+
+# ========== Matplotlib Global Settings ==========
+# Disable LaTeX rendering to avoid special character issues (e.g., %)
+plt.rcParams['text.usetex'] = False
+plt.rcParams['mathtext.default'] = 'regular'
+
+# Platform-aware font settings
+if sys.platform == 'darwin':  # macOS
+    plt.rcParams['font.family'] = 'Helvetica'
+else:
+    plt.rcParams['font.family'] = 'Arial'
+
+# Standardized font sizes for consistency
+FONT_SIZES = {
+    'title': 14,
+    'subtitle': 12,
+    'axis_label': 11,
+    'tick': 10,
+    'legend': 9,
+    'annotation': 9
+}
 
 # Centralized summary metadata to avoid magic strings and ease maintenance
 SUMMARY_SHEET_NAME = "ConcNormalization_Summary"
@@ -1197,7 +1219,24 @@ def plot_rle(original_data, normalized_data, sample_names, output_path, method_n
              transform=ax2.transAxes, fontsize=12, verticalalignment='top',
              bbox=dict(boxstyle='round', facecolor='lightgreen' if improvement > 0 else 'wheat', alpha=0.8))
 
-    plt.tight_layout()
+    # ===== RLE Plot Interpretation Guide =====
+    interpretation_text = (
+        "RLE Plot Interpretation Guide:\n"
+        "- Ideal: All boxplot medians align with green dashed line (RLE=0)\n"
+        "- Narrower boxes = Higher sample consistency\n"
+        "- Median deviation from 0 = Systematic bias in that sample\n"
+        "- Lower MAD = Better normalization quality (recommended < 0.5)"
+    )
+
+    # Add interpretation text at the bottom of the figure
+    fig.text(0.5, -0.02, interpretation_text,
+             ha='center', va='top', fontsize=10,
+             style='italic', color='#444444',
+             bbox=dict(boxstyle='round,pad=0.5', facecolor='#f0f0f0',
+                      edgecolor='#cccccc', alpha=0.9))
+
+    plt.subplots_adjust(bottom=0.15)  # Reserve space for interpretation text
+    plt.tight_layout(rect=[0, 0.08, 1, 1])  # Layout within bounds
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 

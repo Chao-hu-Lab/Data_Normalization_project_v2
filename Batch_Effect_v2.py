@@ -23,6 +23,16 @@ from scipy.stats import chi2, f as f_dist
 
 warnings.filterwarnings('ignore')
 
+# ========== Matplotlib Global Settings ==========
+plt.rcParams['text.usetex'] = False
+plt.rcParams['mathtext.default'] = 'regular'
+if sys.platform == 'darwin':
+    plt.rcParams['font.family'] = 'Helvetica'
+else:
+    plt.rcParams['font.family'] = 'Arial'
+
+FONT_SIZES = {'title': 14, 'subtitle': 12, 'axis_label': 11, 'tick': 10, 'legend': 9, 'annotation': 9}
+
 # Centralized naming to avoid magic strings in downstream logic
 SUMMARY_SHEET_NAME = "Batch_Effect_summary"
 PLOT_FOLDER_NAME = "Batch_Effect_plots"
@@ -2585,19 +2595,17 @@ def main(input_file=None):
         # 🆕 檢測批次混淆
         confounding_result = check_batch_confounding(sample_info)
 
-        # 如果檢測到高度混淆，詢問使用者是否繼續
+        # 如果檢測到高度混淆，完全跳過 ComBat（不輸出任何文件）
         if confounding_result.get('is_confounded', False):
-            print("\n⚠️⚠️⚠️ 警告：檢測到批次與樣本類型高度混淆！⚠️⚠️⚠️\n")
-            print("是否仍要繼續執行 ComBat 校正？")
-            print("  [Y] 是，繼續執行 ComBat（可能移除生物訊號）")
-            print("  [N] 否，中止 ComBat（建議使用 QC-LOWESS 結果）")
-
-            user_choice = input("\n請輸入選擇 (Y/N): ").strip().upper()
-
-            if user_choice != 'Y':
-                print("\n❌ 使用者選擇中止 ComBat 校正")
-                print("建議：請使用 QC-LOWESS 的校正結果進行後續分析")
-                return
+            print("\n" + "="*70)
+            print("WARNING: Batch-Sample Type Confounding Detected!")
+            print("="*70)
+            print("ComBat correction SKIPPED to protect biological signals.")
+            print("")
+            print("Next Step: Run Concentration Normalization directly.")
+            print("           It will automatically use 'QC LOWESS result' sheet.")
+            print("="*70)
+            return  # Complete skip - no file output
 
         corrected_data = perform_combat_correction(data_matrix, batch_info)
         print("✓ 批次效應校正完成")

@@ -12,6 +12,24 @@ import subprocess
 import psutil
 import re
 
+
+# ========== Platform-Aware Font Settings ==========
+def get_system_fonts():
+    """Return platform-appropriate fonts for cross-platform compatibility"""
+    if sys.platform == 'darwin':  # macOS
+        return {
+            'sans': 'Helvetica',
+            'mono': 'Monaco'
+        }
+    else:  # Windows/Linux
+        return {
+            'sans': 'Arial',
+            'mono': 'Consolas'
+        }
+
+FONTS = get_system_fonts()
+
+
 class DataNormalizationApp:
     def __init__(self, master):
         self.master = master
@@ -197,43 +215,43 @@ class DataNormalizationApp:
         
         # Title Label - Arial, 18pt, White text on Hero bg
         self.style.configure('HeroTitle.TLabel', 
-                             font=('Arial', 18, 'bold'), 
+                             font=(FONTS['sans'], 18, 'bold'), 
                              foreground=self.color_scheme['hero_text'], 
                              background=self.color_scheme['hero_bg'])
         
         # Hero Subtitle
         self.style.configure('HeroSubtitle.TLabel', 
-                             font=('Arial', 11), 
+                             font=(FONTS['sans'], 11), 
                              foreground='#cce0ff', 
                              background=self.color_scheme['hero_bg'])
         
         # Section Title Label - Arial, 14pt
         self.style.configure('Title.TLabel', 
-                             font=('Arial', 14, 'bold'), 
+                             font=(FONTS['sans'], 14, 'bold'), 
                              foreground=self.color_scheme['text_dark'], 
                              background=self.color_scheme['background'])
         
         # Notice Label - Arial, 10pt
         self.style.configure('Notice.TLabel', 
-                             font=('Arial', 10), 
+                             font=(FONTS['sans'], 10), 
                              foreground=self.color_scheme['text_light'], 
                              background=self.color_scheme['background'])
         
         # Step Button
         self.style.configure('Step.TButton', 
-                             font=('Arial', 11, 'bold'),
+                             font=(FONTS['sans'], 11, 'bold'),
                              borderwidth=0,
                              relief='flat')
         
         # Primary Button Style
         self.style.configure('Primary.TButton',
-                             font=('Arial', 11, 'bold'),
+                             font=(FONTS['sans'], 11, 'bold'),
                              background=self.color_scheme['primary'],
                              foreground=self.color_scheme['primary_text'])
         
         # Ghost Button Style
         self.style.configure('Ghost.TButton',
-                             font=('Arial', 11),
+                             font=(FONTS['sans'], 11),
                              background=self.color_scheme['ghost'],
                              foreground=self.color_scheme['ghost_text'])
         
@@ -244,20 +262,20 @@ class DataNormalizationApp:
 
         # Stats Label - No background
         self.style.configure('Stats.TLabel',
-                             font=('Arial', 11),
+                             font=(FONTS['sans'], 11),
                              background=self.color_scheme['panel_bg'],
                              foreground=self.color_scheme['text_dark'])
         
         # Stats Title Label
         self.style.configure('StatsTitle.TLabel',
-                             font=('Arial', 12, 'bold'),
+                             font=(FONTS['sans'], 12, 'bold'),
                              background=self.color_scheme['panel_bg'],
                              foreground=self.color_scheme['text_dark'])
         
         # Tab Style
         self.style.configure('TNotebook', background=self.color_scheme['panel_bg'])
         self.style.configure('TNotebook.Tab', 
-                             font=('Arial', 11),
+                             font=(FONTS['sans'], 11),
                              padding=[12, 6])
 
     def create_main_layout(self):
@@ -283,7 +301,7 @@ class DataNormalizationApp:
         main_title = tk.Label(
             title_container,
             text="Data Normalization Workflow v2",
-            font=('Arial', 20, 'bold'),
+            font=(FONTS['sans'], 20, 'bold'),
             fg=self.color_scheme['text_dark'],
             bg=self.color_scheme['background']
         )
@@ -293,7 +311,7 @@ class DataNormalizationApp:
         subtitle = tk.Label(
             title_container,
             text="Metabolomics data processing pipeline | VBA-formatted Excel required",
-            font=('Arial', 11),
+            font=(FONTS['sans'], 11),
             fg=self.color_scheme['text_light'],
             bg=self.color_scheme['background']
         )
@@ -319,7 +337,7 @@ class DataNormalizationApp:
         title_label = tk.Label(
             left_section,
             text="📂 Input File Selection",
-            font=('Arial', 16, 'bold'),
+            font=(FONTS['sans'], 16, 'bold'),
             fg=self.color_scheme['hero_text'],
             bg=self.color_scheme['hero_bg']
         )
@@ -328,7 +346,7 @@ class DataNormalizationApp:
         subtitle_label = tk.Label(
             left_section,
             text="Select your VBA-formatted Excel file to begin the workflow",
-            font=('Arial', 11),
+            font=(FONTS['sans'], 11),
             fg='#cce0ff',
             bg=self.color_scheme['hero_bg']
         )
@@ -345,7 +363,7 @@ class DataNormalizationApp:
         self.input_file_label = tk.Label(
             file_display_frame,
             text="  No file selected...  ",
-            font=('Arial', 11),
+            font=(FONTS['sans'], 11),
             bg='#ffffff',
             fg=self.color_scheme['text_light'],
             width=35,
@@ -360,7 +378,7 @@ class DataNormalizationApp:
             right_section,
             text="📁 Browse...",
             command=self.select_initial_file,
-            font=('Arial', 11, 'bold'),
+            font=(FONTS['sans'], 11, 'bold'),
             bg='#ffffff',
             fg=self.color_scheme['hero_bg'],
             activebackground='#f0f0f0',
@@ -384,7 +402,7 @@ class DataNormalizationApp:
         self.title_label = tk.Label(
             title_frame, 
             text="🛠️ Workflow Steps", 
-            font=('Arial', 14, 'bold'),
+            font=(FONTS['sans'], 14, 'bold'),
             fg=self.color_scheme['text_dark'],
             bg=self.color_scheme['background']
         )
@@ -395,7 +413,7 @@ class DataNormalizationApp:
         self.notice_label = tk.Label(
             title_frame, 
             text=notice_text,
-            font=('Arial', 10),
+            font=(FONTS['sans'], 10),
             fg=self.color_scheme['text_light'],
             bg=self.color_scheme['background']
         )
@@ -410,7 +428,7 @@ class DataNormalizationApp:
             control_frame,
             text="⚡ Auto Run",
             command=self.run_all_steps,
-            font=('Arial', 10, 'bold'),
+            font=(FONTS['sans'], 10, 'bold'),
             bg=self.color_scheme['primary'],
             fg=self.color_scheme['primary_text'],
             activebackground=self.color_scheme['accent_hover'],
@@ -426,7 +444,7 @@ class DataNormalizationApp:
             control_frame,
             text="⏹ Stop",
             command=self.cancel_execution,
-            font=('Arial', 10),
+            font=(FONTS['sans'], 10),
             bg=self.color_scheme['ghost'],
             fg=self.color_scheme['ghost_text'],
             relief='flat',
@@ -440,7 +458,7 @@ class DataNormalizationApp:
             control_frame,
             text="🔄 Reset",
             command=self.reset_all_steps,
-            font=('Arial', 10),
+            font=(FONTS['sans'], 10),
             bg=self.color_scheme['ghost'],
             fg=self.color_scheme['ghost_text'],
             relief='flat',
@@ -524,7 +542,7 @@ class DataNormalizationApp:
             step_num_label = tk.Label(
                 left_indicator,
                 text=f"Step\n{i+1}",
-                font=('Arial', 11, 'bold'),
+                font=(FONTS['sans'], 11, 'bold'),
                 fg='#ffffff',
                 bg=step['accent'],
                 justify='center'
@@ -539,7 +557,7 @@ class DataNormalizationApp:
             step_name_label = tk.Label(
                 info_section,
                 text=step['name'].split(':')[1].strip(),
-                font=('Arial', 13, 'bold'),
+                font=(FONTS['sans'], 13, 'bold'),
                 fg=self.color_scheme['text_dark'],
                 bg=self.color_scheme['panel_bg'],
                 anchor='w'
@@ -553,7 +571,7 @@ class DataNormalizationApp:
             input_icon_label = tk.Label(
                 input_source_frame,
                 text="📥 Input: ",
-                font=('Arial', 10),
+                font=(FONTS['sans'], 10),
                 fg=self.color_scheme['text_light'],
                 bg=self.color_scheme['panel_bg']
             )
@@ -568,7 +586,7 @@ class DataNormalizationApp:
             input_source_label = tk.Label(
                 input_source_frame,
                 text=input_text,
-                font=('Arial', 10),
+                font=(FONTS['sans'], 10),
                 fg=step['accent'],
                 bg=self.color_scheme['panel_bg']
             )
@@ -587,7 +605,7 @@ class DataNormalizationApp:
             status_label = tk.Label(
                 btn_row,
                 text="⚪",
-                font=('Arial', 14),
+                font=(FONTS['sans'], 14),
                 bg=self.color_scheme['panel_bg'],
                 width=2
             )
@@ -603,7 +621,7 @@ class DataNormalizationApp:
                 btn_row,
                 text="▶ Run",
                 command=lambda s=step: self.execute_step(s),
-                font=('Arial', 10, 'bold'),
+                font=(FONTS['sans'], 10, 'bold'),
                 bg=btn_bg,
                 fg=btn_fg,
                 activebackground=step['accent'],
@@ -622,7 +640,7 @@ class DataNormalizationApp:
                 btn_row,
                 text="📑",
                 command=lambda s=step: self.open_step_excel(s),
-                font=('Arial', 11),
+                font=(FONTS['sans'], 11),
                 bg=self.color_scheme['ghost'],
                 fg=self.color_scheme['ghost_text'],
                 relief='flat',
@@ -638,7 +656,7 @@ class DataNormalizationApp:
                 btn_row,
                 text="📊",
                 command=lambda s=step: self.open_step_plots(s),
-                font=('Arial', 11),
+                font=(FONTS['sans'], 11),
                 bg=self.color_scheme['ghost'],
                 fg=self.color_scheme['ghost_text'],
                 relief='flat',
@@ -666,7 +684,7 @@ class DataNormalizationApp:
         tk.Label(
             log_header,
             text="Real-time execution output",
-            font=('Arial', 10),
+            font=(FONTS['sans'], 10),
             fg=self.color_scheme['text_light'],
             bg=self.color_scheme['panel_bg']
         ).pack(side=tk.LEFT)
@@ -676,7 +694,7 @@ class DataNormalizationApp:
             log_header,
             text="🗑 Clear",
             command=self.clear_log,
-            font=('Arial', 9),
+            font=(FONTS['sans'], 9),
             bg=self.color_scheme['ghost'],
             fg=self.color_scheme['ghost_text'],
             relief='flat',
@@ -692,7 +710,7 @@ class DataNormalizationApp:
         self.result_text = scrolledtext.ScrolledText(
             log_container,
             wrap=tk.WORD,
-            font=('Consolas', 10),
+            font=(FONTS['mono'], 10),
             bg='#1e1e1e',
             fg='#d4d4d4',
             insertbackground='white',
@@ -721,7 +739,7 @@ class DataNormalizationApp:
         tk.Label(
             step_card,
             text="🔄 Current Step",
-            font=('Arial', 10),
+            font=(FONTS['sans'], 10),
             fg=self.color_scheme['text_light'],
             bg='#f8f9fa'
         ).pack(anchor='w')
@@ -729,7 +747,7 @@ class DataNormalizationApp:
         self.stats_step_label = tk.Label(
             step_card,
             text="Idle",
-            font=('Arial', 14, 'bold'),
+            font=(FONTS['sans'], 14, 'bold'),
             fg=self.color_scheme['text_dark'],
             bg='#f8f9fa'
         )
@@ -742,7 +760,7 @@ class DataNormalizationApp:
         tk.Label(
             data_card,
             text="📐 Data Matrix",
-            font=('Arial', 10),
+            font=(FONTS['sans'], 10),
             fg=self.color_scheme['text_light'],
             bg='#f8f9fa'
         ).pack(anchor='w')
@@ -750,7 +768,7 @@ class DataNormalizationApp:
         self.stats_data_label = tk.Label(
             data_card,
             text="No data loaded",
-            font=('Arial', 14, 'bold'),
+            font=(FONTS['sans'], 14, 'bold'),
             fg=self.color_scheme['text_dark'],
             bg='#f8f9fa'
         )
@@ -763,7 +781,7 @@ class DataNormalizationApp:
         tk.Label(
             progress_card,
             text="✅ Completed Steps",
-            font=('Arial', 10),
+            font=(FONTS['sans'], 10),
             fg=self.color_scheme['text_light'],
             bg='#f8f9fa'
         ).pack(anchor='w')
@@ -771,7 +789,7 @@ class DataNormalizationApp:
         self.stats_completed_label = tk.Label(
             progress_card,
             text="0 / 4",
-            font=('Arial', 14, 'bold'),
+            font=(FONTS['sans'], 14, 'bold'),
             fg=self.color_scheme['success'],
             bg='#f8f9fa'
         )
@@ -802,7 +820,7 @@ class DataNormalizationApp:
         tk.Label(
             progress_header,
             text="⏳ Progress",
-            font=('Arial', 11, 'bold'),
+            font=(FONTS['sans'], 11, 'bold'),
             fg=self.color_scheme['text_dark'],
             bg=self.color_scheme['panel_bg']
         ).pack(side=tk.LEFT)
@@ -810,7 +828,7 @@ class DataNormalizationApp:
         self.progress_label = tk.Label(
             progress_header,
             text="Not started",
-            font=('Arial', 11),
+            font=(FONTS['sans'], 11),
             fg=self.color_scheme['text_light'],
             bg=self.color_scheme['panel_bg']
         )
@@ -868,7 +886,7 @@ class DataNormalizationApp:
                     self.step_buttons[i].config(
                         bg=step['accent'],
                         fg='#ffffff',
-                        font=('Arial', 10, 'bold')
+                        font=(FONTS['sans'], 10, 'bold')
                     )
                     # 更新卡片邊框高亮
                     if hasattr(self, 'step_cards') and i < len(self.step_cards):
@@ -878,7 +896,7 @@ class DataNormalizationApp:
                     self.step_buttons[i].config(
                         bg=self.color_scheme['ghost'],
                         fg=self.color_scheme['ghost_text'],
-                        font=('Arial', 10)
+                        font=(FONTS['sans'], 10)
                     )
                     if hasattr(self, 'step_cards') and i < len(self.step_cards):
                         self.step_cards[i].config(highlightbackground=self.color_scheme['border'], highlightthickness=1)
@@ -888,7 +906,7 @@ class DataNormalizationApp:
                     state='disabled',
                     bg=self.color_scheme['ghost'],
                     fg=self.color_scheme['disabled'],
-                    font=('Arial', 10)
+                    font=(FONTS['sans'], 10)
                 )
                 if hasattr(self, 'step_cards') and i < len(self.step_cards):
                     self.step_cards[i].config(highlightbackground=self.color_scheme['border'], highlightthickness=1)

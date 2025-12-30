@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import os
+import sys
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill
@@ -12,13 +13,23 @@ from matplotlib import cm
 from matplotlib.patches import Ellipse
 import scipy.stats as stats
 from scipy.spatial.distance import mahalanobis
-from scipy.stats import chi2, f as f_dist  # 🔧 改用 F 分布
+from scipy.stats import chi2, f as f_dist
 import warnings
 import tkinter as tk
 from tkinter import filedialog
 import copy
 
 warnings.filterwarnings('ignore')
+
+# ========== Matplotlib Global Settings ==========
+plt.rcParams['text.usetex'] = False
+plt.rcParams['mathtext.default'] = 'regular'
+if sys.platform == 'darwin':
+    plt.rcParams['font.family'] = 'Helvetica'
+else:
+    plt.rcParams['font.family'] = 'Arial'
+
+FONT_SIZES = {'title': 14, 'subtitle': 12, 'axis_label': 11, 'tick': 10, 'legend': 9, 'annotation': 9}
 
 def get_valid_values(row, columns):
     """Helper: 從 row 中提取有效浮點值"""
@@ -1605,9 +1616,9 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
     print(f"  {output_file}")
     print(f"{'='*70}\n")
     
-    # ✅ 繪製 P 值分佈圖（傳入 output 目錄）
+    # P 值分佈圖 (disabled: provides limited diagnostic value)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-    plot_pvalue_distribution(cv_results_df, plot_output_dir, timestamp)
+    # plot_pvalue_distribution(cv_results_df, plot_output_dir, timestamp)
 
 # ========== main 函數 ==========
 def main(input_file=None):

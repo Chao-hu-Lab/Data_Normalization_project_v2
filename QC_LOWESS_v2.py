@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import os
+import sys
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
@@ -19,6 +20,16 @@ import copy
 from collections import Counter
 
 warnings.filterwarnings('ignore')
+
+# ========== Matplotlib Global Settings ==========
+plt.rcParams['text.usetex'] = False
+plt.rcParams['mathtext.default'] = 'regular'
+if sys.platform == 'darwin':
+    plt.rcParams['font.family'] = 'Helvetica'
+else:
+    plt.rcParams['font.family'] = 'Arial'
+
+FONT_SIZES = {'title': 14, 'subtitle': 12, 'axis_label': 11, 'tick': 10, 'legend': 9, 'annotation': 9}
 
 QC_LOWESS_ADVANCED_SHEET = "QC_LOWESS_Advanced Statistics"
 
@@ -1171,14 +1182,17 @@ def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
         traceback.print_exc()
 
 
-def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp):
+def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_page=6):
     """
-    繪製 LOWESS 擬合趨勢圖，用於視覺化檢查過度擬合
+    繪製 LOWESS 擬合趨勢圖（疊加多圖版），用於視覺化檢查過度擬合
+
+    透過將多個特徵疊加到同一張圖上，大幅減少輸出檔案數量。
 
     Args:
         trend_data_dict: 字典，格式為 {(feature_id, batch_name): plot_data}
         plots_dir: 輸出目錄
         timestamp: 時間戳記
+        max_per_page: 每頁最多顯示的特徵數量（預設 6 個，2x3 佈局）
     """
     try:
         if not trend_data_dict:
@@ -1202,77 +1216,116 @@ def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp):
             print(f"  ⚠️  警告：沒有寫入權限到目錄: {plots_dir}")
             return
 
-        print(f"\n📊 繪製 LOWESS 擬合趨勢圖 ({len(trend_data_dict)} 個特徵)...")
-
+        # 將數據按批次分組
+        batch_grouped = {}
         for (feature_id, batch_name), plot_data in trend_data_dict.items():
-            try:
-                qc_orders = np.array(plot_data['qc_orders'])
-                qc_raw = np.array(plot_data['qc_raw'])
-                qc_corrected = np.array(plot_data['qc_corrected'])
-                lowess_x = np.array(plot_data['lowess_x'])
-                lowess_y = np.array(plot_data['lowess_y'])
-                median_qc = plot_data['median_qc']
+            if batch_name not in batch_grouped:
+                batch_grouped[batch_name] = []
+            batch_grouped[batch_name].append((feature_id, plot_data))
 
-                # 創建圖表
-                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+        total_features = len(trend_data_dict)
+        total_pages = sum((len(features) + max_per_page - 1) // max_per_page
+                          for features in batch_grouped.values())
 
-                # ===== 上圖：Raw vs LOWESS Curve =====
-                ax1.scatter(qc_orders, qc_raw, c='steelblue', s=100, alpha=0.6,
-                           edgecolors='black', linewidth=1.5, label='QC Raw', zorder=3)
-                ax1.plot(lowess_x, lowess_y, 'r-', linewidth=3, label='LOWESS Fit', zorder=2)
-                ax1.axhline(y=median_qc, color='green', linestyle='--', linewidth=2,
-                           label=f'Target Median = {median_qc:.2f}', zorder=1)
+        print(f"\n📊 繪製 LOWESS 擬合趨勢圖 ({total_features} 個特徵，整合為 {total_pages} 張圖表)...")
 
-                ax1.set_xlabel('Injection Order', fontsize=12, fontweight='bold')
-                ax1.set_ylabel('Intensity (Raw)', fontsize=12, fontweight='bold')
-                ax1.set_title(f'LOWESS Trend Fitting - {feature_id} ({batch_name})\n[Raw vs Fitted Curve]',
-                             fontsize=14, fontweight='bold')
-                ax1.legend(fontsize=10, loc='best')
-                ax1.grid(True, alpha=0.3, linestyle='--')
+        # 定義顏色方案
+        colors = ['#0173B2', '#DE8F05', '#029E73', '#CC78BC', '#CA9161', '#949494']
 
-                # ===== 下圖：Corrected vs Target Median =====
-                ax2.scatter(qc_orders, qc_raw, c='lightgray', s=100, alpha=0.5,
-                           edgecolors='black', linewidth=1.5, label='QC Raw', zorder=2)
-                ax2.scatter(qc_orders, qc_corrected, c='orange', s=100, alpha=0.7,
-                           edgecolors='black', linewidth=1.5, label='QC Corrected', zorder=3)
-                ax2.axhline(y=median_qc, color='green', linestyle='--', linewidth=2,
-                           label=f'Target Median = {median_qc:.2f}', zorder=1)
+        page_count = 0
+        for batch_name, features_in_batch in batch_grouped.items():
+            # 將該批次的特徵分頁
+            for page_idx in range(0, len(features_in_batch), max_per_page):
+                page_features = features_in_batch[page_idx:page_idx + max_per_page]
+                n_features = len(page_features)
 
-                ax2.set_xlabel('Injection Order', fontsize=12, fontweight='bold')
-                ax2.set_ylabel('Intensity', fontsize=12, fontweight='bold')
-                ax2.set_title(f'LOWESS Correction Result\n[Before vs After]',
-                             fontsize=14, fontweight='bold')
-                ax2.legend(fontsize=10, loc='best')
-                ax2.grid(True, alpha=0.3, linestyle='--')
+                # 計算網格佈局（每個特徵佔 2 行：上圖 Raw+Fit，下圖 Corrected）
+                # 使用 2 列佈局，每個特徵一列，每列 2 行
+                n_cols = min(3, n_features)  # 最多 3 列
+                n_rows = ((n_features + n_cols - 1) // n_cols) * 2  # 每個特徵 2 行
 
-                # 調整佈局
-                plt.tight_layout()
+                fig = plt.figure(figsize=(6 * n_cols, 5 * n_rows))
+
+                for feat_idx, (feature_id, plot_data) in enumerate(page_features):
+                    try:
+                        qc_orders = np.array(plot_data['qc_orders'])
+                        qc_raw = np.array(plot_data['qc_raw'])
+                        qc_corrected = np.array(plot_data['qc_corrected'])
+                        lowess_x = np.array(plot_data['lowess_x'])
+                        lowess_y = np.array(plot_data['lowess_y'])
+                        median_qc = plot_data['median_qc']
+
+                        color = colors[feat_idx % len(colors)]
+
+                        # 計算子圖位置
+                        col = feat_idx % n_cols
+                        row_base = (feat_idx // n_cols) * 2
+
+                        # ===== 上圖：Raw vs LOWESS Curve =====
+                        ax1 = fig.add_subplot(n_rows, n_cols, row_base * n_cols + col + 1)
+                        ax1.scatter(qc_orders, qc_raw, c=color, s=60, alpha=0.7,
+                                   edgecolors='black', linewidth=1, label='QC Raw', zorder=3)
+                        ax1.plot(lowess_x, lowess_y, 'r-', linewidth=2, label='LOWESS Fit', zorder=2)
+                        ax1.axhline(y=median_qc, color='green', linestyle='--', linewidth=1.5,
+                                   label=f'Median={median_qc:.1f}', zorder=1)
+
+                        ax1.set_xlabel('Injection Order', fontsize=9)
+                        ax1.set_ylabel('Intensity', fontsize=9)
+                        ax1.set_title(f'{feature_id}\n[Raw + LOWESS Fit]', fontsize=10, fontweight='bold')
+                        ax1.legend(fontsize=7, loc='best')
+                        ax1.grid(True, alpha=0.3, linestyle='--')
+                        ax1.tick_params(axis='both', labelsize=8)
+
+                        # ===== 下圖：Corrected vs Target =====
+                        ax2 = fig.add_subplot(n_rows, n_cols, (row_base + 1) * n_cols + col + 1)
+                        ax2.scatter(qc_orders, qc_raw, c='lightgray', s=60, alpha=0.5,
+                                   edgecolors='gray', linewidth=0.5, label='Raw', zorder=2)
+                        ax2.scatter(qc_orders, qc_corrected, c='orange', s=60, alpha=0.8,
+                                   edgecolors='black', linewidth=1, label='Corrected', zorder=3)
+                        ax2.axhline(y=median_qc, color='green', linestyle='--', linewidth=1.5,
+                                   label=f'Target', zorder=1)
+
+                        ax2.set_xlabel('Injection Order', fontsize=9)
+                        ax2.set_ylabel('Intensity', fontsize=9)
+                        ax2.set_title(f'[Before vs After Correction]', fontsize=10)
+                        ax2.legend(fontsize=7, loc='best')
+                        ax2.grid(True, alpha=0.3, linestyle='--')
+                        ax2.tick_params(axis='both', labelsize=8)
+
+                    except Exception as e:
+                        print(f"  ⚠️  警告：繪製 {feature_id} 時發生錯誤: {e}")
+                        continue
+
+                # 添加頁面標題
+                safe_batch_name = str(batch_name).replace('/', '_').replace('\\', '_')
+                page_num = page_idx // max_per_page + 1
+                total_batch_pages = (len(features_in_batch) + max_per_page - 1) // max_per_page
+
+                fig.suptitle(f'LOWESS Trend Fitting - {batch_name} (Page {page_num}/{total_batch_pages})',
+                            fontsize=14, fontweight='bold', y=0.99)
+
+                plt.tight_layout(rect=[0, 0, 1, 0.97])  # Leave 3% for suptitle
 
                 # 保存圖表
-                safe_feature_id = str(feature_id).replace('/', '_').replace('\\', '_')
-                safe_batch_name = str(batch_name).replace('/', '_').replace('\\', '_')
                 plot_path = os.path.join(plots_dir,
-                                        f'Trend_Fitting_{safe_feature_id}_{safe_batch_name}_{timestamp}.png')
+                                        f'Trend_Fitting_Combined_{safe_batch_name}_Page{page_num}_{timestamp}.png')
 
-                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+                plt.savefig(plot_path, dpi=200, bbox_inches='tight')
                 plt.close()
+
+                page_count += 1
 
                 # 驗證文件是否成功保存
                 if os.path.exists(plot_path):
                     plot_size = os.path.getsize(plot_path)
                     if plot_size > 0:
-                        print(f"  ✓ 已保存: {safe_feature_id} ({batch_name}) - {plot_size / 1024:.2f} KB")
+                        print(f"  ✓ 已保存: {batch_name} Page {page_num} ({n_features} 特徵) - {plot_size / 1024:.1f} KB")
                     else:
-                        print(f"  ⚠️  警告：{safe_feature_id} 圖表大小為 0 bytes")
+                        print(f"  ⚠️  警告：{batch_name} Page {page_num} 圖表大小為 0 bytes")
                 else:
-                    print(f"  ⚠️  警告：{safe_feature_id} 圖表保存失敗")
+                    print(f"  ⚠️  警告：{batch_name} Page {page_num} 圖表保存失敗")
 
-            except Exception as e:
-                print(f"  ⚠️  警告：繪製 {feature_id} ({batch_name}) 時發生錯誤: {e}")
-                plt.close()
-                continue
-
-        print(f"✓ LOWESS 擬合趨勢圖繪製完成")
+        print(f"✓ LOWESS 擬合趨勢圖繪製完成（共 {page_count} 張整合圖表，原需 {total_features} 張）")
 
     except Exception as e:
         print(f"  ⚠️ 繪製 LOWESS 擬合趨勢圖時發生錯誤: {e}")
@@ -1689,9 +1742,9 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         print(f"  - 整體評估: Wilcoxon test 已在終端機顯示")
         print(f"\n{'='*70}\n")
         
-        # P 值分佈圖
+        # P 值分佈圖 (disabled: provides limited diagnostic value)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-        plot_pvalue_distribution(cv_results_df, plots_dir, timestamp)
+        # plot_pvalue_distribution(cv_results_df, plots_dir, timestamp)
 
         # LOWESS 擬合趨勢圖（僅限 debug 特徵）
         if trend_plot_data:

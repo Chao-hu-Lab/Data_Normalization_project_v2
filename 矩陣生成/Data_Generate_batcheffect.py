@@ -19,42 +19,59 @@ is_indices = sorted(is_indices)
 print(f"選定的內標特徵索引: {is_indices}")
 print(f"內標數量: {n_internal_standards}")
 
-# 生成樣本序列：每個batch第一針是QC，然後每3隻樣本打一隻QC
-sample_list = []
-batch_list = []
-sample_type_list = []
+# 生成樣本序列（固定 51 針）
+# 規則：首針 QC，之後 Exposure -> Control 交替不停止；每 3 個樣本插入 1 個 QC。
+# Exposure/Control 的交替邏輯遇到 QC 不重置，會「順延」到下一個樣本。
+TOTAL_INJECTIONS = 51
+BATCH_SIZE = 17
+QC_EVERY_N_SAMPLES = 3
+
+if len(batches) * BATCH_SIZE != TOTAL_INJECTIONS:
+    raise ValueError(
+        f"batches({len(batches)}) * BATCH_SIZE({BATCH_SIZE}) 必須等於 TOTAL_INJECTIONS({TOTAL_INJECTIONS})"
+    )
+
+sample_list: list[str] = []
+batch_list: list[str] = []
+sample_type_list: list[str] = []
+group_list: list[str] = []
 
 qc_counter = 1
+exposure_counter = 1
+control_counter = 1
+exposure_next = True
 
-for batch in batches:
-    # 每個batch第一針是QC
-    sample_list.append(f'QC{qc_counter}')
+# QC 的位置：第 1 針是 QC，之後每 3 個樣本插 1 個 QC（等價於每 4 針出現 1 個 QC）
+qc_positions = set(range(1, TOTAL_INJECTIONS + 1, QC_EVERY_N_SAMPLES + 1))
+
+for injection_order in range(1, TOTAL_INJECTIONS + 1):
+    batch = batches[(injection_order - 1) // BATCH_SIZE]
     batch_list.append(batch)
-    sample_type_list.append('QC')
-    qc_counter += 1
-    
-    # 每個batch有17個樣本位置（除了第一個QC）
-    sample_in_batch = 0
-    batch_sample_counter = 1
-    
-    while sample_in_batch < 16:
-        # 添加最多3個樣本
-        for _ in range(3):
-            if sample_in_batch >= 16:
-                break
-            sample_list.append(f'{batch}_Sample_{batch_sample_counter}')
-            batch_list.append(batch)
-            sample_type_list.append('Sample')
-            batch_sample_counter += 1
-            sample_in_batch += 1
-        
-        # 每3個樣本後添加QC（如果還有空間）
-        if sample_in_batch < 16:
-            sample_list.append(f'QC{qc_counter}')
-            batch_list.append(batch)
-            sample_type_list.append('QC')
-            qc_counter += 1
-            sample_in_batch += 1
+
+    if injection_order in qc_positions:
+        sample_list.append(f'QC{qc_counter}')
+        sample_type_list.append('QC')
+        group_list.append('QC')
+        qc_counter += 1
+        continue
+
+    if exposure_next:
+        sample_list.append(f'Exposure_{exposure_counter}')
+        sample_type_list.append('Sample')
+        group_list.append('Exposure')
+        exposure_counter += 1
+    else:
+        sample_list.append(f'Control_{control_counter}')
+        sample_type_list.append('Sample')
+        group_list.append('Control')
+        control_counter += 1
+
+    exposure_next = not exposure_next
+
+if len(sample_list) != TOTAL_INJECTIONS:
+    raise AssertionError(f"總針數錯誤：預期 {TOTAL_INJECTIONS}，實際 {len(sample_list)}")
+if not (len(batch_list) == len(sample_type_list) == len(group_list) == len(sample_list)):
+    raise AssertionError("sample_list / batch_list / sample_type_list / group_list 長度不一致")
 
 n_samples = len(sample_list)
 
@@ -162,6 +179,7 @@ feature_info = pd.DataFrame({
 sample_info = pd.DataFrame({
     'Sample': sample_list,
     'Batch': batch_list,
+    'Group': group_list,
     'Type': sample_type_list,
     'Injection_Order': range(1, n_samples + 1)
 })
