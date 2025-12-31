@@ -21,28 +21,13 @@ import copy
 
 warnings.filterwarnings('ignore')
 
-# ========== Matplotlib Global Settings ==========
-plt.rcParams['text.usetex'] = False
-plt.rcParams['mathtext.default'] = 'regular'
-if sys.platform == 'darwin':
-    plt.rcParams['font.family'] = 'Helvetica'
-else:
-    plt.rcParams['font.family'] = 'Arial'
+# ========== 匯入共用模組 ==========
+from utils.data_helpers import get_valid_values
+from utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
+from utils.plotting import setup_matplotlib, FONT_SIZES, COLORBLIND_COLORS, plot_pca_comparison_qc_style
 
-FONT_SIZES = {'title': 14, 'subtitle': 12, 'axis_label': 11, 'tick': 10, 'legend': 9, 'annotation': 9}
-
-def get_valid_values(row, columns):
-    """Helper: 從 row 中提取有效浮點值"""
-    values = []
-    for col in columns:
-        if col in row:
-            try:
-                val = float(row[col])
-                if not pd.isna(val) and val > 0:
-                    values.append(val)
-            except ValueError:
-                pass
-    return values
+# 設定 matplotlib
+setup_matplotlib()
 
 def load_and_process_data(file_path):
     try:
@@ -1037,7 +1022,13 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         print(f"已建立 'ISTD_Correction_plots' 資料夾: {plots_dir}")
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-    sample_meta = sample_info_df.set_index('Sample_Name')
+
+    # 🔧 修正：樣本名稱用 strip+lower 做穩健匹配，避免因空白/大小寫差異導致 QC 誤判不足
+    sample_info_norm = sample_info_df.copy()
+    sample_info_norm['Sample_Name_norm'] = (
+        sample_info_norm['Sample_Name'].astype(str).str.strip().str.lower()
+    )
+    sample_meta = sample_info_norm.set_index('Sample_Name_norm')
 
     # 識別 QC 樣本和樣本類型
     qc_columns = []
@@ -1046,8 +1037,9 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
     sample_type_map = {}
     
     for col in sample_columns:
-        if col in sample_meta.index:
-            sample_type = sample_meta.loc[col].get('Sample_Type', 'Unknown')
+        col_norm = str(col).strip().lower()
+        if col_norm in sample_meta.index:
+            sample_type = sample_meta.loc[col_norm].get('Sample_Type', 'Unknown')
             sample_type_map[col] = sample_type
             
             sample_type_upper = str(sample_type).upper()
@@ -1164,224 +1156,41 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         print(f"   - T² 閾值: {t2_threshold_right:.2f}")
         print(f"   - 異常值數量: {np.sum(outliers_right)}/{len(qc_columns)}")
 
-        # 繪製 2D PCA 圖
-        fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(16, 9))
-        fig.suptitle(f'2D PCA Comparison: {left_name} vs {right_name}',
-                     fontsize=18, y=0.98, fontweight='bold')
-
-        # ===== 左圖：校正前 =====
-        for i, col in enumerate(sample_columns):
-            color = color_map[col]
-            marker = marker_map[col]
-            
-            # 🔧 判斷是否為異常值
-            is_outlier = False
+        # 統一 PCA 圖樣式（以 QC 子程式風格為主）
+        sample_types = []
+        for col in sample_columns:
             if col in qc_columns:
-                qc_idx = qc_columns.index(col)
-                is_outlier = outliers_left[qc_idx]
-            
-            # 🎨 關鍵修改：只有 QC 樣本有邊框，且邊框變細
-            if col in qc_columns:
-                # QC 樣本：帶邊框（變細）
-                if is_outlier:
-                    edgecolor = 'red'
-                    linewidth = 1.5  # 🔧 
-                    size = 150
-                    alpha = 0.9
-                else:
-                    edgecolor = 'black'
-                    linewidth = 0.8  # 🔧 
-                    size = 120
-                    alpha = 0.8
+                sample_types.append('QC')
+            elif col in exposed_columns:
+                sample_types.append('Exposure')
             else:
-                # Control 和 Exposed：無邊框
-                edgecolor = 'none'
-                linewidth = 0
-                size = 120
-                alpha = 0.8
-            
-            ax_left.scatter(scores_left[i, 0], scores_left[i, 1],
-                          c=[color], marker=marker, s=size, alpha=alpha,
-                          edgecolors=edgecolor, linewidths=linewidth)
+                sample_types.append('Control')
 
-        # 繪製兩個 Hotelling T² 橢圓
-        all_bounds_left = []
-
-        bounds_all_left = draw_hotelling_t2_ellipse(ax_left, scores_left,
-                                                    label='95% CI (All Samples)',
-                                                    edgecolor='gray', linestyle='--', linewidth=2)
-        if bounds_all_left:
-            all_bounds_left.append(bounds_all_left)
-
-        bounds_qc_left = draw_hotelling_t2_ellipse(ax_left, qc_scores_left,
-                                                    label='95% CI (QC Only)',
-                                                    edgecolor='#9370DB', linestyle='-', linewidth=3)
-        if bounds_qc_left:
-            all_bounds_left.append(bounds_qc_left)
-
-        # 調整軸範圍
-        if all_bounds_left:
-            x_min = min([b[0] for b in all_bounds_left])
-            x_max = max([b[1] for b in all_bounds_left])
-            y_min = min([b[2] for b in all_bounds_left])
-            y_max = max([b[3] for b in all_bounds_left])
-        else:
-            x_min, x_max = np.min(scores_left[:, 0]), np.max(scores_left[:, 0])
-            y_min, y_max = np.min(scores_left[:, 1]), np.max(scores_left[:, 1])
-        
-        data_x_min, data_x_max = np.min(scores_left[:, 0]), np.max(scores_left[:, 0])
-        data_y_min, data_y_max = np.min(scores_left[:, 1]), np.max(scores_left[:, 1])
-        
-        x_min = min(x_min, data_x_min)
-        x_max = max(x_max, data_x_max)
-        y_min = min(y_min, data_y_min)
-        y_max = max(y_max, data_y_max)
-        
-        x_abs_max = max(abs(x_min), abs(x_max))
-        y_abs_max = max(abs(y_min), abs(y_max))
-        
-        x_margin = x_abs_max * 0.2
-        y_margin = y_abs_max * 0.2
-        
-        ax_left.set_xlim(-x_abs_max - x_margin, x_abs_max + x_margin)
-        ax_left.set_ylim(-y_abs_max - y_margin, y_abs_max + y_margin)
-        
-        ax_left.set_title(f'{left_name}\nPC1: {var_left[0]:.1%}, PC2: {var_left[1]:.1%}\nHotelling T² Threshold: {t2_threshold_left:.2f}',
-                         fontsize=13, fontweight='bold', pad=10)
-        ax_left.set_xlabel(f't[1] ({var_left[0]:.1%})', fontsize=12, fontweight='bold')
-        ax_left.set_ylabel(f't[2] ({var_left[1]:.1%})', fontsize=12, fontweight='bold')
-        ax_left.grid(True, alpha=0.3, linestyle='--')
-        ax_left.axhline(y=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-        ax_left.axvline(x=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-
-        # ===== 右圖：校正後（相同邏輯）=====
-        for i, col in enumerate(sample_columns):
-            color = color_map[col]
-            marker = marker_map[col]
-            
-            is_outlier = False
-            if col in qc_columns:
-                qc_idx = qc_columns.index(col)
-                is_outlier = outliers_right[qc_idx]
-            
-            # 🎨 關鍵修改：只有 QC 樣本有邊框，且邊框變細
-            if col in qc_columns:
-                if is_outlier:
-                    edgecolor = 'red'
-                    linewidth = 1.5  # 🔧 
-                    size = 150
-                    alpha = 0.9
-                else:
-                    edgecolor = 'black'
-                    linewidth = 0.8  # 🔧 
-                    size = 120
-                    alpha = 0.8
-            else:
-                edgecolor = 'none'
-                linewidth = 0
-                size = 120
-                alpha = 0.8
-            
-            ax_right.scatter(scores_right[i, 0], scores_right[i, 1],
-                           c=[color], marker=marker, s=size, alpha=alpha,
-                           edgecolors=edgecolor, linewidths=linewidth)
-
-        all_bounds_right = []
-        
-        bounds_all_right = draw_hotelling_t2_ellipse(ax_right, scores_right,
-                                                      label='95% CI (All Samples)',
-                                                      edgecolor='gray', linestyle='--', linewidth=2)
-        if bounds_all_right:
-            all_bounds_right.append(bounds_all_right)
-        
-        bounds_qc_right = draw_hotelling_t2_ellipse(ax_right, qc_scores_right,
-                                                     label='95% CI (QC Only)',
-                                                     edgecolor='#9370DB', linestyle='-', linewidth=3)
-        if bounds_qc_right:
-            all_bounds_right.append(bounds_qc_right)
-        
-        if all_bounds_right:
-            x_min = min([b[0] for b in all_bounds_right])
-            x_max = max([b[1] for b in all_bounds_right])
-            y_min = min([b[2] for b in all_bounds_right])
-            y_max = max([b[3] for b in all_bounds_right])
-        else:
-            x_min, x_max = np.min(scores_right[:, 0]), np.max(scores_right[:, 0])
-            y_min, y_max = np.min(scores_right[:, 1]), np.max(scores_right[:, 1])
-        
-        data_x_min, data_x_max = np.min(scores_right[:, 0]), np.max(scores_right[:, 0])
-        data_y_min, data_y_max = np.min(scores_right[:, 1]), np.max(scores_right[:, 1])
-        
-        x_min = min(x_min, data_x_min)
-        x_max = max(x_max, data_x_max)
-        y_min = min(y_min, data_y_min)
-        y_max = max(y_max, data_y_max)
-        
-        x_abs_max = max(abs(x_min), abs(x_max))
-        y_abs_max = max(abs(y_min), abs(y_max))
-        
-        x_margin = x_abs_max * 0.2
-        y_margin = y_abs_max * 0.2
-        
-        ax_right.set_xlim(-x_abs_max - x_margin, x_abs_max + x_margin)
-        ax_right.set_ylim(-y_abs_max - y_margin, y_abs_max + y_margin)
-        
-        ax_right.set_title(f'{right_name}\nPC1: {var_right[0]:.1%}, PC2: {var_right[1]:.1%}\nHotelling T² Threshold: {t2_threshold_right:.2f}',
-                          fontsize=13, fontweight='bold', pad=10)
-        ax_right.set_xlabel(f't[1] ({var_right[0]:.1%})', fontsize=12, fontweight='bold')
-        ax_right.set_ylabel(f't[2] ({var_right[1]:.1%})', fontsize=12, fontweight='bold')
-        ax_right.grid(True, alpha=0.3, linestyle='--')
-        ax_right.axhline(y=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-        ax_right.axvline(x=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-
-        # ===== 🎨 修改後的圖例（更新邊框粗細說明）=====
-        sample_legend_elements = [
-            plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='#4169E1',
-                      markersize=12, label='Control', 
-                      markeredgecolor='none', markeredgewidth=0),
-            plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='#DC143C',
-                      markersize=12, label='Exposed', 
-                      markeredgecolor='none', markeredgewidth=0),
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
-                      markersize=12, label='QC', 
-                      markeredgecolor='black', markeredgewidth=0.8),  # 🔧 更新為 0.8
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
-                      markersize=12, label='QC Outlier', 
-                      markeredgecolor='red', markeredgewidth=1.5)  # 🔧 更新為 1.5
-        ]
-        
-        ellipse_legend_elements = [
-            plt.Line2D([0], [0], linestyle='--', color='gray',
-                      linewidth=2, label='95% CI (All Samples)'),
-            plt.Line2D([0], [0], linestyle='-', color='#9370DB',
-                      linewidth=3, label='95% CI (QC Only)')
-        ]
-        
-        legend1 = fig.legend(handles=sample_legend_elements, 
-                            loc='center left', 
-                            bbox_to_anchor=(1.01, 0.7),
-                            fontsize=11,
-                            title='Sample Type', 
-                            title_fontsize=12,
-                            frameon=True, 
-                            fancybox=True, 
-                            shadow=True)
-        
-        legend2 = fig.legend(handles=ellipse_legend_elements, 
-                            loc='center left', 
-                            bbox_to_anchor=(1.01, 0.3),
-                            fontsize=11,
-                            title='Confidence Ellipse', 
-                            title_fontsize=12,
-                            frameon=True, 
-                            fancybox=True, 
-                            shadow=True)
-
-        plt.tight_layout(rect=[0, 0, 0.88, 0.96])
+        qc_outliers_left = {qc_columns[i] for i in range(len(qc_columns)) if outliers_left[i]}
+        qc_outliers_right = {qc_columns[i] for i in range(len(qc_columns)) if outliers_right[i]}
 
         output_path = os.path.join(plots_dir, f"2D_PCA_{left_name.replace(' ', '_')}_vs_{right_name.replace(' ', '_')}_{timestamp}.png")
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        plt.close()
+        plot_pca_comparison_qc_style(
+            scores_left,
+            scores_right,
+            var_left,
+            var_right,
+            sample_columns,
+            sample_types,
+            batch_labels=None,
+            grouping='sample_type',
+            suptitle=f'2D PCA Comparison: {left_name} vs {right_name}',
+            left_title=left_name,
+            right_title=right_name,
+            left_threshold_text=f'Hotelling T² Threshold: {t2_threshold_left:.2f}',
+            right_threshold_text=f'Hotelling T² Threshold: {t2_threshold_right:.2f}',
+            qc_outlier_names_left=qc_outliers_left,
+            qc_outlier_names_right=qc_outliers_right,
+            output_path=output_path,
+            dpi=300,
+        )
+
+        plt.close('all')
         print(f"✓ 2D PCA 圖已儲存: {output_path}")
 
         # ===== 輸出異常值摘要 =====

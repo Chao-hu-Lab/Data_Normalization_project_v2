@@ -88,7 +88,6 @@ class DataNormalizationApp:
         self.last_output_file = None  # 記錄最後一個輸出檔案
         self.step_outputs = {}
         self.auto_run_mode = False
-        self.progress_running = False
         self.current_step_index = -1  # 追蹤當前步驟索引
         
         # 統計資訊
@@ -101,10 +100,7 @@ class DataNormalizationApp:
             'output_folder': '',  # 🆕 新增：輸出資料夾路徑
             'execution_time': 0  # 🆕 新增：執行時間
         }
-        
-        # 🔧 新增：用於從終端機輸出抓取資訊
-        self.output_buffer = []
-        
+
         # 設置樣式
         self.style = ttk.Style()
         self.style.theme_use('clam')
@@ -144,6 +140,86 @@ class DataNormalizationApp:
         
         # 初始化按鈕狀態
         self.update_button_states()
+
+    # ========== UI 輔助方法 ==========
+
+    def _create_status_card(self, parent, icon, title, initial_value, value_color=None):
+        """建立統計狀態卡片
+
+        Parameters:
+        -----------
+        parent : tk.Frame
+            父容器
+        icon : str
+            圖示 emoji
+        title : str
+            卡片標題
+        initial_value : str
+            初始顯示值
+        value_color : str, optional
+            數值顏色，預設使用 text_dark
+
+        Returns:
+        --------
+        tk.Label : 可更新的數值標籤
+        """
+        card = tk.Frame(parent, bg='#f8f9fa', padx=16, pady=12)
+        card.pack(fill=tk.X, pady=(0, 12))
+
+        tk.Label(
+            card,
+            text=f"{icon} {title}",
+            font=(FONTS['sans'], 10),
+            fg=self.color_scheme['text_light'],
+            bg='#f8f9fa'
+        ).pack(anchor='w')
+
+        value_label = tk.Label(
+            card,
+            text=initial_value,
+            font=(FONTS['sans'], 14, 'bold'),
+            fg=value_color or self.color_scheme['text_dark'],
+            bg='#f8f9fa'
+        )
+        value_label.pack(anchor='w', pady=(4, 0))
+
+        return value_label
+
+    def _create_ghost_button(self, parent, text, command, emoji=None, width=None):
+        """建立 Ghost 樣式按鈕
+
+        Parameters:
+        -----------
+        parent : tk.Frame
+            父容器
+        text : str
+            按鈕文字
+        command : callable
+            點擊回調
+        emoji : str, optional
+            前綴 emoji
+        width : int, optional
+            按鈕寬度
+
+        Returns:
+        --------
+        tk.Button : 建立的按鈕
+        """
+        display_text = f"{emoji} {text}" if emoji else text
+        btn = tk.Button(
+            parent,
+            text=display_text,
+            command=command,
+            font=(FONTS['sans'], 9),
+            bg=self.color_scheme['ghost'],
+            fg=self.color_scheme['ghost_text'],
+            relief='flat',
+            padx=8,
+            pady=2
+        )
+        if width:
+            btn.config(width=width)
+        return btn
 
     def setup_logging(self):
         """設置日誌系統"""
@@ -689,17 +765,9 @@ class DataNormalizationApp:
             bg=self.color_scheme['panel_bg']
         ).pack(side=tk.LEFT)
         
-        # Clear Log Button
-        clear_log_btn = tk.Button(
-            log_header,
-            text="🗑 Clear",
-            command=self.clear_log,
-            font=(FONTS['sans'], 9),
-            bg=self.color_scheme['ghost'],
-            fg=self.color_scheme['ghost_text'],
-            relief='flat',
-            padx=8,
-            pady=2
+        # Clear Log Button (使用輔助方法)
+        clear_log_btn = self._create_ghost_button(
+            log_header, "Clear", self.clear_log, emoji="🗑"
         )
         clear_log_btn.pack(side=tk.RIGHT)
         
@@ -728,72 +796,21 @@ class DataNormalizationApp:
         # === Tab 2: 狀態統計 ===
         stats_tab = tk.Frame(self.info_notebook, bg=self.color_scheme['panel_bg'])
         self.info_notebook.add(stats_tab, text="📊 Status")
-        
+
         stats_inner = tk.Frame(stats_tab, bg=self.color_scheme['panel_bg'], padx=20, pady=20)
         stats_inner.pack(fill=tk.BOTH, expand=True)
-        
-        # 狀態卡片 - 當前步驟
-        step_card = tk.Frame(stats_inner, bg='#f8f9fa', padx=16, pady=12)
-        step_card.pack(fill=tk.X, pady=(0, 12))
-        
-        tk.Label(
-            step_card,
-            text="🔄 Current Step",
-            font=(FONTS['sans'], 10),
-            fg=self.color_scheme['text_light'],
-            bg='#f8f9fa'
-        ).pack(anchor='w')
-        
-        self.stats_step_label = tk.Label(
-            step_card,
-            text="Idle",
-            font=(FONTS['sans'], 14, 'bold'),
-            fg=self.color_scheme['text_dark'],
-            bg='#f8f9fa'
+
+        # 使用輔助方法建立狀態卡片
+        self.stats_step_label = self._create_status_card(
+            stats_inner, "🔄", "Current Step", "Idle"
         )
-        self.stats_step_label.pack(anchor='w', pady=(4, 0))
-        
-        # 狀態卡片 - 資料維度
-        data_card = tk.Frame(stats_inner, bg='#f8f9fa', padx=16, pady=12)
-        data_card.pack(fill=tk.X, pady=(0, 12))
-        
-        tk.Label(
-            data_card,
-            text="📐 Data Matrix",
-            font=(FONTS['sans'], 10),
-            fg=self.color_scheme['text_light'],
-            bg='#f8f9fa'
-        ).pack(anchor='w')
-        
-        self.stats_data_label = tk.Label(
-            data_card,
-            text="No data loaded",
-            font=(FONTS['sans'], 14, 'bold'),
-            fg=self.color_scheme['text_dark'],
-            bg='#f8f9fa'
+        self.stats_data_label = self._create_status_card(
+            stats_inner, "📐", "Data Matrix", "No data loaded"
         )
-        self.stats_data_label.pack(anchor='w', pady=(4, 0))
-        
-        # 狀態卡片 - 完成進度
-        progress_card = tk.Frame(stats_inner, bg='#f8f9fa', padx=16, pady=12)
-        progress_card.pack(fill=tk.X, pady=(0, 12))
-        
-        tk.Label(
-            progress_card,
-            text="✅ Completed Steps",
-            font=(FONTS['sans'], 10),
-            fg=self.color_scheme['text_light'],
-            bg='#f8f9fa'
-        ).pack(anchor='w')
-        
-        self.stats_completed_label = tk.Label(
-            progress_card,
-            text="0 / 4",
-            font=(FONTS['sans'], 14, 'bold'),
-            fg=self.color_scheme['success'],
-            bg='#f8f9fa'
+        self.stats_completed_label = self._create_status_card(
+            stats_inner, "✅", "Completed Steps", "0 / 4",
+            value_color=self.color_scheme['success']
         )
-        self.stats_completed_label.pack(anchor='w', pady=(4, 0))
 
     def create_progress_area(self):
         """Create bottom progress area - 使用 grid row 5 確保不被遮擋"""
@@ -852,10 +869,6 @@ class DataNormalizationApp:
         if hasattr(self, 'progress_bar'):
             if value is not None:
                 self.progress_bar['value'] = value
-            
-            # 雖然是 determinate 模式，但如果需要顯示"正在跑"的感覺，可以保留 running 參數做其他用途
-            # 但這裡主要依賴 value 來顯示進度
-            pass
 
     def update_button_states(self):
         """更新按鈕狀態 - 引導式按鈕樣式"""
