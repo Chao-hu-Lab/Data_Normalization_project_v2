@@ -22,17 +22,17 @@ from collections import Counter
 warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
-from utils.data_helpers import get_valid_values
-from utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
-from utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
-from utils.constants import (
+from metabolomics.utils.data_helpers import get_valid_values
+from metabolomics.utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
+from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
+from metabolomics.utils.constants import (
     FONT_SIZES,
     COLORBLIND_COLORS,
     NON_SAMPLE_COLUMNS,
     STAT_COLUMN_KEYWORDS,
     SHEET_NAMES,
 )
-from utils.sample_classification import (
+from metabolomics.utils.sample_classification import (
     normalize_sample_name,
     identify_sample_columns,
 )

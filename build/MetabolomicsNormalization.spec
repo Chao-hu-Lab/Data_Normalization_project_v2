@@ -2,7 +2,7 @@
 # =============================================================================
 # PyInstaller Spec File for Metabolomics Data Normalization
 # =============================================================================
-# Build command: pyinstaller MetabolomicsNormalization.spec
+# Build command: pyinstaller build/MetabolomicsNormalization.spec
 # =============================================================================
 
 import os
@@ -14,6 +14,7 @@ hiddenimports = []
 hiddenimports += collect_submodules('sklearn')
 hiddenimports += collect_submodules('statsmodels')
 hiddenimports += collect_submodules('scipy')
+hiddenimports += collect_submodules('metabolomics')
 hiddenimports += [
     'sklearn.utils._typedefs',
     'sklearn.utils._heap',
@@ -26,24 +27,30 @@ hiddenimports += [
     'scipy.integrate',
     'scipy.integrate._odepack',
     'scipy.integrate._quadpack',
+    'metabolomics.processors.istd',
+    'metabolomics.processors.qc_lowess',
+    'metabolomics.processors.batch_effect',
+    'metabolomics.processors.normalization',
+    'metabolomics.utils',
+    'metabolomics.gui',
 ]
 
-# Data files to include
+# Data files to include (paths relative to project root)
 datas = [
-    ('utils', 'utils'),
-    ('readme_subroutine', 'readme_subroutine'),
+    ('src/metabolomics', 'metabolomics'),
+    ('docs', 'docs'),
 ]
 
 # Add assets if exists
-if os.path.exists('assets'):
-    datas.append(('assets', 'assets'))
+if os.path.exists('build/assets'):
+    datas.append(('build/assets', 'assets'))
 
 # Check for icon
-icon_path = 'assets/icon.ico' if os.path.exists('assets/icon.ico') else None
+icon_path = 'build/assets/icon.ico' if os.path.exists('build/assets/icon.ico') else None
 
 a = Analysis(
-    ['Data_Normalization_program_v2.py'],
-    pathex=[],
+    ['src/metabolomics/gui/app.py'],
+    pathex=['src'],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,

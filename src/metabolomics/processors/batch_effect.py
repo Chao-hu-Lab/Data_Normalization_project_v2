@@ -24,10 +24,10 @@ from scipy.stats import chi2, f as f_dist
 warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
-from utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
-from utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
-from utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES
-from utils.sample_classification import SampleClassifier, identify_sample_columns
+from metabolomics.utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
+from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
+from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES
+from metabolomics.utils.sample_classification import SampleClassifier, identify_sample_columns
 
 # 設定 matplotlib
 setup_matplotlib()

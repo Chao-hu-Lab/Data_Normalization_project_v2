@@ -63,7 +63,7 @@ jobs:
       - name: Build executable with PyInstaller
         run: |
           # Use spec file for reliable builds
-          pyinstaller --clean --noconfirm MetabolomicsNormalization.spec
+          pyinstaller --clean --noconfirm build/MetabolomicsNormalization.spec
         shell: pwsh
 
       - name: Verify build
@@ -87,7 +87,7 @@ jobs:
 
           # Copy documentation
           Copy-Item "README.md" $distDir -ErrorAction SilentlyContinue
-          Copy-Item -Path "readme_subroutine" -Destination "$distDir/docs" -Recurse -ErrorAction SilentlyContinue
+          Copy-Item -Path "docs" -Destination "$distDir/docs" -Recurse -ErrorAction SilentlyContinue
 
           # Create version info
           @"
@@ -150,8 +150,8 @@ jobs:
             --name "${{ env.APP_NAME }}" \
             --windowed \
             --onefile \
-            --add-data "utils:utils" \
-            --add-data "readme_subroutine:readme_subroutine" \
+            --add-data "src/metabolomics:metabolomics" \
+            --add-data "docs:docs" \
             --hidden-import "sklearn.utils._typedefs" \
             --hidden-import "sklearn.utils._heap" \
             --hidden-import "sklearn.utils._sorting" \
@@ -159,7 +159,7 @@ jobs:
             --hidden-import "scipy.special._cdflib" \
             --collect-submodules "statsmodels" \
             --osx-bundle-identifier "com.metabolomics.normalization" \
-            Data_Normalization_program_v2.py
+            src/metabolomics/gui/app.py
 
       - name: Verify build
         run: |
@@ -181,7 +181,7 @@ jobs:
 
           # Copy documentation
           cp README.md "$DIST_DIR/" 2>/dev/null || true
-          cp -r readme_subroutine "$DIST_DIR/docs" 2>/dev/null || true
+          cp -r docs "$DIST_DIR/docs" 2>/dev/null || true
 
           # Create version info
           cat > "$DIST_DIR/VERSION.txt" << EOF
@@ -316,8 +316,10 @@ jobs:
 
       - name: Verify imports
         run: |
-          python -c "import ISTD_Correction_v2; print('ISTD_Correction_v2: OK')"
-          python -c "import QC_LOWESS_v2; print('QC_LOWESS_v2: OK')"
-          python -c "import Batch_Effect_v2; print('Batch_Effect_v2: OK')"
-          python -c "import Concentration_Normalization_v2; print('Concentration_Normalization_v2: OK')"
-          python -c "from utils import *; print('utils: OK')"
+          $env:PYTHONPATH = "src"
+          python -c "from metabolomics.processors import istd; print('istd: OK')"
+          python -c "from metabolomics.processors import qc_lowess; print('qc_lowess: OK')"
+          python -c "from metabolomics.processors import batch_effect; print('batch_effect: OK')"
+          python -c "from metabolomics.processors import normalization; print('normalization: OK')"
+          python -c "from metabolomics import utils; print('utils: OK')"
+        shell: pwsh

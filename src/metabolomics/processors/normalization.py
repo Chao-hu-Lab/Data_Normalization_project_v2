@@ -18,9 +18,9 @@ from copy import copy
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-from utils.plotting import plot_pca_comparison_qc_style, setup_matplotlib
-from utils.constants import FONT_SIZES, SHEET_NAMES
-from utils.sample_classification import SampleClassifier, normalize_sample_type
+from metabolomics.utils.plotting import plot_pca_comparison_qc_style, setup_matplotlib
+from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES
+from metabolomics.utils.sample_classification import SampleClassifier, normalize_sample_type
 
 warnings.filterwarnings('ignore')
 

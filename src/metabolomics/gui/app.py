@@ -572,13 +572,13 @@ class DataNormalizationApp:
         """Create steps area - Card Layout with Input Source Display"""
         # Step Definitions
         self.steps = [
-            {'name': 'Step 1: ISTD Correction', 'script': 'ISTD_Correction_v2.py', 'enabled': True,
+            {'name': 'Step 1: ISTD Correction', 'module': 'metabolomics.processors.istd', 'enabled': True,
              'color': self.color_scheme['step1'], 'accent': self.color_scheme['step1_accent']},
-            {'name': 'Step 2: QC Correction', 'script': 'QC_LOWESS_v2.py', 'enabled': False,
+            {'name': 'Step 2: QC Correction', 'module': 'metabolomics.processors.qc_lowess', 'enabled': False,
              'color': self.color_scheme['step2'], 'accent': self.color_scheme['step2_accent']},
-            {'name': 'Step 3: Batch Correction', 'script': 'Batch_Effect_v2.py', 'enabled': False,
+            {'name': 'Step 3: Batch Correction', 'module': 'metabolomics.processors.batch_effect', 'enabled': False,
              'color': self.color_scheme['step3'], 'accent': self.color_scheme['step3_accent']},
-            {'name': 'Step 4: Conc. Normalization', 'script': 'Concentration_Normalization_v2.py', 'enabled': False,
+            {'name': 'Step 4: Conc. Normalization', 'module': 'metabolomics.processors.normalization', 'enabled': False,
              'color': self.color_scheme['step4'], 'accent': self.color_scheme['step4_accent']}
         ]
 
@@ -1096,24 +1096,17 @@ class DataNormalizationApp:
         return f"{record.getMessage()}"
 
 
-    def load_script(self, script_name):
-        """Dynamically load script"""
+    def load_script(self, module_name):
+        """Dynamically load processor module"""
         try:
-            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script_name)
-            
-            if not os.path.exists(script_path):
-                self.logger.error(f"Script not found: {script_path}")
-                return None
-            
-            spec = importlib.util.spec_from_file_location(script_name, script_path)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            
-            self.logger.info(f"✅ Successfully loaded script: {script_name}")
+            import importlib
+            module = importlib.import_module(module_name)
+
+            self.logger.info(f"Successfully loaded module: {module_name}")
             return module
-            
+
         except Exception as e:
-            self.logger.error(f"Failed to load script: {script_name}")
+            self.logger.error(f"Failed to load module: {module_name}")
             self.logger.error(traceback.format_exc())
             return None
 
@@ -1225,8 +1218,8 @@ class DataNormalizationApp:
             
             self.logger.info(f"Using input file: {os.path.basename(current_input)}")
             
-            # Load script
-            script_module = self.load_script(step['script'])
+            # Load processor module
+            script_module = self.load_script(step['module'])
             
             if not script_module:
                 raise Exception("Failed to load script")

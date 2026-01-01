@@ -8,8 +8,8 @@ import shutil
 import tempfile
 from datetime import datetime
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add src directory to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 
 # ============================================================
@@ -25,7 +25,7 @@ def project_root():
 @pytest.fixture(scope="session")
 def test_data_dir(project_root):
     """Return the test data directory path."""
-    return os.path.join(project_root, "矩陣生成")
+    return os.path.join(project_root, "examples", "data")
 
 
 @pytest.fixture(scope="session")
@@ -99,47 +99,31 @@ def clean_output_dir(output_dir):
 # ============================================================
 
 @pytest.fixture(scope="session")
-def istd_module(project_root):
-    """Import and return ISTD_Correction_v2 module."""
-    import importlib.util
-    module_path = os.path.join(project_root, "ISTD_Correction_v2.py")
-    spec = importlib.util.spec_from_file_location("ISTD_Correction_v2", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def istd_module():
+    """Import and return ISTD processor module."""
+    from metabolomics.processors import istd
+    return istd
 
 
 @pytest.fixture(scope="session")
-def qc_lowess_module(project_root):
-    """Import and return QC_LOWESS_v2 module."""
-    import importlib.util
-    module_path = os.path.join(project_root, "QC_LOWESS_v2.py")
-    spec = importlib.util.spec_from_file_location("QC_LOWESS_v2", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def qc_lowess_module():
+    """Import and return QC-LOWESS processor module."""
+    from metabolomics.processors import qc_lowess
+    return qc_lowess
 
 
 @pytest.fixture(scope="session")
-def batch_effect_module(project_root):
-    """Import and return Batch_Effect_v2 module."""
-    import importlib.util
-    module_path = os.path.join(project_root, "Batch_Effect_v2.py")
-    spec = importlib.util.spec_from_file_location("Batch_Effect_v2", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def batch_effect_module():
+    """Import and return Batch Effect processor module."""
+    from metabolomics.processors import batch_effect
+    return batch_effect
 
 
 @pytest.fixture(scope="session")
-def conc_norm_module(project_root):
-    """Import and return Concentration_Normalization_v2 module."""
-    import importlib.util
-    module_path = os.path.join(project_root, "Concentration_Normalization_v2.py")
-    spec = importlib.util.spec_from_file_location("Concentration_Normalization_v2", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def conc_norm_module():
+    """Import and return Concentration Normalization processor module."""
+    from metabolomics.processors import normalization
+    return normalization
 
 
 # ============================================================
