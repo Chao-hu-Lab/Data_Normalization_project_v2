@@ -1,7 +1,10 @@
 # Python
 __pycache__/
 *.py[cod]
-*.spec
+
+# PyInstaller 輸出 (但保留 .spec 設定檔)
+/build/
+/dist/
 
 # 輸出資料夾
 /output/
@@ -13,6 +16,7 @@ __pycache__/
 # 所有 Excel 檔案（除了範例檔案）
 *.xlsx
 *.xls
+!矩陣生成/*.xlsx
 
 # 所有圖片檔案
 *.png
@@ -28,8 +32,6 @@ __pycache__/
 # 開發環境
 .vscode/
 .idea/
-.github/
-/Data_Normalization_project_v2/
 
 # 其他
-/requirements.txt
+/Data_Normalization_project_v2/
