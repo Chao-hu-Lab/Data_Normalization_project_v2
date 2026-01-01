@@ -24,7 +24,9 @@ warnings.filterwarnings('ignore')
 # ========== 匯入共用模組 ==========
 from utils.data_helpers import get_valid_values
 from utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
-from utils.plotting import setup_matplotlib, FONT_SIZES, COLORBLIND_COLORS, plot_pca_comparison_qc_style
+from utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
+from utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES
+from utils.sample_classification import SampleClassifier, identify_sample_columns
 
 # 設定 matplotlib
 setup_matplotlib()
@@ -282,17 +284,26 @@ def identify_istd_signals(df):
     return df[df['is_ISTD']], df[~df['is_ISTD']]
 
 def calculate_istd_cv(istd_signals, sample_columns):
-    istd_cv = {}
-    for _, row in istd_signals.iterrows():
-        values = get_valid_values(row, sample_columns)
-        if len(values) >= 2:
-            mean_val = np.mean(values)
-            std_val = np.std(values, ddof=1)
-            cv_percent = (std_val / mean_val) * 100 if mean_val != 0 else np.nan
-        else:
-            cv_percent = np.nan
-        istd_cv[row['FeatureID']] = cv_percent
-    return istd_cv
+    """
+    Calculate CV% for each ISTD signal.
+
+    Vectorized implementation - much faster than iterrows().
+    """
+    from utils.safe_math import safe_cv_percent_vectorized, extract_numeric_matrix
+
+    # Extract numeric matrix for sample columns
+    valid_cols = [c for c in sample_columns if c in istd_signals.columns]
+    if not valid_cols:
+        return {}
+
+    # Get numeric data matrix
+    numeric_data = istd_signals[valid_cols].apply(pd.to_numeric, errors='coerce').values
+
+    # Calculate CV% for each row (vectorized)
+    cv_values = safe_cv_percent_vectorized(numeric_data, axis=1, min_samples=2)
+
+    # Build result dictionary
+    return dict(zip(istd_signals['FeatureID'], cv_values))
 
 def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv, 
                                 sample_columns,  # ✅ 新增參數
@@ -461,11 +472,27 @@ def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv,
     return best_candidate['istd_row'], best_candidate['rt_diff']
 
 def calculate_istd_medians(istd_signals, sample_columns):
-    istd_medians = {}
-    for _, row in istd_signals.iterrows():
-        values = get_valid_values(row, sample_columns)
-        istd_medians[row['FeatureID']] = np.median(values) if values else np.nan
-    return istd_medians
+    """
+    Calculate median intensity for each ISTD signal.
+
+    Vectorized implementation - much faster than iterrows().
+    """
+    # Extract numeric matrix for sample columns
+    valid_cols = [c for c in sample_columns if c in istd_signals.columns]
+    if not valid_cols:
+        return {}
+
+    # Get numeric data and calculate median per row
+    numeric_data = istd_signals[valid_cols].apply(pd.to_numeric, errors='coerce').values
+
+    # Replace non-positive values with NaN for proper median calculation
+    numeric_data = np.where(numeric_data > 0, numeric_data, np.nan)
+
+    # Calculate median for each row (ignoring NaN)
+    medians = np.nanmedian(numeric_data, axis=1)
+
+    # Build result dictionary
+    return dict(zip(istd_signals['FeatureID'], medians))
 
 def calculate_corrected_ratios(df, sample_info_df):
     """
@@ -596,38 +623,55 @@ from scipy.stats import wilcoxon, levene
 def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_info_df, original_df):
     """
     計算 QC 樣本的 CV%，並進行正確的統計檢定
-    
+
     統計方法：
     1. Wilcoxon 配對符號等級檢定（檢驗中位數偏移，適用於非常態分佈）
     2. Levene's test（檢驗方差齊性）
+
+    Performance optimized:
+    - Uses indexed lookup instead of O(N) search per row (was O(N^2), now O(N))
+    - Pre-extracts numeric matrices for QC columns
     """
+    from utils.safe_math import safe_divide
+
     qc_samples = sample_info_df[sample_info_df['Sample_Type'].str.upper().str.contains('QC')]['Sample_Name'].tolist()
     qc_columns = [col for col in sample_columns if col in qc_samples]
-    
+
     print(f"\n{'='*70}")
     print(f"🔬 開始統計檢定（Wilcoxon 配對符號等級檢定 + Levene's test）")
     print(f"{'='*70}")
     print(f"  - QC 樣本數: {len(qc_columns)}")
     print(f"  - Feature 總數: {len(results_df)}")
-    
+
+    # ===== PERFORMANCE OPTIMIZATION: Create indexed lookup for O(1) access =====
+    # This replaces O(N) lookup per iteration with O(1) lookup
+    original_indexed = original_df.set_index('FeatureID')
+
+    # Pre-extract QC columns data for faster access
+    valid_qc_cols = [c for c in qc_columns if c in results_df.columns and c in original_df.columns]
+
     cv_results = []
-    
+    total_features = len(results_df)
+
     for idx, row in results_df.iterrows():
         feature_id = row['FeatureID']
-        
+
         # 校正後的 QC 值
         qc_values_corrected = get_valid_values(row, qc_columns)
-        
-        # 原始的 QC 值
-        original_row = original_df[original_df['FeatureID'] == feature_id]
-        if not original_row.empty:
-            qc_values_original = get_valid_values(original_row.iloc[0], qc_columns)
-        else:
+
+        # 原始的 QC 值 - O(1) lookup instead of O(N)
+        try:
+            if feature_id in original_indexed.index:
+                original_row = original_indexed.loc[feature_id]
+                qc_values_original = get_valid_values(original_row, qc_columns)
+            else:
+                qc_values_original = []
+        except KeyError:
             qc_values_original = []
-        
+
         # 確保配對樣本數一致
         min_len = min(len(qc_values_original), len(qc_values_corrected))
-        
+
         if min_len < 3:
             cv_results.append({
                 'FeatureID': feature_id,
@@ -639,24 +683,26 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
                 'Significant_Improvement': 'N/A'
             })
             continue
-        
+
         qc_values_original = np.array(qc_values_original[:min_len])
         qc_values_corrected = np.array(qc_values_corrected[:min_len])
-        
-        # 計算 CV%
-        original_cv = (np.std(qc_values_original, ddof=1) / np.mean(qc_values_original)) * 100
-        corrected_cv = (np.std(qc_values_corrected, ddof=1) / np.mean(qc_values_corrected)) * 100
+
+        # 計算 CV% with safe division
+        orig_mean = np.mean(qc_values_original)
+        corr_mean = np.mean(qc_values_corrected)
+        original_cv = safe_divide(np.std(qc_values_original, ddof=1), orig_mean, np.nan) * 100
+        corrected_cv = safe_divide(np.std(qc_values_corrected, ddof=1), corr_mean, np.nan) * 100
         cv_improvement = original_cv - corrected_cv
-        
+
         # ✅ 1. Wilcoxon 配對符號等級檢定（檢驗中位數是否改變）
         try:
             # 計算差異
             differences = qc_values_original - qc_values_corrected
-            
+
             # 只有當存在非零差異時才進行檢定
             if np.any(differences != 0):
                 wilcoxon_stat, wilcoxon_pvalue = wilcoxon(
-                    qc_values_original, 
+                    qc_values_original,
                     qc_values_corrected,
                     alternative='two-sided',
                     zero_method='wilcox'  # 處理零差異的方法
@@ -664,15 +710,15 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
             else:
                 # 所有值都相同，p-value = 1.0
                 wilcoxon_pvalue = 1.0
-        except Exception as e:
+        except Exception:
             wilcoxon_pvalue = np.nan
-        
+
         # ✅ 2. Levene's test（檢驗方差齊性）
         try:
             levene_stat, variance_test_pvalue = levene(qc_values_original, qc_values_corrected)
         except Exception:
             variance_test_pvalue = np.nan
-        
+
         # ✅ 判斷顯著性
         if not np.isnan(variance_test_pvalue) and cv_improvement > 5:
             if variance_test_pvalue < 0.05:
@@ -683,7 +729,7 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
             significant = 'Yes (CV% only)'
         else:
             significant = 'No'
-        
+
         cv_results.append({
             'FeatureID': feature_id,
             'Original_QC_CV%': original_cv,
@@ -693,9 +739,9 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
             'Variance_Test_pvalue': variance_test_pvalue,
             'Significant_Improvement': significant
         })
-        
-        if (idx + 1) % 100 == 0:
-            print(f"  處理進度: {idx + 1}/{len(results_df)} features")
+
+        if (idx + 1) % 500 == 0:
+            print(f"  處理進度: {idx + 1}/{total_features} features")
     
     print(f"  ✓ 統計檢定完成！")
     

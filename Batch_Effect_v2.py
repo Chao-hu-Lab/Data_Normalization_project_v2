@@ -25,13 +25,15 @@ warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
 from utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
-from utils.plotting import setup_matplotlib, FONT_SIZES, COLORBLIND_COLORS, plot_pca_comparison_qc_style
+from utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
+from utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES
+from utils.sample_classification import SampleClassifier, identify_sample_columns
 
 # 設定 matplotlib
 setup_matplotlib()
 
 # Centralized naming to avoid magic strings in downstream logic
-SUMMARY_SHEET_NAME = "Batch_Effect_summary"
+SUMMARY_SHEET_NAME = SHEET_NAMES.get('batch_summary', "Batch_Effect_summary")
 PLOT_FOLDER_NAME = "Batch_Effect_plots"
 
 # 確保安裝 scikit-bio (graceful fallback for testing)
@@ -223,16 +225,14 @@ def prepare_data_for_combat(data, sample_info):
         print(f"  SampleInfo 欄位: {', '.join(sample_info.columns.tolist())}")
         raise ValueError("SampleInfo 缺少 'Sample_Name' 欄位")
 
-    # 匹配樣本
-    sample_to_batch = {}
-    batch_na_count = 0
+    # 匹配樣本 - Vectorized (faster than iterrows)
+    batch_na_count = sample_info['Batch'].isna().sum()
 
-    for _, row in sample_info.iterrows():
-        sample_name = str(row['Sample_Name']).strip()
-        if pd.notna(row['Batch']):
-            sample_to_batch[sample_name] = row['Batch']
-        else:
-            batch_na_count += 1
+    # Build sample_to_batch dictionary using vectorized operations
+    valid_batch_mask = sample_info['Batch'].notna()
+    sample_names = sample_info.loc[valid_batch_mask, 'Sample_Name'].astype(str).str.strip()
+    batch_values = sample_info.loc[valid_batch_mask, 'Batch']
+    sample_to_batch = dict(zip(sample_names, batch_values))
 
     if batch_na_count > 0:
         print(f"⚠️ 警告：{batch_na_count} 個樣本的 Batch 資訊為空")

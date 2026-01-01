@@ -18,30 +18,15 @@ from copy import copy
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-from utils.plotting import plot_pca_comparison_qc_style
+from utils.plotting import plot_pca_comparison_qc_style, setup_matplotlib
+from utils.constants import FONT_SIZES, SHEET_NAMES
+from utils.sample_classification import SampleClassifier, normalize_sample_type
 
 warnings.filterwarnings('ignore')
 
 # ========== Matplotlib Global Settings ==========
-# Disable LaTeX rendering to avoid special character issues (e.g., %)
-plt.rcParams['text.usetex'] = False
-plt.rcParams['mathtext.default'] = 'regular'
-
-# Platform-aware font settings
-if sys.platform == 'darwin':  # macOS
-    plt.rcParams['font.family'] = 'Helvetica'
-else:
-    plt.rcParams['font.family'] = 'Arial'
-
-# Standardized font sizes for consistency
-FONT_SIZES = {
-    'title': 14,
-    'subtitle': 12,
-    'axis_label': 11,
-    'tick': 10,
-    'legend': 9,
-    'annotation': 9
-}
+# Use centralized setup
+setup_matplotlib()
 
 # Centralized summary metadata to avoid magic strings and ease maintenance
 SUMMARY_SHEET_NAME = "ConcNormalization_Summary"
@@ -683,13 +668,12 @@ def is_numeric_value(value):
 def get_non_qc_columns(df, sample_info_df):
     """獲取非QC樣本的欄位列表"""
     non_qc_columns = []
-    
-    sample_type_dict = {}
-    for idx, row in sample_info_df.iterrows():
-        sample_name = row.iloc[0]
-        sample_type = str(row.get('Sample_Type', '')).upper()
-        sample_type_dict[sample_name] = sample_type
-    
+
+    # Vectorized sample type dict building (faster than iterrows)
+    sample_names = sample_info_df.iloc[:, 0].astype(str)
+    sample_types = sample_info_df.get('Sample_Type', pd.Series([''] * len(sample_info_df))).fillna('').astype(str).str.upper()
+    sample_type_dict = dict(zip(sample_names, sample_types))
+
     for col in df.columns:
         if col != df.columns[0]:
             if col in sample_type_dict:
@@ -713,14 +697,12 @@ def get_sample_columns_only(df, sample_info_df):
     ]
     
     sample_columns = []
-    
-    # 建立樣本類型對應字典
-    sample_type_dict = {}
-    for idx, row in sample_info_df.iterrows():
-        sample_name = row.iloc[0]
-        sample_type = str(row.get('Sample_Type', ''), 'Unknown').upper()
-        sample_type_dict[sample_name] = sample_type
-    
+
+    # Vectorized sample type dict building (faster than iterrows)
+    sample_names = sample_info_df.iloc[:, 0].astype(str)
+    sample_types = sample_info_df.get('Sample_Type', pd.Series(['Unknown'] * len(sample_info_df))).fillna('Unknown').astype(str).str.upper()
+    sample_type_dict = dict(zip(sample_names, sample_types))
+
     for col in df.columns:
         if col == df.columns[0]:  # 跳過第一欄（特徵ID）
             continue
@@ -1179,7 +1161,9 @@ def plot_cv_comparison(original_cv, normalized_cv, output_path, method_name):
             sig_mark = '*'
         else:
             sig_mark = 'n.s.'
-    except:
+    except (ValueError, TypeError) as e:
+        # ValueError: sample too small or all values identical
+        # TypeError: invalid input types
         w_stat, p_value = np.nan, np.nan
         sig_mark = 'N/A'
 
@@ -2116,21 +2100,12 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
         print("錯誤：未找到有效的樣本欄位")
         return None
     
-    # 準備數據矩陣 (特徵 x 樣本)
-    data_matrix = []
-    feature_ids = []
-    
-    for idx, row in data_df.iterrows():
-        feature_ids.append(row[data_df.columns[0]])
-        feature_values = []
-        for col in sample_columns:
-            if col in data_df.columns and is_numeric_value(row[col]):
-                feature_values.append(float(row[col]))
-            else:
-                feature_values.append(np.nan)
-        data_matrix.append(feature_values)
-    
-    data_matrix = np.array(data_matrix)
+    # 準備數據矩陣 (特徵 x 樣本) - Vectorized (much faster than iterrows)
+    feature_ids = data_df[data_df.columns[0]].tolist()
+
+    # Extract sample columns and convert to numeric matrix directly
+    valid_sample_cols = [c for c in sample_columns if c in data_df.columns]
+    data_matrix = data_df[valid_sample_cols].apply(pd.to_numeric, errors='coerce').values
     print(f"✓ 數據矩陣形狀: {data_matrix.shape} (特徵 x 樣本)")
     
     # 保存原始數據用於對比
@@ -2148,7 +2123,9 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
                     reference_values.append(ref_val)
                 else:
                     reference_values.append(np.nan)
-            except:
+            except (ValueError, TypeError, KeyError):
+                # ValueError/TypeError: cannot convert to float
+                # KeyError: column not found
                 reference_values.append(np.nan)
         else:
             reference_values.append(np.nan)
@@ -2355,7 +2332,9 @@ def save_normalization_results(normalized_df, summary_report, file_path, method_
                 try:
                     if len(str(cell.value)) > max_length:
                         max_length = len(str(cell.value))
-                except:
+                except (TypeError, AttributeError):
+                    # TypeError: cell.value is None or non-stringable
+                    # AttributeError: cell has no value attribute
                     pass
             adjusted_width = min(max_length + 2, 50)
             ws_normalized.column_dimensions[column_letter].width = adjusted_width

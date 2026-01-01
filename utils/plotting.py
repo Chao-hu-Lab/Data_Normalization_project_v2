@@ -18,6 +18,9 @@ import matplotlib.pyplot as plt
 
 import numpy as np
 
+# Import shared constants
+from .constants import FONT_SIZES, COLORBLIND_COLORS
+
 
 def plot_pca_comparison_qc_style(
     scores_left,
@@ -284,27 +287,7 @@ def plot_pca_comparison_qc_style(
     return fig, (ax_left, ax_right)
 
 
-# 標準字體大小設定
-FONT_SIZES = {
-    'title': 14,
-    'subtitle': 12,
-    'axis_label': 11,
-    'tick': 10,
-    'legend': 9,
-    'annotation': 9
-}
-
-# 色盲友善的顏色 (Colorblind-safe palette)
-COLORBLIND_COLORS = [
-    '#0173B2',  # 藍色
-    '#DE8F05',  # 橙色
-    '#029E73',  # 綠色
-    '#CC78BC',  # 紫色
-    '#CA9161',  # 棕色
-    '#949494',  # 灰色
-    '#ECE133',  # 黃色
-    '#56B4E9'   # 淺藍色
-]
+# FONT_SIZES and COLORBLIND_COLORS are now imported from .constants
 
 
 def setup_matplotlib():

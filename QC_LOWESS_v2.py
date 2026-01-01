@@ -24,68 +24,27 @@ warnings.filterwarnings('ignore')
 # ========== 匯入共用模組 ==========
 from utils.data_helpers import get_valid_values
 from utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
-from utils.plotting import setup_matplotlib, FONT_SIZES, COLORBLIND_COLORS, plot_pca_comparison_qc_style
+from utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
+from utils.constants import (
+    FONT_SIZES,
+    COLORBLIND_COLORS,
+    NON_SAMPLE_COLUMNS,
+    STAT_COLUMN_KEYWORDS,
+    SHEET_NAMES,
+)
+from utils.sample_classification import (
+    normalize_sample_name,
+    identify_sample_columns,
+)
 
 # 設定 matplotlib
 setup_matplotlib()
 
-QC_LOWESS_ADVANCED_SHEET = "QC_LOWESS_Advanced Statistics"
+# Sheet name constant
+QC_LOWESS_ADVANCED_SHEET = SHEET_NAMES.get('qc_lowess_advanced', "QC_LOWESS_Advanced Statistics")
 
-# Columns that should never be treated as sample intensities
-DEFAULT_NON_SAMPLE_COLUMNS = {
-    'FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference', 'ISTD_Median',
-    'QC_CV%', 'Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%',
-    'Variance_Test_pvalue', 'Wilcoxon_pvalue', 'Shapiro_pvalue',
-    'MK_Trend_pvalue', 'Kendall_Tau', 'LOWESS_R2', 'LOWESS_RMSE',
-    'Significant_Improvement', 'Decision', 'Trend_Status', 'frac',
-    'outliers_removed', 'median_correction_factor', 'correction_factor_cv',
-    'correction_factor_std', 'correction_factor_range_low',
-    'correction_factor_range_high', 'Frac_Used', 'QC_CV_for_Frac',
-    'Frac_Strategy'
-}
-
-# Keywords that help identify derived statistical columns even if the exact
-# column name is unknown (e.g., legacy exports or user-provided sheets).
-STAT_COLUMN_KEYWORDS = (
-    'original_qc_', 'corrected_qc_', 'cv_', 'variance_', 'levene', 'mk_',
-    'kendall', 'lowess_', 'trend_', 'wilcoxon', 'shapiro', 'significant',
-    'decision', 'rmse', 'median_correction', 'correction_factor'
-)
-
-COLORBLIND_COLORS = ['#0173B2', '#DE8F05', '#029E73', '#CC78BC', '#CA9161',
-                     '#949494', '#ECE133', '#56B4E9']
-
-
-def normalize_sample_name(name):
-    """Helper to normalize sample names for consistent comparisons."""
-    if pd.isna(name):
-        return ''
-    return str(name).strip().lower()
-
-
-def identify_sample_columns(istd_df, sample_info_df):
-    """Identify valid sample intensity columns using SampleInfo metadata."""
-    sample_names = sample_info_df['Sample_Name'].astype(str).str.strip()
-    sample_lookup = {normalize_sample_name(name) for name in sample_names}
-    non_sample_lower = {normalize_sample_name(col) for col in DEFAULT_NON_SAMPLE_COLUMNS}
-    sample_columns = []
-    dropped_columns = []
-
-    for col in istd_df.columns:
-        col_norm = normalize_sample_name(col)
-        if col_norm in non_sample_lower:
-            continue
-        if col_norm in sample_lookup:
-            sample_columns.append(col)
-        else:
-            if any(keyword in col_norm for keyword in STAT_COLUMN_KEYWORDS):
-                dropped_columns.append(col)
-
-    if not sample_columns:
-        sample_columns = [col for col in istd_df.columns
-                          if normalize_sample_name(col) not in non_sample_lower]
-
-    return sample_columns, dropped_columns
+# For backward compatibility, alias the old constant names
+DEFAULT_NON_SAMPLE_COLUMNS = NON_SAMPLE_COLUMNS
 
 
 def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensities, debug_flag=None, global_qc_median=None):
@@ -374,18 +333,21 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             print(f"⚠️  提示：{len(missing_order_samples)} 個樣本缺少 Injection_Order，已套用臨時序號")
 
         print("\n🔍 計算 QC CV% 以選擇調試特徵...")
-        feature_cvs = []
-        for _, row in istd_df.iterrows():
-            feature_id = row['FeatureID']
-            qc_values = []
-            for qc_sample in qc_samples:
-                if qc_sample in row.index:
-                    intensity = row[qc_sample]
-                    if not pd.isna(intensity) and intensity > 0:
-                        qc_values.append(intensity)
-            if len(qc_values) >= 2:
-                cv_value = np.std(qc_values, ddof=1) / np.mean(qc_values) * 100
-                feature_cvs.append((feature_id, cv_value))
+        # Vectorized CV% calculation - much faster than iterrows()
+        from utils.safe_math import safe_cv_percent_vectorized
+
+        valid_qc_cols = [c for c in qc_samples if c in istd_df.columns]
+        if valid_qc_cols:
+            qc_data = istd_df[valid_qc_cols].apply(pd.to_numeric, errors='coerce').values
+            cv_values = safe_cv_percent_vectorized(qc_data, axis=1, min_samples=2)
+            feature_ids = istd_df['FeatureID'].values
+            # Build list of (feature_id, cv_value) for features with valid CV
+            feature_cvs = [
+                (fid, cv) for fid, cv in zip(feature_ids, cv_values)
+                if not np.isnan(cv)
+            ]
+        else:
+            feature_cvs = []
 
         debug_features = []
         if feature_cvs:
@@ -488,22 +450,24 @@ def perform_lowess_normalization(istd_df, sample_info_df):
 
         # ===== 計算全域 QC 中位數（跨所有批次）=====
         print("\n🌐 計算全域 QC 中位數（跨所有批次）...")
-        global_qc_medians = {}
-        for idx, row in istd_df.iterrows():
-            feature_id = row['FeatureID']
-            all_qc_values = []
-
-            for qc_sample in qc_samples:
-                if qc_sample in row.index:
-                    intensity = row[qc_sample]
-                    if not pd.isna(intensity) and intensity > 0:
-                        all_qc_values.append(float(intensity))
-
-            if len(all_qc_values) >= 3:
-                global_median = np.nanmedian(all_qc_values)
-                global_qc_medians[feature_id] = global_median
-            else:
-                global_qc_medians[feature_id] = None
+        # Vectorized median calculation - much faster than iterrows()
+        valid_qc_cols = [c for c in qc_samples if c in istd_df.columns]
+        if valid_qc_cols:
+            qc_data = istd_df[valid_qc_cols].apply(pd.to_numeric, errors='coerce').values
+            # Replace non-positive values with NaN
+            qc_data = np.where(qc_data > 0, qc_data, np.nan)
+            # Count valid values per row
+            valid_counts = np.sum(np.isfinite(qc_data), axis=1)
+            # Calculate median for each row
+            medians = np.nanmedian(qc_data, axis=1)
+            # Build dictionary: None for features with <3 valid QC values
+            feature_ids = istd_df['FeatureID'].values
+            global_qc_medians = {
+                fid: (med if cnt >= 3 else None)
+                for fid, med, cnt in zip(feature_ids, medians, valid_counts)
+            }
+        else:
+            global_qc_medians = {fid: None for fid in istd_df['FeatureID']}
 
         valid_global_medians = sum(1 for v in global_qc_medians.values() if v is not None)
         print(f"  - 成功計算全域中位數的特徵數: {valid_global_medians}/{len(istd_df)}")
@@ -1501,19 +1465,24 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
                 cell.number_format = formats['number_format']
                 cell.protection = formats['protection']
                 cell.alignment = formats['alignment']
-            except:
+            except (KeyError, ValueError, AttributeError):
+                # KeyError: format key missing
+                # ValueError: invalid format value
+                # AttributeError: cell property error
                 pass
-        
+
         for col, width in istd_col_widths.items():
             istd_sheet_new.column_dimensions[col].width = width
-        
+
         for row, height in istd_row_heights.items():
             istd_sheet_new.row_dimensions[row].height = height
-        
+
         for merged in istd_merged_cells:
             try:
                 istd_sheet_new.merge_cells(merged)
-            except:
+            except (ValueError, TypeError):
+                # ValueError: cells already merged or invalid range
+                # TypeError: invalid merge range format
                 pass
         
         print(f"  ✓ ISTD_Correction 格式已完整保留")
