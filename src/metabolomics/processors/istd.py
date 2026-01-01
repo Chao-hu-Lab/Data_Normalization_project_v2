@@ -646,31 +646,42 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
     print(f"  - QC 樣本數: {len(qc_columns)}")
     print(f"  - Feature 總數: {len(results_df)}")
 
-    # ===== PERFORMANCE OPTIMIZATION: Create indexed lookup for O(1) access =====
-    # This replaces O(N) lookup per iteration with O(1) lookup
+    # ===== PERFORMANCE OPTIMIZATION: Pre-extract all QC data vectorized =====
+    # This replaces O(N*M) row-by-row extraction with O(N+M) vectorized operations
     original_indexed = original_df.set_index('FeatureID')
 
     # Pre-extract QC columns data for faster access
     valid_qc_cols = [c for c in qc_columns if c in results_df.columns and c in original_df.columns]
 
+    # ===== VECTORIZED: Extract all QC data at once =====
+    # Convert to numeric and replace <=0 with NaN (vectorized)
+    qc_corrected_data = results_df[valid_qc_cols].apply(pd.to_numeric, errors='coerce')
+    qc_corrected_data = qc_corrected_data.where(qc_corrected_data > 0, np.nan)
+
+    qc_original_data = original_indexed[valid_qc_cols].apply(pd.to_numeric, errors='coerce')
+    qc_original_data = qc_original_data.where(qc_original_data > 0, np.nan)
+
     cv_results = []
     total_features = len(results_df)
 
-    for idx, row in results_df.iterrows():
-        feature_id = row['FeatureID']
+    # Use itertuples for faster iteration (2-3x faster than iterrows)
+    for row_idx, row_tuple in enumerate(results_df.itertuples()):
+        idx = row_tuple.Index
+        feature_id = row_tuple.FeatureID
 
-        # 校正後的 QC 值
-        qc_values_corrected = get_valid_values(row, qc_columns)
-
-        # 原始的 QC 值 - O(1) lookup instead of O(N)
+        # Extract QC values from pre-processed data (vectorized access)
         try:
-            if feature_id in original_indexed.index:
-                original_row = original_indexed.loc[feature_id]
-                qc_values_original = get_valid_values(original_row, qc_columns)
-            else:
-                qc_values_original = []
+            qc_values_corrected = qc_corrected_data.loc[idx].dropna().values
         except KeyError:
-            qc_values_original = []
+            qc_values_corrected = np.array([])
+
+        try:
+            if feature_id in qc_original_data.index:
+                qc_values_original = qc_original_data.loc[feature_id].dropna().values
+            else:
+                qc_values_original = np.array([])
+        except KeyError:
+            qc_values_original = np.array([])
 
         # 確保配對樣本數一致
         min_len = min(len(qc_values_original), len(qc_values_corrected))
@@ -743,8 +754,8 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
             'Significant_Improvement': significant
         })
 
-        if (idx + 1) % 500 == 0:
-            print(f"  處理進度: {idx + 1}/{total_features} features")
+        if (row_idx + 1) % 500 == 0:
+            print(f"  處理進度: {row_idx + 1}/{total_features} features")
     
     print(f"  ✓ 統計檢定完成！")
     
