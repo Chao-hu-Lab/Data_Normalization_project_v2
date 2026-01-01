@@ -289,7 +289,7 @@ def calculate_istd_cv(istd_signals, sample_columns):
 
     Vectorized implementation - much faster than iterrows().
     """
-    from utils.safe_math import safe_cv_percent_vectorized, extract_numeric_matrix
+    from metabolomics.utils.safe_math import safe_cv_percent_vectorized, extract_numeric_matrix
 
     # Extract numeric matrix for sample columns
     valid_cols = [c for c in sample_columns if c in istd_signals.columns]
@@ -632,7 +632,7 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
     - Uses indexed lookup instead of O(N) search per row (was O(N^2), now O(N))
     - Pre-extracts numeric matrices for QC columns
     """
-    from utils.safe_math import safe_divide
+    from metabolomics.utils.safe_math import safe_divide
 
     qc_samples = sample_info_df[sample_info_df['Sample_Type'].str.upper().str.contains('QC')]['Sample_Name'].tolist()
     qc_columns = [col for col in sample_columns if col in qc_samples]

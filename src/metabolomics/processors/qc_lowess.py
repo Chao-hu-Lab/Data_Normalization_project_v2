@@ -334,7 +334,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
 
         print("\n🔍 計算 QC CV% 以選擇調試特徵...")
         # Vectorized CV% calculation - much faster than iterrows()
-        from utils.safe_math import safe_cv_percent_vectorized
+        from metabolomics.utils.safe_math import safe_cv_percent_vectorized
 
         valid_qc_cols = [c for c in qc_samples if c in istd_df.columns]
         if valid_qc_cols:
