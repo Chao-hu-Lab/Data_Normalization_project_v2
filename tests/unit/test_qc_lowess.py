@@ -38,17 +38,18 @@ class TestQCLOWESSOutput:
         # First run Step 1
         step1_result = istd_module.main(input_file=sample_input_file)
         assert step1_result is not None, "Step 1 should succeed"
-        assert 'output_path' in step1_result
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
+        assert step1_output
 
         # Then run Step 2
-        step2_result = qc_lowess_module.main(input_file=step1_result['output_path'])
+        step2_result = qc_lowess_module.main(input_file=step1_output)
 
         validation = validate_result_dict(
             step2_result,
             required_keys=['output_path', 'metabolites', 'samples']
         )
 
-        assert validation['is_dict'], f"Result should be dict: {validation['errors']}"
+        assert validation['is_processing_result'], f"Result should be ProcessingResult: {validation['errors']}"
 
     @pytest.mark.slow
     @pytest.mark.integration
@@ -57,15 +58,17 @@ class TestQCLOWESSOutput:
         """Test output Excel file structure."""
         # Run Step 1
         step1_result = istd_module.main(input_file=sample_input_file)
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
 
         # Run Step 2
-        step2_result = qc_lowess_module.main(input_file=step1_result['output_path'])
+        step2_result = qc_lowess_module.main(input_file=step1_output)
 
         assert step2_result is not None
-        assert 'output_path' in step2_result
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
+        assert step2_output
 
         validation = validate_excel_output(
-            step2_result['output_path'],
+            step2_output,
             required_sheets=['QC LOWESS result'],
             min_rows=1
         )
@@ -79,12 +82,14 @@ class TestQCLOWESSOutput:
         """Test that CV improvement is tracked in output."""
         # Run Step 1
         step1_result = istd_module.main(input_file=sample_input_file)
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
 
         # Run Step 2
-        step2_result = qc_lowess_module.main(input_file=step1_result['output_path'])
+        step2_result = qc_lowess_module.main(input_file=step1_output)
 
         # Check output contains CV statistics
-        output_df = pd.read_excel(step2_result['output_path'], sheet_name='QC LOWESS result')
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
+        output_df = pd.read_excel(step2_output, sheet_name='QC LOWESS result')
 
         # Should have CV-related columns
         cv_columns = [col for col in output_df.columns if 'CV' in col.upper()]

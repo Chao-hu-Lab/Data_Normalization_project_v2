@@ -16,7 +16,7 @@ __pycache__/
 # 所有 Excel 檔案（除了範例檔案）
 *.xlsx
 *.xls
-!矩陣生成/*.xlsx
+!data/*.xlsx
 
 # 所有圖片檔案
 *.png

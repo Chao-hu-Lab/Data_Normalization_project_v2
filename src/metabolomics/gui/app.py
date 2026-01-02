@@ -11,6 +11,7 @@ from datetime import datetime
 import subprocess
 import psutil
 import re
+from metabolomics.utils.results import ProcessingResult
 
 
 # ========== Platform-Aware Font Settings ==========
@@ -220,6 +221,29 @@ class DataNormalizationApp:
         if width:
             btn.config(width=width)
         return btn
+
+    def _result_to_dict(self, result):
+        if isinstance(result, ProcessingResult):
+            return result.to_dict()
+        if isinstance(result, dict):
+            return result
+        return None
+
+    def _get_output_path(self, result):
+        if isinstance(result, ProcessingResult):
+            return result.output_path
+        if isinstance(result, dict):
+            return result.get('output_path')
+        if isinstance(result, str):
+            return result
+        return None
+
+    def _get_plots_dir(self, result):
+        if isinstance(result, ProcessingResult):
+            return result.plots_dir
+        if isinstance(result, dict):
+            return result.get('plots_dir')
+        return None
 
     def setup_logging(self):
         """設置日誌系統"""
@@ -934,18 +958,24 @@ class DataNormalizationApp:
         try:
             while True:
                 data = self.progress_queue.get_nowait()
+                data_dict = self._result_to_dict(data)
+                if not data_dict:
+                    continue
                 
                 # 更新統計資訊
-                if 'metabolites' in data:
-                    self.current_stats['metabolites'] = data['metabolites']
-                if 'samples' in data:
-                    self.current_stats['samples'] = data['samples']
-                if 'output_path' in data:
-                    self.current_stats['output_path'] = data['output_path']
-                    self.last_output_file = data['output_path']
+                if 'metabolites' in data_dict:
+                    self.current_stats['metabolites'] = data_dict['metabolites']
+                if 'samples' in data_dict:
+                    self.current_stats['samples'] = data_dict['samples']
+                if 'output_path' in data_dict:
+                    self.current_stats['output_path'] = data_dict['output_path']
+                    self.last_output_file = data_dict['output_path']
                     # 記錄到步驟輸出 (用於開啟資料夾)
                     if self.current_stats['step_name']:
-                        self.step_outputs[self.current_stats['step_name']] = data['output_path']
+                        if isinstance(data, ProcessingResult):
+                            self.step_outputs[self.current_stats['step_name']] = data
+                        else:
+                            self.step_outputs[self.current_stats['step_name']] = data_dict
                 
                 self.update_stats_display()
                 
@@ -994,8 +1024,12 @@ class DataNormalizationApp:
                 # Step 2~4: 顯示上一步驟的輸出檔案
                 prev_step_name = self.steps[i-1]['name']
                 if prev_step_name in self.step_outputs:
-                    output_filename = os.path.basename(self.step_outputs[prev_step_name])
-                    label.config(text=f"← {output_filename}", fg=self.steps[i]['accent'])
+                    output_path = self._get_output_path(self.step_outputs[prev_step_name])
+                    if output_path:
+                        output_filename = os.path.basename(output_path)
+                        label.config(text=f"← {output_filename}", fg=self.steps[i]['accent'])
+                    else:
+                        label.config(text=f"← Output from Step {i}", fg=self.color_scheme['text_light'])
                 else:
                     label.config(text=f"← Output from Step {i}", fg=self.color_scheme['text_light'])
 
@@ -1003,8 +1037,8 @@ class DataNormalizationApp:
         """Open step output Excel file"""
         step_name = step['name']
         if step_name in self.step_outputs:
-            path = self.step_outputs[step_name]
-            if os.path.exists(path):
+            path = self._get_output_path(self.step_outputs[step_name])
+            if path and os.path.exists(path):
                 try:
                     if sys.platform == 'win32':
                         os.startfile(path)
@@ -1022,46 +1056,22 @@ class DataNormalizationApp:
     def open_step_plots(self, step):
         """Open step output plots folder"""
         step_name = step['name']
-        # Infer plot folder from step name
-        base_plot_dir = ""
-        if "ISTD" in step_name:
-            base_plot_dir = "ISTD_Correction_plots"
-        elif "QC" in step_name:
-            base_plot_dir = "QC_LOWESS_plots"
-        elif "Batch" in step_name:
-            base_plot_dir = "Batch_Effect_plots"
-        elif "Conc" in step_name:
-            base_plot_dir = "Normalization_Figures"
-            
-        if not base_plot_dir:
-            return
-
-        # Try to find corresponding output folder
-        # Logic: If there is an output Excel, try to find the Plot folder from the Excel filename or timestamp
-        # Simplified logic: Open the main folder of that category, let the user choose the latest one
-        
-        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output', base_plot_dir)
-        
-        # If there is a specific output file, try to find a folder with the same name (usually the script creates a folder with the same name)
         if step_name in self.step_outputs:
-            excel_path = self.step_outputs[step_name]
-            excel_name = os.path.splitext(os.path.basename(excel_path))[0]
-            specific_plot_dir = os.path.join(output_dir, excel_name)
-            if os.path.exists(specific_plot_dir):
-                output_dir = specific_plot_dir
-        
-        if os.path.exists(output_dir):
-            try:
-                if sys.platform == 'win32':
-                    os.startfile(output_dir)
-                elif sys.platform == 'darwin':
-                    subprocess.run(['open', output_dir])
-                else:
-                    subprocess.run(['xdg-open', output_dir])
-            except Exception as e:
-                self.logger.error(f"Cannot open folder: {e}")
+            plots_dir = self._get_plots_dir(self.step_outputs[step_name])
+            if plots_dir and os.path.exists(plots_dir):
+                try:
+                    if sys.platform == 'win32':
+                        os.startfile(plots_dir)
+                    elif sys.platform == 'darwin':
+                        subprocess.run(['open', plots_dir])
+                    else:
+                        subprocess.run(['xdg-open', plots_dir])
+                except Exception as e:
+                    self.logger.error(f"Cannot open folder: {e}")
+            else:
+                messagebox.showwarning("Warning", "Plot folder does not exist")
         else:
-            messagebox.showwarning("Warning", f"Plot folder not found: {base_plot_dir}")
+            messagebox.showwarning("Notice", "No plots generated for this step yet")
 
     def check_log_queue(self):
         """Check log queue"""
@@ -1148,9 +1158,9 @@ class DataNormalizationApp:
         """Open step output folder"""
         step_name = step['name']
         if step_name in self.step_outputs:
-            path = self.step_outputs[step_name]
-            folder = os.path.dirname(path)
-            if os.path.exists(folder):
+            path = self._get_output_path(self.step_outputs[step_name])
+            folder = os.path.dirname(path) if path else None
+            if folder and os.path.exists(folder):
                 try:
                     if sys.platform == 'win32':
                         os.startfile(folder)
@@ -1252,7 +1262,10 @@ class DataNormalizationApp:
                 return
             
             # 🔧 Try to parse result and update stats
-            if isinstance(result, dict):
+            if isinstance(result, ProcessingResult):
+                self.logger.info(f"Received result: {result.to_dict()}")
+                self.progress_queue.put(result)
+            elif isinstance(result, dict):
                 self.logger.info(f"Received result: {result}")
                 self.progress_queue.put(result)
             elif result is None:

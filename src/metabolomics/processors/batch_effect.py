@@ -8,8 +8,6 @@ from sklearn.metrics import silhouette_score
 from sklearn.metrics.pairwise import manhattan_distances, euclidean_distances
 from pycombat import pycombat
 import warnings
-import tkinter as tk
-from tkinter import filedialog
 import os
 import datetime
 import sys
@@ -26,8 +24,16 @@ warnings.filterwarnings('ignore')
 # ========== 匯入共用模組 ==========
 from metabolomics.utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
 from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
-from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES
+from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL
 from metabolomics.utils.sample_classification import SampleClassifier, identify_sample_columns
+from metabolomics.utils.file_io import (
+    build_output_path,
+    build_plots_dir,
+    get_output_root,
+    generate_output_filename,
+)
+from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.console import safe_print as print
 
 # 設定 matplotlib
 setup_matplotlib()
@@ -50,6 +56,7 @@ except ImportError:
     print("   請執行: pip install scikit-bio")
 
 def select_file():
+    raise RuntimeError("input_file is required; GUI must provide the file path.")
     """開啟檔案選擇對話框"""
     root = tk.Tk()
     root.withdraw()
@@ -2220,6 +2227,9 @@ def main(input_file=None):
 
     # ========== 1. 檔案選擇 ==========
     if input_file is None:
+        raise ValueError("input_file is required; GUI must provide the file path.")
+
+    if input_file is None:
         print("\n請選擇要處理的Excel檔案...")
         input_file = select_file()
 
@@ -2241,8 +2251,7 @@ def main(input_file=None):
     print(f"  路徑: {input_file}")
 
     # ========== 2. 設定輸出路徑 ==========
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(script_dir, 'output')
+    output_dir = get_output_root()
 
     # ===== 防呆36: 輸出目錄創建與權限檢查 =====
     try:
@@ -2269,15 +2278,15 @@ def main(input_file=None):
         print(f"  詳細錯誤: {e}")
         raise Exception(f"輸出目錄無寫入權限: {output_dir}")
 
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join(output_dir, f'Combat_corrected_{timestamp}.xlsx')
+    timestamp = datetime.datetime.now().strftime(DATETIME_FORMAT_FULL)
+    output_file = build_output_path("Combat_corrected", timestamp=timestamp)
 
     # ===== 防呆38: 輸出文件檢查 =====
     if os.path.exists(output_file):
         print(f"⚠️ 警告：輸出檔案已存在，將被覆蓋")
         print(f"  {output_file}")
 
-    plots_dir = os.path.join(output_dir, PLOT_FOLDER_NAME)
+    plots_dir = build_plots_dir(PLOT_FOLDER_NAME)
 
     # ===== 防呆39: 圖表目錄創建 =====
     try:
@@ -2291,8 +2300,11 @@ def main(input_file=None):
         print(f"詳細錯誤: {e}")
         raise Exception(f"無法創建圖表目錄: {e}")
 
-    run_plot_dir = os.path.join(plots_dir, f"Batch_Effect_{timestamp}")
-    os.makedirs(run_plot_dir, exist_ok=True)
+    run_plot_dir = build_plots_dir(
+        PLOT_FOLDER_NAME,
+        timestamp=timestamp,
+        session_prefix="Batch_Effect"
+    )
     print(f"✓ 本次圖表輸出子資料夾: {run_plot_dir}")
     
     try:
@@ -2495,7 +2507,9 @@ def main(input_file=None):
         fig1 = plot_permanova_comparison(permanova_before, permanova_after, 
                                         perm_test_permanova)
         if fig1:
-            fig1_file = os.path.join(run_plot_dir, f'Fig1_PERMANOVA_comparison_{timestamp}.png')
+            fig1_file = run_plot_dir / generate_output_filename(
+                "Fig1_PERMANOVA_comparison", timestamp=timestamp, extension=".png"
+            )
             fig1.savefig(fig1_file, dpi=300, bbox_inches='tight')
             plt.close(fig1)
             print(f"✓ 已儲存: {os.path.basename(fig1_file)}")
@@ -2511,7 +2525,9 @@ def main(input_file=None):
         )
         if result:
             fig2, outliers_orig_batch, outliers_corr_batch = result
-            fig2_file = os.path.join(run_plot_dir, f'Fig2_PCA_by_batch_{timestamp}.png')
+            fig2_file = run_plot_dir / generate_output_filename(
+                "Fig2_PCA_by_batch", timestamp=timestamp, extension=".png"
+            )
             fig2.savefig(fig2_file, dpi=300, bbox_inches='tight')
             plt.close(fig2)
             print(f"✓ 已儲存: {os.path.basename(fig2_file)}")
@@ -2523,7 +2539,9 @@ def main(input_file=None):
         fig3 = plot_permutation_null_distribution(perm_test_permanova, 
                                                 metric_name='PERMANOVA F')
         if fig3:
-            fig3_file = os.path.join(run_plot_dir, f'Fig3_Permutation_Test_{timestamp}.png')
+            fig3_file = run_plot_dir / generate_output_filename(
+                "Fig3_Permutation_Test", timestamp=timestamp, extension=".png"
+            )
             fig3.savefig(fig3_file, dpi=300, bbox_inches='tight')
             plt.close(fig3)
             print(f"✓ 已儲存: {os.path.basename(fig3_file)}")
@@ -2537,7 +2555,9 @@ def main(input_file=None):
         )
         if result:
             fig4, outliers_orig_type, outliers_corr_type = result
-            fig4_file = os.path.join(run_plot_dir, f'Fig4_PCA_by_sample_type_{timestamp}.png')
+            fig4_file = run_plot_dir / generate_output_filename(
+                "Fig4_PCA_by_sample_type", timestamp=timestamp, extension=".png"
+            )
             fig4.savefig(fig4_file, dpi=300, bbox_inches='tight')
             plt.close(fig4)
             print(f"✓ 已儲存: {os.path.basename(fig4_file)}")
@@ -2548,7 +2568,9 @@ def main(input_file=None):
         print("\n生成圖 5: Cohen's d 森林圖...")
         fig5 = plot_cohens_d_forest(cohens_d_before, cohens_d_after)
         if fig5:
-            fig5_file = os.path.join(run_plot_dir, f'Fig5_Cohens_d_Forest_{timestamp}.png')
+            fig5_file = run_plot_dir / generate_output_filename(
+                "Fig5_Cohens_d_Forest", timestamp=timestamp, extension=".png"
+            )
             fig5.savefig(fig5_file, dpi=300, bbox_inches='tight')
             plt.close(fig5)
             print(f"✓ 已儲存: {os.path.basename(fig5_file)}")
@@ -2557,7 +2579,9 @@ def main(input_file=None):
         print("\n生成圖 6: 批次效應殘差分析...")
         fig6 = plot_batch_residuals(original_scaled, corrected_scaled, batch_info)
         if fig6:
-            fig6_file = os.path.join(run_plot_dir, f'Fig6_Residual_Analysis_{timestamp}.png')
+            fig6_file = run_plot_dir / generate_output_filename(
+                "Fig6_Residual_Analysis", timestamp=timestamp, extension=".png"
+            )
             fig6.savefig(fig6_file, dpi=300, bbox_inches='tight')
             plt.close(fig6)
             print(f"✓ 已儲存: {os.path.basename(fig6_file)}")
@@ -2672,26 +2696,28 @@ def main(input_file=None):
         print("\n" + "="*70 + "\n")
         
         # 返回統計資訊給 GUI
-        return {
-            'file_path': input_file,
-            'metabolites': len(feature_ids),
-            'samples': len(sample_columns),
-            'batches': len(unique_batches),
-            'output_path': output_file,
-            'plots_dir': run_plot_dir,
-            'permanova_f_before': permanova_before['pseudo_f'],
-            'permanova_f_after': permanova_after['pseudo_f'],
-            'permanova_p_before': permanova_before['p_value'],
-            'permanova_p_after': permanova_after['p_value'],
-            'r2_before': permanova_before['r_squared'],
-            'r2_after': permanova_after['r_squared'],
-            'perm_test_pvalue': perm_test_permanova['p_value'],
-            'qc_cv_before': qc_cv_before['median_cv'],
-            'qc_cv_after': qc_cv_after['median_cv'],
-            'cohens_d_before': cohens_d_before['overall_cohens_d'],
-            'cohens_d_after': cohens_d_after['overall_cohens_d'],
-            'success': success_count >= 2
-        }
+        return ProcessingResult(
+            file_path=input_file,
+            output_path=str(output_file),
+            plots_dir=str(run_plot_dir),
+            metabolites=len(feature_ids),
+            samples=len(sample_columns),
+            extra={
+                'batches': len(unique_batches),
+                'permanova_f_before': permanova_before['pseudo_f'],
+                'permanova_f_after': permanova_after['pseudo_f'],
+                'permanova_p_before': permanova_before['p_value'],
+                'permanova_p_after': permanova_after['p_value'],
+                'r2_before': permanova_before['r_squared'],
+                'r2_after': permanova_after['r_squared'],
+                'perm_test_pvalue': perm_test_permanova['p_value'],
+                'qc_cv_before': qc_cv_before['median_cv'],
+                'qc_cv_after': qc_cv_after['median_cv'],
+                'cohens_d_before': cohens_d_before['overall_cohens_d'],
+                'cohens_d_after': cohens_d_after['overall_cohens_d'],
+                'success': success_count >= 2
+            }
+        )
         
     except Exception as e:
         print(f"\n❌ 錯誤: {str(e)}")

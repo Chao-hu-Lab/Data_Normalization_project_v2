@@ -33,6 +33,10 @@ from .file_io import (
     validate_required_columns,
     generate_output_filename,
     get_output_directory,
+    get_project_root,
+    get_output_root,
+    build_output_path,
+    build_plots_dir,
 )
 
 # Sample classification
@@ -71,3 +75,9 @@ from .statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellip
 
 # Plotting
 from .plotting import setup_matplotlib, plot_pca_comparison_qc_style
+
+# Results
+from .results import ProcessingResult
+
+# Console
+from .console import safe_print

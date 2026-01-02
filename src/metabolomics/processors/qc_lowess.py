@@ -14,8 +14,6 @@ import scipy.stats as stats
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 import warnings
-import tkinter as tk
-from tkinter import filedialog
 import copy
 from collections import Counter
 
@@ -31,11 +29,15 @@ from metabolomics.utils.constants import (
     NON_SAMPLE_COLUMNS,
     STAT_COLUMN_KEYWORDS,
     SHEET_NAMES,
+    DATETIME_FORMAT_FULL,
 )
 from metabolomics.utils.sample_classification import (
     normalize_sample_name,
     identify_sample_columns,
 )
+from metabolomics.utils.file_io import build_output_path, build_plots_dir, get_output_root
+from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.console import safe_print as print
 
 # 設定 matplotlib
 setup_matplotlib()
@@ -181,6 +183,7 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
     factor_cv = calc_cv(factor_array) if factor_array.size >= 2 else np.nan
 
     try:
+        output_file = str(output_file)
         trend_tau, trend_pvalue = kendalltau(valid_x, valid_y)
     except Exception:
         trend_tau, trend_pvalue = (np.nan, np.nan)
@@ -1401,106 +1404,33 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         print(f"\n📋 開始處理 Excel 檔案...")
         print(f"  - 載入原始檔案: {os.path.basename(input_file)}")
         
-        input_workbook = load_workbook(input_file)
-        workbook = input_workbook
-        
-        # 刪除舊工作表
-        sheets_to_update = ['QC LOWESS result', QC_LOWESS_ADVANCED_SHEET, 'SampleInfo']
-        
-        for sheet_name in sheets_to_update:
-            if sheet_name in workbook.sheetnames:
-                del workbook[sheet_name]
-                print(f"  - 刪除舊工作表: {sheet_name}")
-        
-        istd_sheet_original = workbook['ISTD_Correction']
-        
-        # 保存格式資訊
-        istd_formats = {}
-        for row in istd_sheet_original.iter_rows():
-            for cell in row:
-                cell_coord = f"{cell.column_letter}{cell.row}"
-                if cell.has_style:
-                    istd_formats[cell_coord] = {
-                        'font': copy.copy(cell.font),
-                        'border': copy.copy(cell.border),
-                        'fill': copy.copy(cell.fill),
-                        'number_format': copy.copy(cell.number_format),
-                        'protection': copy.copy(cell.protection),
-                        'alignment': copy.copy(cell.alignment)
-                    }
-        
-        istd_col_widths = {col: dim.width for col, dim in istd_sheet_original.column_dimensions.items()}
-        istd_row_heights = {row: dim.height for row, dim in istd_sheet_original.row_dimensions.items()}
-        istd_merged_cells = [str(merged) for merged in istd_sheet_original.merged_cells.ranges]
-        
-        # 寫入臨時檔案
-        temp_file = output_file.replace('.xlsx', '_temp.xlsx')
-        with pd.ExcelWriter(temp_file, engine='openpyxl') as writer:
-            istd_df.to_excel(writer, sheet_name='ISTD_Correction', index=False)
-            lowess_with_cv.to_excel(writer, sheet_name='QC LOWESS result', index=False)
-            advanced_stats_df.to_excel(writer, sheet_name=QC_LOWESS_ADVANCED_SHEET, index=False)
-            sample_info_df.to_excel(writer, sheet_name='SampleInfo', index=False)
-        
-        temp_workbook = load_workbook(temp_file)
-        
-        print(f"  - 更新 ISTD_Correction 工作表（保留原始格式）...")
-        
-        if 'ISTD_Correction' in workbook.sheetnames:
-            del workbook['ISTD_Correction']
-        
-        istd_sheet_new = workbook.create_sheet('ISTD_Correction', 0)
-        
-        temp_istd_sheet = temp_workbook['ISTD_Correction']
-        for row in temp_istd_sheet.iter_rows():
-            for cell in row:
-                istd_sheet_new.cell(row=cell.row, column=cell.column, value=cell.value)
-        
-        # 恢復格式
-        for cell_coord, formats in istd_formats.items():
-            try:
-                cell = istd_sheet_new[cell_coord]
-                cell.font = formats['font']
-                cell.border = formats['border']
-                cell.fill = formats['fill']
-                cell.number_format = formats['number_format']
-                cell.protection = formats['protection']
-                cell.alignment = formats['alignment']
-            except (KeyError, ValueError, AttributeError):
-                # KeyError: format key missing
-                # ValueError: invalid format value
-                # AttributeError: cell property error
-                pass
+        def sanitize_excel_df(df):
+            if df is None:
+                return None
+            return df.replace([np.inf, -np.inf], np.nan)
 
-        for col, width in istd_col_widths.items():
-            istd_sheet_new.column_dimensions[col].width = width
+        raw_export = sanitize_excel_df(raw_df) if raw_df is not None else None
+        istd_export = sanitize_excel_df(istd_df)
+        lowess_export = sanitize_excel_df(lowess_with_cv)
+        advanced_export = sanitize_excel_df(advanced_stats_df)
+        sample_info_export = sanitize_excel_df(sample_info_df)
 
-        for row, height in istd_row_heights.items():
-            istd_sheet_new.row_dimensions[row].height = height
+        sheets_to_write = []
+        if raw_export is not None and not raw_export.empty:
+            sheets_to_write.append(('RawIntensity', raw_export))
+        sheets_to_write.extend([
+            ('ISTD_Correction', istd_export),
+            ('QC LOWESS result', lowess_export),
+            (QC_LOWESS_ADVANCED_SHEET, advanced_export),
+            ('SampleInfo', sample_info_export),
+        ])
 
-        for merged in istd_merged_cells:
-            try:
-                istd_sheet_new.merge_cells(merged)
-            except (ValueError, TypeError):
-                # ValueError: cells already merged or invalid range
-                # TypeError: invalid merge range format
-                pass
-        
-        print(f"  ✓ ISTD_Correction 格式已完整保留")
-        
-        # 複製其他工作表
-        for sheet_name in ['QC LOWESS result', QC_LOWESS_ADVANCED_SHEET, 'SampleInfo']:
-            if sheet_name in temp_workbook.sheetnames:
-                source_sheet = temp_workbook[sheet_name]
-                target_sheet = workbook.create_sheet(sheet_name)
-                copy_sheet_with_full_format(source_sheet, target_sheet)
-                print(f"  ✓ 已複製工作表: {sheet_name}")
-        
-        temp_workbook.close()
-        
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-        
-        # 科學記號格式
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            for sheet_name, df in sheets_to_write:
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        workbook = load_workbook(output_file)
+
         scientific_format = '0.00E+00'
         
         for sheet_name in ['ISTD_Correction', 'QC LOWESS result', QC_LOWESS_ADVANCED_SHEET, 'SampleInfo']:
@@ -2069,8 +1999,10 @@ def main(input_file=None):
     print("   ✅ 進階統計：Mann-Kendall + R²/RMSE（副表）")
     print("="*70)
     
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(script_dir, "output")
+    if input_file is None:
+        raise ValueError("input_file is required; GUI must provide the file path.")
+
+    output_dir = get_output_root()
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
         print(f"\n✓ 已建立 'output' 資料夾: {output_dir}")
@@ -2119,12 +2051,13 @@ def main(input_file=None):
     print(f"💾 保存結果...")
     print(f"{'='*70}")
 
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_file = os.path.join(output_dir, f'QC_LOWESS_{timestamp}.xlsx')
-    plots_root = os.path.join(output_dir, "QC_LOWESS_plots")
-    os.makedirs(plots_root, exist_ok=True)
-    plots_session_dir = os.path.join(plots_root, f"QC_LOWESS_{timestamp}")
-    os.makedirs(plots_session_dir, exist_ok=True)
+    timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
+    output_file = build_output_path("QC_LOWESS", timestamp=timestamp)
+    plots_session_dir = build_plots_dir(
+        "QC_LOWESS_plots",
+        timestamp=timestamp,
+        session_prefix="QC_LOWESS"
+    )
 
     success = save_results_to_excel(
         raw_df, istd_df, lowess_df, sample_info_df,
@@ -2167,15 +2100,16 @@ def main(input_file=None):
     print(f"    - Wilcoxon test: 檢測整體 CV% 是否顯著降低（終端機顯示）")
     print(f"\n{'='*70}\n")
     
-    output_file_abs = os.path.abspath(output_file)
     metabolites_count = len(lowess_df)
     samples_count = len(sample_columns)
     
-    return {
-        'metabolites': metabolites_count,
-        'samples': samples_count,
-        'output_path': output_file_abs
-    }
+    return ProcessingResult(
+        file_path=file_path,
+        output_path=str(output_file),
+        plots_dir=str(plots_session_dir),
+        metabolites=metabolites_count,
+        samples=samples_count
+    )
 
 
 if __name__ == "__main__":

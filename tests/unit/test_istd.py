@@ -54,8 +54,8 @@ class TestISTDCorrectionOutput:
     """Tests for output validation."""
 
     @pytest.mark.slow
-    def test_main_returns_dict(self, istd_module, sample_input_file, validate_result_dict):
-        """Test that main() returns expected dictionary."""
+    def test_main_returns_processing_result(self, istd_module, sample_input_file, validate_result_dict):
+        """Test that main() returns a ProcessingResult."""
         result = istd_module.main(input_file=sample_input_file)
 
         validation = validate_result_dict(
@@ -63,7 +63,7 @@ class TestISTDCorrectionOutput:
             required_keys=['output_path', 'metabolites', 'samples']
         )
 
-        assert validation['is_dict'], f"Result should be dict: {validation['errors']}"
+        assert validation['is_processing_result'], f"Result should be ProcessingResult: {validation['errors']}"
         assert len(validation['errors']) == 0, f"Validation errors: {validation['errors']}"
 
     @pytest.mark.slow
@@ -72,10 +72,11 @@ class TestISTDCorrectionOutput:
         result = istd_module.main(input_file=sample_input_file)
 
         assert result is not None, "main() should return a result"
-        assert 'output_path' in result, "Result should contain output_path"
+        output_path = result.output_path if hasattr(result, "output_path") else result.get('output_path')
+        assert output_path, "Result should contain output_path"
 
         validation = validate_excel_output(
-            result['output_path'],
+            output_path,
             required_sheets=['ISTD_Correction', 'RawIntensity', 'SampleInfo'],
             min_rows=1
         )
@@ -95,7 +96,8 @@ class TestISTDCorrectionOutput:
         result = istd_module.main(input_file=sample_input_file)
 
         # Load output
-        output_df = pd.read_excel(result['output_path'], sheet_name='ISTD_Correction')
+        output_path = result.output_path if hasattr(result, "output_path") else result.get('output_path')
+        output_df = pd.read_excel(output_path, sheet_name='ISTD_Correction')
 
         # Feature count should be approximately same (non-ISTD features)
         assert len(output_df) > 0, "Output should have rows"

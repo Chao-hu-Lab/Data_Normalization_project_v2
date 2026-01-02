@@ -1,7 +1,5 @@
 import pandas as pd
 import numpy as np
-from tkinter import filedialog
-import tkinter as tk
 from pathlib import Path
 import warnings
 import os
@@ -19,8 +17,16 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 from metabolomics.utils.plotting import plot_pca_comparison_qc_style, setup_matplotlib
-from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES
+from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES, DATETIME_FORMAT_FULL
 from metabolomics.utils.sample_classification import SampleClassifier, normalize_sample_type
+from metabolomics.utils.file_io import (
+    build_output_path,
+    build_plots_dir,
+    get_output_root,
+    generate_output_filename,
+)
+from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.console import safe_print as print
 
 warnings.filterwarnings('ignore')
 
@@ -31,7 +37,6 @@ setup_matplotlib()
 # Centralized summary metadata to avoid magic strings and ease maintenance
 SUMMARY_SHEET_NAME = "ConcNormalization_Summary"
 SUMMARY_REPORT_SEPARATOR = "-" * 80
-OUTPUT_BASE_DIR = Path(__file__).resolve().parent / "output"
 
 # ==================== 標準化方法 ====================
 
@@ -1916,6 +1921,7 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
 # ==================== 檔案處理函數 ====================
 
 def select_file():
+    raise RuntimeError("input_file is required; GUI must provide the file path.")
     """讓使用者選擇Excel檔案"""
     root = tk.Tk()
     root.withdraw()
@@ -2150,23 +2156,39 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     print(f"✓ 標準化完成")
     
     # 統一輸出目錄與圖表路徑
-    OUTPUT_BASE_DIR.mkdir(exist_ok=True)
-    output_dir = OUTPUT_BASE_DIR
-    run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_dir = get_output_root()
+    run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
     method_slug = method_name.replace(' ', '_')
-    figures_dir = OUTPUT_BASE_DIR / "Normalization_Figures" / f"{method_slug}_{run_timestamp}"
-    figures_dir.mkdir(parents=True, exist_ok=True)
-    print(f"✓ Excel 將輸出到: {OUTPUT_BASE_DIR}")
+    figures_dir = build_plots_dir(
+        "Normalization_Figures",
+        timestamp=run_timestamp,
+        session_prefix=method_slug
+    )
+    print(f"✓ Excel 將輸出到: {output_dir}")
     print(f"✓ 本次圖表輸出目錄: {figures_dir}")
 
     figure_paths = {
-        "boxplot": figures_dir / f"Fig1_Boxplot_{method_slug}_{run_timestamp}.png",
-        "cv": figures_dir / f"Fig2_CV_{method_slug}_{run_timestamp}.png",
-        "rle": figures_dir / f"Fig3_RLE_{method_slug}_{run_timestamp}.png",
-        "pca": figures_dir / f"Fig4_PCA_{method_slug}_{run_timestamp}.png",
-        "qc_variability": figures_dir / f"Fig5_QC_Variability_{method_slug}_{run_timestamp}.png",
-        "qc_reproducibility": figures_dir / f"Fig6_QC_Reproducibility_{method_slug}_{run_timestamp}.png",
-        "correlation": figures_dir / f"Fig7_Correlation_{method_slug}_{run_timestamp}.png"
+        "boxplot": figures_dir / generate_output_filename(
+            f"Fig1_Boxplot_{method_slug}", timestamp=run_timestamp, extension=".png"
+        ),
+        "cv": figures_dir / generate_output_filename(
+            f"Fig2_CV_{method_slug}", timestamp=run_timestamp, extension=".png"
+        ),
+        "rle": figures_dir / generate_output_filename(
+            f"Fig3_RLE_{method_slug}", timestamp=run_timestamp, extension=".png"
+        ),
+        "pca": figures_dir / generate_output_filename(
+            f"Fig4_PCA_{method_slug}", timestamp=run_timestamp, extension=".png"
+        ),
+        "qc_variability": figures_dir / generate_output_filename(
+            f"Fig5_QC_Variability_{method_slug}", timestamp=run_timestamp, extension=".png"
+        ),
+        "qc_reproducibility": figures_dir / generate_output_filename(
+            f"Fig6_QC_Reproducibility_{method_slug}", timestamp=run_timestamp, extension=".png"
+        ),
+        "correlation": figures_dir / generate_output_filename(
+            f"Fig7_Correlation_{method_slug}", timestamp=run_timestamp, extension=".png"
+        ),
     }
     # 分離有效樣本用於評估
     valid_sample_mask = ~np.isnan(normalized_data[0, :])
@@ -2301,8 +2323,10 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
 def save_normalization_results(normalized_df, summary_report, file_path, method_name, original_sheets, output_dir):
     """儲存標準化結果到Excel檔案"""
     try:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_filename = f"Normalized_{method_name}_{timestamp}.xlsx"
+        timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
+        output_filename = generate_output_filename(
+            f"Normalized_{method_name}", timestamp=timestamp, extension=".xlsx"
+        )
         output_path = output_dir / output_filename
         
         # 載入原始工作簿
@@ -2427,6 +2451,9 @@ def main(input_file=None):
     
     # 🔧 關鍵修正：如果沒有提供 input_file，則顯示對話框
     if input_file is None:
+        raise ValueError("input_file is required; GUI must provide the file path.")
+
+    if input_file is None:
         file_path = select_file()
         
         # 如果用戶取消選擇，返回 None
@@ -2543,12 +2570,13 @@ def main(input_file=None):
     sample_count = len(normalized_df.columns) - 1
     metabolite_count = len(normalized_df)
     
-    return {
-        'file_path': input_file,
-        'metabolites': metabolite_count,
-        'samples': sample_count,
-        'output_path': output_path
-    }
+    return ProcessingResult(
+        file_path=input_file,
+        output_path=str(output_path),
+        plots_dir=str(figures_dir),
+        metabolites=metabolite_count,
+        samples=sample_count
+    )
 
 
 if __name__ == "__main__":

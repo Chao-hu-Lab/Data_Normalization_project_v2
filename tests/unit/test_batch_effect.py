@@ -43,19 +43,21 @@ class TestBatchEffectOutput:
         """Test Batch Effect with Step 2 output."""
         # Run Step 1
         step1_result = istd_module.main(input_file=sample_input_file)
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
 
         # Run Step 2
-        step2_result = qc_lowess_module.main(input_file=step1_result['output_path'])
+        step2_result = qc_lowess_module.main(input_file=step1_output)
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
 
         # Run Step 3
-        step3_result = batch_effect_module.main(input_file=step2_result['output_path'])
+        step3_result = batch_effect_module.main(input_file=step2_output)
 
         validation = validate_result_dict(
             step3_result,
             required_keys=['output_path']
         )
 
-        assert validation['is_dict'], f"Result should be dict: {validation['errors']}"
+        assert validation['is_processing_result'], f"Result should be ProcessingResult: {validation['errors']}"
 
     @pytest.mark.slow
     @pytest.mark.integration
@@ -65,16 +67,19 @@ class TestBatchEffectOutput:
         """Test output Excel file structure."""
         # Run Steps 1-2
         step1_result = istd_module.main(input_file=sample_input_file)
-        step2_result = qc_lowess_module.main(input_file=step1_result['output_path'])
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
+        step2_result = qc_lowess_module.main(input_file=step1_output)
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
 
         # Run Step 3
-        step3_result = batch_effect_module.main(input_file=step2_result['output_path'])
+        step3_result = batch_effect_module.main(input_file=step2_output)
 
         assert step3_result is not None
-        assert 'output_path' in step3_result
+        step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
+        assert step3_output
 
         validation = validate_excel_output(
-            step3_result['output_path'],
+            step3_output,
             min_rows=1
         )
 
@@ -88,15 +93,17 @@ class TestBatchEffectOutput:
         """Test that PERMANOVA statistics are included in result."""
         # Run Steps 1-2
         step1_result = istd_module.main(input_file=sample_input_file)
-        step2_result = qc_lowess_module.main(input_file=step1_result['output_path'])
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
+        step2_result = qc_lowess_module.main(input_file=step1_output)
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
 
         # Run Step 3
-        step3_result = batch_effect_module.main(input_file=step2_result['output_path'])
+        step3_result = batch_effect_module.main(input_file=step2_output)
 
         # Check for PERMANOVA-related keys (may vary based on data)
-        if step3_result and isinstance(step3_result, dict):
+        if step3_result and hasattr(step3_result, "output_path"):
             # At minimum should have success indicator
-            assert 'output_path' in step3_result
+            assert step3_result.output_path
 
 
 class TestBatchEffectHelpers:
