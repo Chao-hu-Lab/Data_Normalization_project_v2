@@ -1,19 +1,15 @@
 import pandas as pd
 import numpy as np
 import os
-import sys
 from datetime import datetime
 from openpyxl import load_workbook
-from openpyxl.styles import Font, PatternFill
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import PatternFill
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
-from matplotlib import cm
 from matplotlib.patches import Ellipse
 import scipy.stats as stats
-from scipy.spatial.distance import mahalanobis
-from scipy.stats import chi2, f as f_dist
+from scipy.stats import chi2
 import warnings
 import copy
 
@@ -21,10 +17,8 @@ warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
 from metabolomics.utils.data_helpers import get_valid_values
-from metabolomics.utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
 from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
-from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL
-from metabolomics.utils.sample_classification import SampleClassifier, identify_sample_columns
+from metabolomics.utils.constants import DATETIME_FORMAT_FULL
 from metabolomics.utils.file_io import build_output_path, build_plots_dir, get_output_root
 from metabolomics.utils.results import ProcessingResult
 from metabolomics.utils.console import safe_print as print
@@ -290,7 +284,7 @@ def calculate_istd_cv(istd_signals, sample_columns):
 
     Vectorized implementation - much faster than iterrows().
     """
-    from metabolomics.utils.safe_math import safe_cv_percent_vectorized, extract_numeric_matrix
+    from metabolomics.utils.safe_math import safe_cv_percent_vectorized
 
     # Extract numeric matrix for sample columns
     valid_cols = [c for c in sample_columns if c in istd_signals.columns]

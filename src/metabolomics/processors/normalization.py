@@ -3,24 +3,18 @@ import numpy as np
 from pathlib import Path
 import warnings
 import os
-import sys
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border
 from openpyxl.utils.dataframe import dataframe_to_rows
-from scipy.stats import spearmanr, pearsonr
-from scipy import stats
 from datetime import datetime
 import matplotlib.pyplot as plt
-import seaborn as sns
 from copy import copy
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 from metabolomics.utils.plotting import plot_pca_comparison_qc_style, setup_matplotlib
-from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES, DATETIME_FORMAT_FULL
-from metabolomics.utils.sample_classification import SampleClassifier, normalize_sample_type
+from metabolomics.utils.constants import DATETIME_FORMAT_FULL
 from metabolomics.utils.file_io import (
-    build_output_path,
     build_plots_dir,
     get_output_root,
     generate_output_filename,
@@ -378,7 +372,6 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
     if total >= 3:
         try:
             from scipy.stats import wilcoxon
-            from statsmodels.stats.multitest import multipletests
 
             # Wilcoxon signed-rank test (配對雙尾檢驗)
             # 檢驗標準化前後 Cohen's d 絕對值是否有顯著差異

@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Import shared constants
-from .constants import FONT_SIZES, COLORBLIND_COLORS
+from .constants import COLORBLIND_COLORS
 
 
 def plot_pca_comparison_qc_style(
@@ -287,7 +287,7 @@ def plot_pca_comparison_qc_style(
     return fig, (ax_left, ax_right)
 
 
-# FONT_SIZES and COLORBLIND_COLORS are now imported from .constants
+# COLORBLIND_COLORS is imported from .constants
 
 
 def setup_matplotlib():

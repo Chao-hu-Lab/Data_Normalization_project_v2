@@ -5,8 +5,7 @@ This module consolidates the 26+ instances of sample type detection
 logic that were scattered across the processing modules.
 """
 import pandas as pd
-import numpy as np
-from typing import Dict, List, Set, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 
 from .constants import NON_SAMPLE_COLUMNS, STAT_COLUMN_KEYWORDS, SAMPLE_TYPE_ALIASES
 

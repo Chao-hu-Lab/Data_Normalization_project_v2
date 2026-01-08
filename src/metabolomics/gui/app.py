@@ -9,8 +9,6 @@ import queue
 import logging
 from datetime import datetime
 import subprocess
-import psutil
-import re
 from metabolomics.utils.results import ProcessingResult
 
 

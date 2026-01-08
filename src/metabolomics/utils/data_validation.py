@@ -10,7 +10,7 @@ import numpy as np
 from typing import Tuple, List, Optional, Dict, Any
 from dataclasses import dataclass, field
 
-from .constants import VALIDATION_THRESHOLDS, SHEET_NAMES, NON_SAMPLE_COLUMNS
+from .constants import VALIDATION_THRESHOLDS
 
 
 @dataclass
