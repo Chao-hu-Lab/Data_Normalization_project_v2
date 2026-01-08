@@ -25,7 +25,7 @@ def project_root():
 @pytest.fixture(scope="session")
 def test_data_dir(project_root):
     """Return the test data directory path."""
-    return os.path.join(project_root, "examples", "data")
+    return os.path.join(project_root, "data")
 
 
 @pytest.fixture(scope="session")
@@ -42,9 +42,9 @@ def output_dir(project_root):
 def sample_input_file(test_data_dir):
     """
     Return path to sample input file for testing.
-    Uses feature_matrix_with_qc_AfterVBA.xlsx as it contains QC samples.
+    Uses feature_matrix_with_qc_non_group_AfterVBA.xlsx as it contains QC samples.
     """
-    file_path = os.path.join(test_data_dir, "feature_matrix_with_qc_AfterVBA.xlsx")
+    file_path = os.path.join(test_data_dir, "feature_matrix_with_qc_non_group_AfterVBA.xlsx")
     if not os.path.exists(file_path):
         pytest.skip(f"Test data file not found: {file_path}")
     return file_path
@@ -191,7 +191,7 @@ def validate_result_dict():
 
     def _validate(result, required_keys=None):
         """
-        Validate a result dictionary from module main().
+        Validate a result from module main().
 
         Args:
             result: The result dictionary
@@ -200,25 +200,37 @@ def validate_result_dict():
         Returns:
             dict with validation results
         """
+        from metabolomics.utils.results import ProcessingResult
+
+        data = None
+        is_processing_result = isinstance(result, ProcessingResult)
+        is_dict = isinstance(result, dict)
+
+        if is_processing_result:
+            data = result.to_dict()
+        elif is_dict:
+            data = result
+
         validation = {
-            'is_dict': isinstance(result, dict),
-            'keys': list(result.keys()) if isinstance(result, dict) else [],
+            'is_processing_result': is_processing_result,
+            'is_dict': is_dict,
+            'keys': list(data.keys()) if isinstance(data, dict) else [],
             'errors': []
         }
 
-        if not validation['is_dict']:
-            validation['errors'].append(f"Result is not a dict: {type(result)}")
+        if data is None:
+            validation['errors'].append(f"Result is not a ProcessingResult or dict: {type(result)}")
             return validation
 
         if required_keys:
-            missing = set(required_keys) - set(result.keys())
+            missing = set(required_keys) - set(data.keys())
             if missing:
                 validation['errors'].append(f"Missing keys: {missing}")
 
         # Check output_path if present
-        if 'output_path' in result:
-            if not os.path.exists(result['output_path']):
-                validation['errors'].append(f"output_path does not exist: {result['output_path']}")
+        if 'output_path' in data:
+            if not os.path.exists(data['output_path']):
+                validation['errors'].append(f"output_path does not exist: {data['output_path']}")
 
         return validation
 
@@ -242,19 +254,19 @@ def run_full_pipeline(sample_input_file, istd_module, qc_lowess_module,
     result1 = istd_module.main(input_file=sample_input_file)
     results['step1'] = result1
 
-    if result1 and 'output_path' in result1:
+    if result1 and hasattr(result1, "output_path"):
         # Step 2: QC-LOWESS
-        result2 = qc_lowess_module.main(input_file=result1['output_path'])
+        result2 = qc_lowess_module.main(input_file=result1.output_path)
         results['step2'] = result2
 
-        if result2 and 'output_path' in result2:
+        if result2 and hasattr(result2, "output_path"):
             # Step 3: Batch Effect
-            result3 = batch_effect_module.main(input_file=result2['output_path'])
+            result3 = batch_effect_module.main(input_file=result2.output_path)
             results['step3'] = result3
 
-            if result3 and 'output_path' in result3:
+            if result3 and hasattr(result3, "output_path"):
                 # Step 4: Concentration Normalization
-                result4 = conc_norm_module.main(input_file=result3['output_path'])
+                result4 = conc_norm_module.main(input_file=result3.output_path)
                 results['step4'] = result4
 
     return results

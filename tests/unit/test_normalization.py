@@ -36,18 +36,21 @@ class TestConcentrationNormOutput:
         """Test Concentration Normalization with Step 3 output."""
         # Run Steps 1-3
         step1_result = istd_module.main(input_file=sample_input_file)
-        step2_result = qc_lowess_module.main(input_file=step1_result['output_path'])
-        step3_result = batch_effect_module.main(input_file=step2_result['output_path'])
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
+        step2_result = qc_lowess_module.main(input_file=step1_output)
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
+        step3_result = batch_effect_module.main(input_file=step2_output)
+        step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
 
         # Run Step 4
-        step4_result = conc_norm_module.main(input_file=step3_result['output_path'])
+        step4_result = conc_norm_module.main(input_file=step3_output)
 
         validation = validate_result_dict(
             step4_result,
             required_keys=['output_path']
         )
 
-        assert validation['is_dict'], f"Result should be dict: {validation['errors']}"
+        assert validation['is_processing_result'], f"Result should be ProcessingResult: {validation['errors']}"
 
     @pytest.mark.slow
     @pytest.mark.integration
@@ -57,17 +60,21 @@ class TestConcentrationNormOutput:
         """Test output Excel file structure."""
         # Run Steps 1-3
         step1_result = istd_module.main(input_file=sample_input_file)
-        step2_result = qc_lowess_module.main(input_file=step1_result['output_path'])
-        step3_result = batch_effect_module.main(input_file=step2_result['output_path'])
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
+        step2_result = qc_lowess_module.main(input_file=step1_output)
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
+        step3_result = batch_effect_module.main(input_file=step2_output)
+        step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
 
         # Run Step 4
-        step4_result = conc_norm_module.main(input_file=step3_result['output_path'])
+        step4_result = conc_norm_module.main(input_file=step3_output)
 
         assert step4_result is not None
-        assert 'output_path' in step4_result
+        step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get('output_path')
+        assert step4_output
 
         validation = validate_excel_output(
-            step4_result['output_path'],
+            step4_output,
             min_rows=1
         )
 
@@ -103,9 +110,9 @@ class TestFullPipeline:
         results = run_full_pipeline
 
         for step_name, result in results.items():
-            if result and 'output_path' in result:
-                assert os.path.exists(result['output_path']), \
-                    f"{step_name} output file should exist: {result['output_path']}"
+            if result and hasattr(result, "output_path"):
+                assert os.path.exists(result.output_path), \
+                    f"{step_name} output file should exist: {result.output_path}"
 
     @pytest.mark.slow
     @pytest.mark.integration
@@ -116,8 +123,8 @@ class TestFullPipeline:
         metabolite_counts = []
         for step_name in ['step1', 'step2', 'step3', 'step4']:
             result = results.get(step_name)
-            if result and 'metabolites' in result:
-                metabolite_counts.append(result['metabolites'])
+            if result and hasattr(result, "metabolites"):
+                metabolite_counts.append(result.metabolites)
 
         if len(metabolite_counts) >= 2:
             # Metabolite count should not change dramatically

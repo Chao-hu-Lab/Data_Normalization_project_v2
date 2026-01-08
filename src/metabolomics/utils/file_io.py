@@ -10,7 +10,29 @@ from openpyxl import load_workbook
 from typing import Dict, Optional, Tuple, List, Any
 from pathlib import Path
 
-from .constants import VALIDATION_THRESHOLDS, SHEET_NAMES
+from .constants import VALIDATION_THRESHOLDS, SHEET_NAMES, DATETIME_FORMAT_FULL
+
+def get_project_root() -> Path:
+    """
+    Resolve the project root based on the package location.
+
+    Falls back to the current working directory if the expected layout
+    is not found.
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if parent.name == "src":
+            return parent.parent
+    return Path.cwd()
+
+
+def get_output_root() -> Path:
+    """
+    Return the project-level output directory and ensure it exists.
+    """
+    output_root = get_project_root() / "output"
+    output_root.mkdir(parents=True, exist_ok=True)
+    return output_root
 
 
 class ExcelDataLoader:
@@ -265,7 +287,6 @@ def generate_output_filename(
         Generated filename string
     """
     from datetime import datetime
-    from .constants import DATETIME_FORMAT_FULL
 
     if timestamp is None:
         timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
@@ -279,7 +300,7 @@ def generate_output_filename(
 
 
 def get_output_directory(
-    input_file: str,
+    input_file: str = None,
     subdir: str = None
 ) -> Path:
     """
@@ -288,17 +309,46 @@ def get_output_directory(
     Creates the directory if it doesn't exist.
 
     Args:
-        input_file: Input file path
+        input_file: Input file path (unused; retained for compatibility)
         subdir: Optional subdirectory name (e.g., "plots")
 
     Returns:
         Path object for the output directory
     """
-    input_path = Path(input_file)
-    output_dir = input_path.parent
-
+    output_dir = get_output_root()
     if subdir:
         output_dir = output_dir / subdir
-
-    output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
+
+
+def build_output_path(
+    prefix: str,
+    timestamp: str = None,
+    extension: str = ".xlsx"
+) -> Path:
+    """
+    Build a full output file path under the project output directory.
+    """
+    output_dir = get_output_root()
+    filename = generate_output_filename(prefix, timestamp=timestamp, extension=extension)
+    return output_dir / filename
+
+
+def build_plots_dir(
+    subdir: str,
+    timestamp: str = None,
+    session_prefix: str = None
+) -> Path:
+    """
+    Build a plots directory under the project output directory.
+    """
+    output_dir = get_output_root()
+    plots_root = output_dir / subdir
+    if session_prefix:
+        session_name = f"{session_prefix}_{timestamp}" if timestamp else session_prefix
+        plots_dir = plots_root / session_name
+    else:
+        plots_dir = plots_root
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    return plots_dir

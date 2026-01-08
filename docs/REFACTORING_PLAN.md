@@ -47,8 +47,8 @@ Each module needs tests for:
 
 ### 2.3 Test Data
 Available test files:
-- `矩陣生成/feature_matrix_control_exposed_AfterVBA.xlsx`
-- `矩陣生成/feature_matrix_with_qc_AfterVBA.xlsx`
+- `data/feature_matrix_control_exposed_AfterVBA.xlsx`
+- `data/feature_matrix_with_qc_AfterVBA.xlsx`
 
 ---
 

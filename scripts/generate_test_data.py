@@ -192,7 +192,7 @@ sample_info = pd.DataFrame({
 
 # 顯示結果摘要
 print("\n" + "=" * 70)
-print("矩陣生成完成！")
+print("data generation complete!")
 print("=" * 70)
 print(f"\n矩陣維度: {df.shape} (特徵 × 樣本)")
 print(f"總樣本數: {n_samples}")

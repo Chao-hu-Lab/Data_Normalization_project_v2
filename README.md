@@ -31,6 +31,7 @@ psutil
    ```bash
    python Data_Normalization_program_v2.py
    ```
+   Windows quick start: double-click `run_gui.bat`.
 
 ## Workflow Overview
 
@@ -111,6 +112,8 @@ output/
 ```bash
 python Data_Normalization_program_v2.py
 ```
+Windows quick start: double-click `run_gui.bat`.
+
 
 1. Click **Browse** to select input file
 2. Click **Auto Run** to execute all steps, or run each step individually
@@ -131,7 +134,7 @@ result4 = conc_main(input_file=result3['output_path'])
 
 ## Test Data
 
-Sample test files are provided in `矩陣生成/`:
+Sample test files are provided in `data/`:
 - `feature_matrix_control_exposed_AfterVBA.xlsx`
 - `feature_matrix_with_qc_AfterVBA.xlsx`
 

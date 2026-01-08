@@ -15,8 +15,6 @@ import scipy.stats as stats
 from scipy.spatial.distance import mahalanobis
 from scipy.stats import chi2, f as f_dist
 import warnings
-import tkinter as tk
-from tkinter import filedialog
 import copy
 
 warnings.filterwarnings('ignore')
@@ -25,8 +23,11 @@ warnings.filterwarnings('ignore')
 from metabolomics.utils.data_helpers import get_valid_values
 from metabolomics.utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
 from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
-from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES
+from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL
 from metabolomics.utils.sample_classification import SampleClassifier, identify_sample_columns
+from metabolomics.utils.file_io import build_output_path, build_plots_dir, get_output_root
+from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.console import safe_print as print
 
 # 設定 matplotlib
 setup_matplotlib()
@@ -1506,10 +1507,12 @@ def main(input_file=None):
         - None: 用戶取消檔案選擇
         - dict: 執行成功，包含統計資訊
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if input_file is None:
+        raise ValueError("input_file is required; GUI must provide the file path.")
+
     
     # 🔧 建立 output 資料夾
-    output_dir = os.path.join(script_dir, "output")
+    output_dir = get_output_root()
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
         print(f"已建立 'output' 資料夾: {output_dir}")
@@ -1554,15 +1557,13 @@ def main(input_file=None):
         raise Exception("校正計算失敗")
     
     # 🔧 修改：儲存結果到 output 資料夾
-    run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_file = os.path.join(
-        output_dir,
-        f"ISTD_Results_{run_timestamp}.xlsx"
+    run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
+    output_file = build_output_path("ISTD_Results", timestamp=run_timestamp)
+    plots_session_dir = build_plots_dir(
+        "ISTD_Correction_plots",
+        timestamp=run_timestamp,
+        session_prefix="ISTD_Correction"
     )
-    plots_root = os.path.join(output_dir, "ISTD_Correction_plots")
-    os.makedirs(plots_root, exist_ok=True)
-    plots_session_dir = os.path.join(plots_root, f"ISTD_Correction_{run_timestamp}")
-    os.makedirs(plots_session_dir, exist_ok=True)
 
     # ===== 防呆17: 输出目录权限检查 =====
     try:
@@ -1606,12 +1607,13 @@ def main(input_file=None):
     print("\n💡 請使用輸出的檔案進行後續 QC LOWESS 處理。\n")
     
     # 🎯 返回統計資訊給 GUI
-    return {
-        'file_path': input_file,
-        'metabolites': len(original_df),
-        'samples': len(sample_columns),
-        'output_path': output_file
-    }
+    return ProcessingResult(
+        file_path=input_file,
+        output_path=str(output_file),
+        plots_dir=str(plots_session_dir),
+        metabolites=len(original_df),
+        samples=len(sample_columns)
+    )
 
 
 if __name__ == "__main__":
