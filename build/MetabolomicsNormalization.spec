@@ -10,7 +10,8 @@ import sys
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 # Resolve paths relative to project root (spec lives in build/).
-here = os.path.abspath(os.path.dirname(__file__))
+spec_path = globals().get('__file__') or sys.argv[0]
+here = os.path.abspath(os.path.dirname(spec_path))
 project_root = os.path.abspath(os.path.join(here, os.pardir))
 
 # Collect all submodules for packages that need them
@@ -18,6 +19,7 @@ hiddenimports = []
 hiddenimports += collect_submodules('sklearn')
 hiddenimports += collect_submodules('statsmodels')
 hiddenimports += collect_submodules('scipy')
+hiddenimports += collect_submodules('skbio')
 hiddenimports += collect_submodules('metabolomics')
 hiddenimports += [
     'sklearn.utils._typedefs',
