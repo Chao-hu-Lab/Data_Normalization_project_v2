@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 import os
-import sys
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
@@ -14,80 +13,35 @@ import scipy.stats as stats
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 import warnings
-import tkinter as tk
-from tkinter import filedialog
 import copy
 from collections import Counter
 
 warnings.filterwarnings('ignore')
 
-# ========== Matplotlib Global Settings ==========
-plt.rcParams['text.usetex'] = False
-plt.rcParams['mathtext.default'] = 'regular'
-if sys.platform == 'darwin':
-    plt.rcParams['font.family'] = 'Helvetica'
-else:
-    plt.rcParams['font.family'] = 'Arial'
-
-FONT_SIZES = {'title': 14, 'subtitle': 12, 'axis_label': 11, 'tick': 10, 'legend': 9, 'annotation': 9}
-
-QC_LOWESS_ADVANCED_SHEET = "QC_LOWESS_Advanced Statistics"
-
-# Columns that should never be treated as sample intensities
-DEFAULT_NON_SAMPLE_COLUMNS = {
-    'FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference', 'ISTD_Median',
-    'QC_CV%', 'Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%',
-    'Variance_Test_pvalue', 'Wilcoxon_pvalue', 'Shapiro_pvalue',
-    'MK_Trend_pvalue', 'Kendall_Tau', 'LOWESS_R2', 'LOWESS_RMSE',
-    'Significant_Improvement', 'Decision', 'Trend_Status', 'frac',
-    'outliers_removed', 'median_correction_factor', 'correction_factor_cv',
-    'correction_factor_std', 'correction_factor_range_low',
-    'correction_factor_range_high', 'Frac_Used', 'QC_CV_for_Frac',
-    'Frac_Strategy'
-}
-
-# Keywords that help identify derived statistical columns even if the exact
-# column name is unknown (e.g., legacy exports or user-provided sheets).
-STAT_COLUMN_KEYWORDS = (
-    'original_qc_', 'corrected_qc_', 'cv_', 'variance_', 'levene', 'mk_',
-    'kendall', 'lowess_', 'trend_', 'wilcoxon', 'shapiro', 'significant',
-    'decision', 'rmse', 'median_correction', 'correction_factor'
+# ========== 匯入共用模組 ==========
+from metabolomics.utils.data_helpers import get_valid_values
+from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
+from metabolomics.utils.constants import (
+    NON_SAMPLE_COLUMNS,
+    SHEET_NAMES,
+    DATETIME_FORMAT_FULL,
 )
+from metabolomics.utils.sample_classification import (
+    normalize_sample_name,
+    identify_sample_columns,
+)
+from metabolomics.utils.file_io import build_output_path, build_plots_dir, get_output_root
+from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.console import safe_print as print
 
-COLORBLIND_COLORS = ['#0173B2', '#DE8F05', '#029E73', '#CC78BC', '#CA9161',
-                     '#949494', '#ECE133', '#56B4E9']
+# 設定 matplotlib
+setup_matplotlib()
 
+# Sheet name constant
+QC_LOWESS_ADVANCED_SHEET = SHEET_NAMES.get('qc_lowess_advanced', "QC_LOWESS_Advanced Statistics")
 
-def normalize_sample_name(name):
-    """Helper to normalize sample names for consistent comparisons."""
-    if pd.isna(name):
-        return ''
-    return str(name).strip().lower()
-
-
-def identify_sample_columns(istd_df, sample_info_df):
-    """Identify valid sample intensity columns using SampleInfo metadata."""
-    sample_names = sample_info_df['Sample_Name'].astype(str).str.strip()
-    sample_lookup = {normalize_sample_name(name) for name in sample_names}
-    non_sample_lower = {normalize_sample_name(col) for col in DEFAULT_NON_SAMPLE_COLUMNS}
-    sample_columns = []
-    dropped_columns = []
-
-    for col in istd_df.columns:
-        col_norm = normalize_sample_name(col)
-        if col_norm in non_sample_lower:
-            continue
-        if col_norm in sample_lookup:
-            sample_columns.append(col)
-        else:
-            if any(keyword in col_norm for keyword in STAT_COLUMN_KEYWORDS):
-                dropped_columns.append(col)
-
-    if not sample_columns:
-        sample_columns = [col for col in istd_df.columns
-                          if normalize_sample_name(col) not in non_sample_lower]
-
-    return sample_columns, dropped_columns
+# For backward compatibility, alias the old constant names
+DEFAULT_NON_SAMPLE_COLUMNS = NON_SAMPLE_COLUMNS
 
 
 def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensities, debug_flag=None, global_qc_median=None):
@@ -224,6 +178,7 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
     factor_cv = calc_cv(factor_array) if factor_array.size >= 2 else np.nan
 
     try:
+        output_file = str(output_file)
         trend_tau, trend_pvalue = kendalltau(valid_x, valid_y)
     except Exception:
         trend_tau, trend_pvalue = (np.nan, np.nan)
@@ -376,18 +331,21 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             print(f"⚠️  提示：{len(missing_order_samples)} 個樣本缺少 Injection_Order，已套用臨時序號")
 
         print("\n🔍 計算 QC CV% 以選擇調試特徵...")
-        feature_cvs = []
-        for _, row in istd_df.iterrows():
-            feature_id = row['FeatureID']
-            qc_values = []
-            for qc_sample in qc_samples:
-                if qc_sample in row.index:
-                    intensity = row[qc_sample]
-                    if not pd.isna(intensity) and intensity > 0:
-                        qc_values.append(intensity)
-            if len(qc_values) >= 2:
-                cv_value = np.std(qc_values, ddof=1) / np.mean(qc_values) * 100
-                feature_cvs.append((feature_id, cv_value))
+        # Vectorized CV% calculation - much faster than iterrows()
+        from metabolomics.utils.safe_math import safe_cv_percent_vectorized
+
+        valid_qc_cols = [c for c in qc_samples if c in istd_df.columns]
+        if valid_qc_cols:
+            qc_data = istd_df[valid_qc_cols].apply(pd.to_numeric, errors='coerce').values
+            cv_values = safe_cv_percent_vectorized(qc_data, axis=1, min_samples=2)
+            feature_ids = istd_df['FeatureID'].values
+            # Build list of (feature_id, cv_value) for features with valid CV
+            feature_cvs = [
+                (fid, cv) for fid, cv in zip(feature_ids, cv_values)
+                if not np.isnan(cv)
+            ]
+        else:
+            feature_cvs = []
 
         debug_features = []
         if feature_cvs:
@@ -490,22 +448,24 @@ def perform_lowess_normalization(istd_df, sample_info_df):
 
         # ===== 計算全域 QC 中位數（跨所有批次）=====
         print("\n🌐 計算全域 QC 中位數（跨所有批次）...")
-        global_qc_medians = {}
-        for idx, row in istd_df.iterrows():
-            feature_id = row['FeatureID']
-            all_qc_values = []
-
-            for qc_sample in qc_samples:
-                if qc_sample in row.index:
-                    intensity = row[qc_sample]
-                    if not pd.isna(intensity) and intensity > 0:
-                        all_qc_values.append(float(intensity))
-
-            if len(all_qc_values) >= 3:
-                global_median = np.nanmedian(all_qc_values)
-                global_qc_medians[feature_id] = global_median
-            else:
-                global_qc_medians[feature_id] = None
+        # Vectorized median calculation - much faster than iterrows()
+        valid_qc_cols = [c for c in qc_samples if c in istd_df.columns]
+        if valid_qc_cols:
+            qc_data = istd_df[valid_qc_cols].apply(pd.to_numeric, errors='coerce').values
+            # Replace non-positive values with NaN
+            qc_data = np.where(qc_data > 0, qc_data, np.nan)
+            # Count valid values per row
+            valid_counts = np.sum(np.isfinite(qc_data), axis=1)
+            # Calculate median for each row
+            medians = np.nanmedian(qc_data, axis=1)
+            # Build dictionary: None for features with <3 valid QC values
+            feature_ids = istd_df['FeatureID'].values
+            global_qc_medians = {
+                fid: (med if cnt >= 3 else None)
+                for fid, med, cnt in zip(feature_ids, medians, valid_counts)
+            }
+        else:
+            global_qc_medians = {fid: None for fid in istd_df['FeatureID']}
 
         valid_global_medians = sum(1 for v in global_qc_medians.values() if v is not None)
         print(f"  - 成功計算全域中位數的特徵數: {valid_global_medians}/{len(istd_df)}")
@@ -1183,16 +1143,15 @@ def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
 
 
 def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_page=6):
-    """
-    繪製 LOWESS 擬合趨勢圖（疊加多圖版），用於視覺化檢查過度擬合
+    """繪製 LOWESS 擬合趨勢圖（同一特徵一張圖）。
 
-    透過將多個特徵疊加到同一張圖上，大幅減少輸出檔案數量。
+    目的：讓同一個 feature 在不同 batch 的趨勢能直接比較。
 
     Args:
-        trend_data_dict: 字典，格式為 {(feature_id, batch_name): plot_data}
+        trend_data_dict: dict, {(feature_id, batch_name): plot_data}
         plots_dir: 輸出目錄
         timestamp: 時間戳記
-        max_per_page: 每頁最多顯示的特徵數量（預設 6 個，2x3 佈局）
+        max_per_page: 保留參數（舊版多特徵拼頁用）；新版不使用。
     """
     try:
         if not trend_data_dict:
@@ -1216,116 +1175,123 @@ def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_pag
             print(f"  ⚠️  警告：沒有寫入權限到目錄: {plots_dir}")
             return
 
-        # 將數據按批次分組
-        batch_grouped = {}
+        # 將數據按 feature 分組（同特徵一張圖）
+        feature_grouped = {}
         for (feature_id, batch_name), plot_data in trend_data_dict.items():
-            if batch_name not in batch_grouped:
-                batch_grouped[batch_name] = []
-            batch_grouped[batch_name].append((feature_id, plot_data))
+            feature_grouped.setdefault(feature_id, []).append((batch_name, plot_data))
 
-        total_features = len(trend_data_dict)
-        total_pages = sum((len(features) + max_per_page - 1) // max_per_page
-                          for features in batch_grouped.values())
+        total_features = len(feature_grouped)
+        print(f"\n📊 繪製 LOWESS 擬合趨勢圖（同特徵一張）：{total_features} 個特徵...")
 
-        print(f"\n📊 繪製 LOWESS 擬合趨勢圖 ({total_features} 個特徵，整合為 {total_pages} 張圖表)...")
+        feature_count = 0
+        for feature_id, batch_items in feature_grouped.items():
+            # 依 batch 名稱排序
+            batch_items_sorted = sorted(batch_items, key=lambda x: str(x[0]))
+            n_batches = len(batch_items_sorted)
 
-        # 定義顏色方案
-        colors = ['#0173B2', '#DE8F05', '#029E73', '#CC78BC', '#CA9161', '#949494']
+            if n_batches == 0:
+                continue
 
-        page_count = 0
-        for batch_name, features_in_batch in batch_grouped.items():
-            # 將該批次的特徵分頁
-            for page_idx in range(0, len(features_in_batch), max_per_page):
-                page_features = features_in_batch[page_idx:page_idx + max_per_page]
-                n_features = len(page_features)
+            # 每個 batch 一列：左 Raw+Fit、右 Before vs After
+            fig, axes = plt.subplots(
+                n_batches,
+                2,
+                figsize=(14, max(4.2, 4.2 * n_batches)),
+                squeeze=False,
+            )
 
-                # 計算網格佈局（每個特徵佔 2 行：上圖 Raw+Fit，下圖 Corrected）
-                # 使用 2 列佈局，每個特徵一列，每列 2 行
-                n_cols = min(3, n_features)  # 最多 3 列
-                n_rows = ((n_features + n_cols - 1) // n_cols) * 2  # 每個特徵 2 行
+            for row_idx, (batch_name, plot_data) in enumerate(batch_items_sorted):
+                try:
+                    qc_orders = np.array(plot_data['qc_orders'])
+                    qc_raw = np.array(plot_data['qc_raw'])
+                    qc_corrected = np.array(plot_data['qc_corrected'])
+                    lowess_x = np.array(plot_data['lowess_x'])
+                    lowess_y = np.array(plot_data['lowess_y'])
+                    median_qc = plot_data['median_qc']
 
-                fig = plt.figure(figsize=(6 * n_cols, 5 * n_rows))
+                    ax1 = axes[row_idx, 0]
+                    ax2 = axes[row_idx, 1]
 
-                for feat_idx, (feature_id, plot_data) in enumerate(page_features):
-                    try:
-                        qc_orders = np.array(plot_data['qc_orders'])
-                        qc_raw = np.array(plot_data['qc_raw'])
-                        qc_corrected = np.array(plot_data['qc_corrected'])
-                        lowess_x = np.array(plot_data['lowess_x'])
-                        lowess_y = np.array(plot_data['lowess_y'])
-                        median_qc = plot_data['median_qc']
+                    # ===== 左圖：Raw vs LOWESS =====
+                    ax1.scatter(
+                        qc_orders,
+                        qc_raw,
+                        c='#0173B2',
+                        s=55,
+                        alpha=0.75,
+                        edgecolors='black',
+                        linewidth=0.8,
+                        label='QC Raw',
+                        zorder=3,
+                    )
+                    ax1.plot(lowess_x, lowess_y, 'r-', linewidth=2, label='LOWESS Fit', zorder=2)
+                    ax1.axhline(
+                        y=median_qc,
+                        color='green',
+                        linestyle='--',
+                        linewidth=1.5,
+                        label=f'Median={median_qc:.1f}',
+                        zorder=1,
+                    )
+                    ax1.set_xlabel('Injection Order', fontsize=10)
+                    ax1.set_ylabel('Intensity', fontsize=10)
+                    ax1.set_title(f'Batch: {batch_name}  |  Raw + LOWESS Fit', fontsize=11, fontweight='bold')
+                    ax1.legend(fontsize=8, loc='best')
+                    ax1.grid(True, alpha=0.3, linestyle='--')
 
-                        color = colors[feat_idx % len(colors)]
+                    # ===== 右圖：Before vs After =====
+                    ax2.scatter(
+                        qc_orders,
+                        qc_raw,
+                        c='lightgray',
+                        s=55,
+                        alpha=0.55,
+                        edgecolors='gray',
+                        linewidth=0.5,
+                        label='Raw',
+                        zorder=2,
+                    )
+                    ax2.scatter(
+                        qc_orders,
+                        qc_corrected,
+                        c='orange',
+                        s=55,
+                        alpha=0.85,
+                        edgecolors='black',
+                        linewidth=0.8,
+                        label='Corrected',
+                        zorder=3,
+                    )
+                    ax2.axhline(y=median_qc, color='green', linestyle='--', linewidth=1.5, label='Target', zorder=1)
+                    ax2.set_xlabel('Injection Order', fontsize=10)
+                    ax2.set_ylabel('Intensity', fontsize=10)
+                    ax2.set_title('Before vs After Correction', fontsize=11, fontweight='bold')
+                    ax2.legend(fontsize=8, loc='best')
+                    ax2.grid(True, alpha=0.3, linestyle='--')
 
-                        # 計算子圖位置
-                        col = feat_idx % n_cols
-                        row_base = (feat_idx // n_cols) * 2
+                except Exception as e:
+                    print(f"  ⚠️  警告：繪製 {feature_id} / {batch_name} 時發生錯誤: {e}")
+                    continue
 
-                        # ===== 上圖：Raw vs LOWESS Curve =====
-                        ax1 = fig.add_subplot(n_rows, n_cols, row_base * n_cols + col + 1)
-                        ax1.scatter(qc_orders, qc_raw, c=color, s=60, alpha=0.7,
-                                   edgecolors='black', linewidth=1, label='QC Raw', zorder=3)
-                        ax1.plot(lowess_x, lowess_y, 'r-', linewidth=2, label='LOWESS Fit', zorder=2)
-                        ax1.axhline(y=median_qc, color='green', linestyle='--', linewidth=1.5,
-                                   label=f'Median={median_qc:.1f}', zorder=1)
+            fig.suptitle(f'LOWESS Trend Fitting (Feature = {feature_id})', fontsize=14, fontweight='bold', y=0.99)
+            plt.tight_layout(rect=[0, 0, 1, 0.97])
 
-                        ax1.set_xlabel('Injection Order', fontsize=9)
-                        ax1.set_ylabel('Intensity', fontsize=9)
-                        ax1.set_title(f'{feature_id}\n[Raw + LOWESS Fit]', fontsize=10, fontweight='bold')
-                        ax1.legend(fontsize=7, loc='best')
-                        ax1.grid(True, alpha=0.3, linestyle='--')
-                        ax1.tick_params(axis='both', labelsize=8)
+            safe_feature = str(feature_id).replace('/', '_').replace('\\', '_').replace(':', '_')
+            plot_path = os.path.join(plots_dir, f'Trend_Fitting_Feature_{safe_feature}_{timestamp}.png')
+            plt.savefig(plot_path, dpi=200, bbox_inches='tight')
+            plt.close(fig)
 
-                        # ===== 下圖：Corrected vs Target =====
-                        ax2 = fig.add_subplot(n_rows, n_cols, (row_base + 1) * n_cols + col + 1)
-                        ax2.scatter(qc_orders, qc_raw, c='lightgray', s=60, alpha=0.5,
-                                   edgecolors='gray', linewidth=0.5, label='Raw', zorder=2)
-                        ax2.scatter(qc_orders, qc_corrected, c='orange', s=60, alpha=0.8,
-                                   edgecolors='black', linewidth=1, label='Corrected', zorder=3)
-                        ax2.axhline(y=median_qc, color='green', linestyle='--', linewidth=1.5,
-                                   label=f'Target', zorder=1)
-
-                        ax2.set_xlabel('Injection Order', fontsize=9)
-                        ax2.set_ylabel('Intensity', fontsize=9)
-                        ax2.set_title(f'[Before vs After Correction]', fontsize=10)
-                        ax2.legend(fontsize=7, loc='best')
-                        ax2.grid(True, alpha=0.3, linestyle='--')
-                        ax2.tick_params(axis='both', labelsize=8)
-
-                    except Exception as e:
-                        print(f"  ⚠️  警告：繪製 {feature_id} 時發生錯誤: {e}")
-                        continue
-
-                # 添加頁面標題
-                safe_batch_name = str(batch_name).replace('/', '_').replace('\\', '_')
-                page_num = page_idx // max_per_page + 1
-                total_batch_pages = (len(features_in_batch) + max_per_page - 1) // max_per_page
-
-                fig.suptitle(f'LOWESS Trend Fitting - {batch_name} (Page {page_num}/{total_batch_pages})',
-                            fontsize=14, fontweight='bold', y=0.99)
-
-                plt.tight_layout(rect=[0, 0, 1, 0.97])  # Leave 3% for suptitle
-
-                # 保存圖表
-                plot_path = os.path.join(plots_dir,
-                                        f'Trend_Fitting_Combined_{safe_batch_name}_Page{page_num}_{timestamp}.png')
-
-                plt.savefig(plot_path, dpi=200, bbox_inches='tight')
-                plt.close()
-
-                page_count += 1
-
-                # 驗證文件是否成功保存
-                if os.path.exists(plot_path):
-                    plot_size = os.path.getsize(plot_path)
-                    if plot_size > 0:
-                        print(f"  ✓ 已保存: {batch_name} Page {page_num} ({n_features} 特徵) - {plot_size / 1024:.1f} KB")
-                    else:
-                        print(f"  ⚠️  警告：{batch_name} Page {page_num} 圖表大小為 0 bytes")
+            feature_count += 1
+            if os.path.exists(plot_path):
+                plot_size = os.path.getsize(plot_path)
+                if plot_size > 0:
+                    print(f"  ✓ 已保存: {safe_feature} ({n_batches} batches) - {plot_size / 1024:.1f} KB")
                 else:
-                    print(f"  ⚠️  警告：{batch_name} Page {page_num} 圖表保存失敗")
+                    print(f"  ⚠️  警告：{safe_feature} 圖表大小為 0 bytes")
+            else:
+                print(f"  ⚠️  警告：{safe_feature} 圖表保存失敗")
 
-        print(f"✓ LOWESS 擬合趨勢圖繪製完成（共 {page_count} 張整合圖表，原需 {total_features} 張）")
+        print(f"✓ LOWESS 擬合趨勢圖繪製完成（共 {feature_count} 張，一特徵一張）")
 
     except Exception as e:
         print(f"  ⚠️ 繪製 LOWESS 擬合趨勢圖時發生錯誤: {e}")
@@ -1433,101 +1399,33 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         print(f"\n📋 開始處理 Excel 檔案...")
         print(f"  - 載入原始檔案: {os.path.basename(input_file)}")
         
-        input_workbook = load_workbook(input_file)
-        workbook = input_workbook
-        
-        # 刪除舊工作表
-        sheets_to_update = ['QC LOWESS result', QC_LOWESS_ADVANCED_SHEET, 'SampleInfo']
-        
-        for sheet_name in sheets_to_update:
-            if sheet_name in workbook.sheetnames:
-                del workbook[sheet_name]
-                print(f"  - 刪除舊工作表: {sheet_name}")
-        
-        istd_sheet_original = workbook['ISTD_Correction']
-        
-        # 保存格式資訊
-        istd_formats = {}
-        for row in istd_sheet_original.iter_rows():
-            for cell in row:
-                cell_coord = f"{cell.column_letter}{cell.row}"
-                if cell.has_style:
-                    istd_formats[cell_coord] = {
-                        'font': copy.copy(cell.font),
-                        'border': copy.copy(cell.border),
-                        'fill': copy.copy(cell.fill),
-                        'number_format': copy.copy(cell.number_format),
-                        'protection': copy.copy(cell.protection),
-                        'alignment': copy.copy(cell.alignment)
-                    }
-        
-        istd_col_widths = {col: dim.width for col, dim in istd_sheet_original.column_dimensions.items()}
-        istd_row_heights = {row: dim.height for row, dim in istd_sheet_original.row_dimensions.items()}
-        istd_merged_cells = [str(merged) for merged in istd_sheet_original.merged_cells.ranges]
-        
-        # 寫入臨時檔案
-        temp_file = output_file.replace('.xlsx', '_temp.xlsx')
-        with pd.ExcelWriter(temp_file, engine='openpyxl') as writer:
-            istd_df.to_excel(writer, sheet_name='ISTD_Correction', index=False)
-            lowess_with_cv.to_excel(writer, sheet_name='QC LOWESS result', index=False)
-            advanced_stats_df.to_excel(writer, sheet_name=QC_LOWESS_ADVANCED_SHEET, index=False)
-            sample_info_df.to_excel(writer, sheet_name='SampleInfo', index=False)
-        
-        temp_workbook = load_workbook(temp_file)
-        
-        print(f"  - 更新 ISTD_Correction 工作表（保留原始格式）...")
-        
-        if 'ISTD_Correction' in workbook.sheetnames:
-            del workbook['ISTD_Correction']
-        
-        istd_sheet_new = workbook.create_sheet('ISTD_Correction', 0)
-        
-        temp_istd_sheet = temp_workbook['ISTD_Correction']
-        for row in temp_istd_sheet.iter_rows():
-            for cell in row:
-                istd_sheet_new.cell(row=cell.row, column=cell.column, value=cell.value)
-        
-        # 恢復格式
-        for cell_coord, formats in istd_formats.items():
-            try:
-                cell = istd_sheet_new[cell_coord]
-                cell.font = formats['font']
-                cell.border = formats['border']
-                cell.fill = formats['fill']
-                cell.number_format = formats['number_format']
-                cell.protection = formats['protection']
-                cell.alignment = formats['alignment']
-            except:
-                pass
-        
-        for col, width in istd_col_widths.items():
-            istd_sheet_new.column_dimensions[col].width = width
-        
-        for row, height in istd_row_heights.items():
-            istd_sheet_new.row_dimensions[row].height = height
-        
-        for merged in istd_merged_cells:
-            try:
-                istd_sheet_new.merge_cells(merged)
-            except:
-                pass
-        
-        print(f"  ✓ ISTD_Correction 格式已完整保留")
-        
-        # 複製其他工作表
-        for sheet_name in ['QC LOWESS result', QC_LOWESS_ADVANCED_SHEET, 'SampleInfo']:
-            if sheet_name in temp_workbook.sheetnames:
-                source_sheet = temp_workbook[sheet_name]
-                target_sheet = workbook.create_sheet(sheet_name)
-                copy_sheet_with_full_format(source_sheet, target_sheet)
-                print(f"  ✓ 已複製工作表: {sheet_name}")
-        
-        temp_workbook.close()
-        
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-        
-        # 科學記號格式
+        def sanitize_excel_df(df):
+            if df is None:
+                return None
+            return df.replace([np.inf, -np.inf], np.nan)
+
+        raw_export = sanitize_excel_df(raw_df) if raw_df is not None else None
+        istd_export = sanitize_excel_df(istd_df)
+        lowess_export = sanitize_excel_df(lowess_with_cv)
+        advanced_export = sanitize_excel_df(advanced_stats_df)
+        sample_info_export = sanitize_excel_df(sample_info_df)
+
+        sheets_to_write = []
+        if raw_export is not None and not raw_export.empty:
+            sheets_to_write.append(('RawIntensity', raw_export))
+        sheets_to_write.extend([
+            ('ISTD_Correction', istd_export),
+            ('QC LOWESS result', lowess_export),
+            (QC_LOWESS_ADVANCED_SHEET, advanced_export),
+            ('SampleInfo', sample_info_export),
+        ])
+
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            for sheet_name, df in sheets_to_write:
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        workbook = load_workbook(output_file)
+
         scientific_format = '0.00E+00'
         
         for sheet_name in ['ISTD_Correction', 'QC LOWESS result', QC_LOWESS_ADVANCED_SHEET, 'SampleInfo']:
@@ -2009,183 +1907,53 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
         print(f"   ISTD: {np.sum(outliers_istd)}/{len(qc_columns)} QC 被標記為異常")
         print(f"   QC-LOWESS: {np.sum(outliers_lowess)}/{len(qc_columns)} QC 被標記為異常")
 
-        # 繪製 2D PCA 圖 (Batch_Effect 風格)
+        # 繪製 2D PCA 圖（統一為 QC 子程式風格的共用函式）
         print("\n🎨 繪製 2D PCA Score Plot...")
-        fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(20, 8))
-
-        if grouping == 'batch':
-            fig.suptitle('2D PCA Comparison: ISTD vs QC-LOWESS (Grouped by Batch)',
-                         fontsize=16, y=0.98, fontweight='bold')
-        else:
-            fig.suptitle('2D PCA Comparison: ISTD vs QC-LOWESS (Grouped by Sample Type)',
-                         fontsize=16, y=0.98, fontweight='bold')
-
-        color_map = {
-            'QC': '#9370DB',
-            'Control': '#4169E1',
-            'Exposure': '#DC143C'
-        }
-        markers = {'QC': 'o', 'Control': 's', 'Exposure': '^'}
-
-        unique_batches = sorted(list(set(sample_batches.values())))
-        batch_colors = COLORBLIND_COLORS * ((len(unique_batches) // len(COLORBLIND_COLORS)) + 1)
-        batch_color_map = {batch: batch_colors[i] for i, batch in enumerate(unique_batches)}
-
-        sample_index_map = {sample: idx for idx, sample in enumerate(sample_columns_clean)}
-
-        def scatter_panel(ax, scores, qc_outlier_map, var, title_text, qc_scores, outlier_array):
-            for i, col in enumerate(sample_columns_clean):
-                if col in qc_columns:
-                    sample_type = 'QC'
-                    is_outlier = qc_outlier_map.get(col, False)
-                elif col in exposed_columns:
-                    sample_type = 'Exposure'
-                    is_outlier = False
-                else:
-                    sample_type = 'Control'
-                    is_outlier = False
-
-                color = color_map[sample_type]
-                marker = markers[sample_type]
-
-                if is_outlier:
-                    edgecolor = 'red'
-                    linewidth = 3
-                    size = 150
-                    alpha = 0.9
-                else:
-                    edgecolor = 'black'
-                    linewidth = 1
-                    size = 100
-                    alpha = 0.7
-
-                ax.scatter(scores[i, 0], scores[i, 1], c=[color], marker=marker,
-                           s=size, alpha=alpha, edgecolors=edgecolor, linewidths=linewidth)
-
-            all_bounds = []
-            if grouping == 'batch':
-                for batch in unique_batches:
-                    batch_sample_cols = [col for col in sample_columns_clean if sample_batches.get(col) == batch]
-                    batch_indices = [sample_index_map[col] for col in batch_sample_cols]
-                    if len(batch_indices) >= 3:
-                        batch_scores = scores[batch_indices]
-                        bounds = draw_hotelling_t2_ellipse(
-                            ax, batch_scores,
-                            label=f'95% CI (Batch {batch})',
-                            edgecolor=batch_color_map[batch],
-                            linestyle='-', linewidth=2.5
-                        )
-                        if bounds is not None:
-                            all_bounds.append(bounds)
-            else:
-                bounds_all = draw_hotelling_t2_ellipse(
-                    ax, scores,
-                    label='95% CI (All Samples)',
-                    edgecolor='gray', linestyle='--', linewidth=3
-                )
-                if bounds_all is not None:
-                    all_bounds.append(bounds_all)
-                bounds_qc = draw_hotelling_t2_ellipse(
-                    ax, qc_scores,
-                    label='95% CI (QC Only)',
-                    edgecolor='#9370DB', linestyle='-', linewidth=3
-                )
-                if bounds_qc is not None:
-                    all_bounds.append(bounds_qc)
-
-            if all_bounds:
-                x_min = min(b[0] for b in all_bounds)
-                x_max = max(b[1] for b in all_bounds)
-                y_min = min(b[2] for b in all_bounds)
-                y_max = max(b[3] for b in all_bounds)
-            else:
-                x_min, x_max = np.min(scores[:, 0]), np.max(scores[:, 0])
-                y_min, y_max = np.min(scores[:, 1]), np.max(scores[:, 1])
-
-            x_range = x_max - x_min
-            y_range = y_max - y_min
-            if x_range == 0:
-                x_range = 1
-            if y_range == 0:
-                y_range = 1
-            x_margin = x_range * 0.2
-            y_margin = y_range * 0.2
-
-            ax.set_xlim(x_min - x_margin, x_max + x_margin)
-            ax.set_ylim(y_min - y_margin, y_max + y_margin)
-
-            ax.set_xlabel(f'PC1 ({var[0]*100:.1f}%)', fontsize=12, fontweight='bold')
-            ax.set_ylabel(f'PC2 ({var[1]*100:.1f}%)', fontsize=12, fontweight='bold')
-            ax.set_title(title_text, fontsize=14, fontweight='bold', pad=15)
-            ax.axhline(y=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-            ax.axvline(x=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-            ax.grid(True, alpha=0.3, linestyle='--')
-
-            return all_bounds
-
-        bounds_left = scatter_panel(
-            ax_left, scores_istd, qc_outlier_map_istd, var_istd,
-            f'ISTD Corrected\nHotelling T² Threshold: {t2_threshold_istd:.2f}',
-            qc_scores_istd, outliers_istd
-        )
-
-        bounds_right = scatter_panel(
-            ax_right, scores_lowess, qc_outlier_map_lowess, var_lowess,
-            f'QC-LOWESS Normalized\nHotelling T² Threshold: {t2_threshold_lowess:.2f}',
-            qc_scores_lowess, outliers_lowess
-        )
-
-        sample_legend_elements = [
-            plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='#4169E1',
-                      markersize=10, label='Control', markeredgecolor='black', markeredgewidth=1),
-            plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='#DC143C',
-                      markersize=10, label='Exposure', markeredgecolor='black', markeredgewidth=1),
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
-                      markersize=10, label='QC', markeredgecolor='black', markeredgewidth=1),
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
-                      markersize=10, label='QC Outlier', markeredgecolor='red', markeredgewidth=3)
-        ]
-
-        if grouping == 'batch':
-            ellipse_legend_elements = [
-                plt.Line2D([0], [0], linestyle='-', color=batch_color_map[batch],
-                          linewidth=2.5, label=f'95% CI (Batch {batch})')
-                for batch in unique_batches
-            ]
-        else:
-            ellipse_legend_elements = [
-                plt.Line2D([0], [0], linestyle='-', color='#9370DB',
-                          linewidth=3, label='95% CI (QC Only)'),
-                plt.Line2D([0], [0], linestyle='--', color='gray',
-                          linewidth=3, label='95% CI (All Samples)')
-            ]
-
-        legend1_left = ax_left.legend(handles=sample_legend_elements,
-                                      loc='upper left', fontsize=9,
-                                      title='Sample Type', title_fontsize=10,
-                                      frameon=True, fancybox=True, shadow=True)
-        ax_left.add_artist(legend1_left)
-        ax_left.legend(handles=ellipse_legend_elements, loc='upper right', fontsize=9,
-                       title='Confidence Ellipse', title_fontsize=10,
-                       frameon=True, fancybox=True, shadow=True)
-
-        legend1_right = ax_right.legend(handles=sample_legend_elements,
-                                        loc='upper left', fontsize=9,
-                                        title='Sample Type', title_fontsize=10,
-                                        frameon=True, fancybox=True, shadow=True)
-        ax_right.add_artist(legend1_right)
-        ax_right.legend(handles=ellipse_legend_elements, loc='upper right', fontsize=9,
-                        title='Confidence Ellipse', title_fontsize=10,
-                        frameon=True, fancybox=True, shadow=True)
-
-        plt.tight_layout(rect=[0, 0, 1, 0.96])
-
         grouping_tag = 'batch' if grouping == 'batch' else 'sample_type'
         pca_plot_path = os.path.join(plots_dir, f'2D_PCA_ISTD_vs_LOWESS_{grouping_tag}_{timestamp}.png')
 
+        suptitle = (
+            '2D PCA Comparison: ISTD vs QC-LOWESS (Grouped by Batch)'
+            if grouping == 'batch'
+            else '2D PCA Comparison: ISTD vs QC-LOWESS (Grouped by Sample Type)'
+        )
+
+        sample_types = []
+        batch_labels = []
+        for col in sample_columns_clean:
+            if col in qc_columns:
+                sample_types.append('QC')
+            elif col in exposed_columns:
+                sample_types.append('Exposure')
+            else:
+                sample_types.append('Control')
+            batch_labels.append(sample_batches.get(col, 'Unknown'))
+
+        qc_outliers_left = {name for name, is_out in qc_outlier_map_istd.items() if is_out}
+        qc_outliers_right = {name for name, is_out in qc_outlier_map_lowess.items() if is_out}
+
+        plot_pca_comparison_qc_style(
+            scores_istd,
+            scores_lowess,
+            var_istd,
+            var_lowess,
+            sample_columns_clean,
+            sample_types,
+            batch_labels=batch_labels,
+            grouping=grouping_tag,
+            suptitle=suptitle,
+            left_title='ISTD Corrected',
+            right_title='QC-LOWESS Normalized',
+            left_threshold_text=f'Hotelling T² Threshold: {t2_threshold_istd:.2f}',
+            right_threshold_text=f'Hotelling T² Threshold: {t2_threshold_lowess:.2f}',
+            qc_outlier_names_left=qc_outliers_left,
+            qc_outlier_names_right=qc_outliers_right,
+            output_path=pca_plot_path,
+            dpi=300,
+        )
+
         # ===== 防呆3: 圖表保存檢查 =====
         try:
-            plt.savefig(pca_plot_path, dpi=300, bbox_inches='tight')
             print(f"   ✓ 2D PCA 圖表已保存 ({grouping_tag} 分類): {pca_plot_path}")
 
             # 驗證文件是否成功保存
@@ -2200,8 +1968,6 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
 
         except Exception as e:
             print(f"   ⚠️  警告：保存 PCA 圖表時發生錯誤: {e}")
-
-        plt.close()
 
         # 統計摘要
         print(f"\n{'='*70}")
@@ -2228,8 +1994,10 @@ def main(input_file=None):
     print("   ✅ 進階統計：Mann-Kendall + R²/RMSE（副表）")
     print("="*70)
     
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(script_dir, "output")
+    if input_file is None:
+        raise ValueError("input_file is required; GUI must provide the file path.")
+
+    output_dir = get_output_root()
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
         print(f"\n✓ 已建立 'output' 資料夾: {output_dir}")
@@ -2278,12 +2046,13 @@ def main(input_file=None):
     print(f"💾 保存結果...")
     print(f"{'='*70}")
 
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_file = os.path.join(output_dir, f'QC_LOWESS_{timestamp}.xlsx')
-    plots_root = os.path.join(output_dir, "QC_LOWESS_plots")
-    os.makedirs(plots_root, exist_ok=True)
-    plots_session_dir = os.path.join(plots_root, f"QC_LOWESS_{timestamp}")
-    os.makedirs(plots_session_dir, exist_ok=True)
+    timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
+    output_file = build_output_path("QC_LOWESS", timestamp=timestamp)
+    plots_session_dir = build_plots_dir(
+        "QC_LOWESS_plots",
+        timestamp=timestamp,
+        session_prefix="QC_LOWESS"
+    )
 
     success = save_results_to_excel(
         raw_df, istd_df, lowess_df, sample_info_df,
@@ -2326,15 +2095,16 @@ def main(input_file=None):
     print(f"    - Wilcoxon test: 檢測整體 CV% 是否顯著降低（終端機顯示）")
     print(f"\n{'='*70}\n")
     
-    output_file_abs = os.path.abspath(output_file)
     metabolites_count = len(lowess_df)
     samples_count = len(sample_columns)
     
-    return {
-        'metabolites': metabolites_count,
-        'samples': samples_count,
-        'output_path': output_file_abs
-    }
+    return ProcessingResult(
+        file_path=file_path,
+        output_path=str(output_file),
+        plots_dir=str(plots_session_dir),
+        metabolites=metabolites_count,
+        samples=samples_count
+    )
 
 
 if __name__ == "__main__":

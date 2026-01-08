@@ -1,50 +1,36 @@
 import pandas as pd
 import numpy as np
-from tkinter import filedialog
-import tkinter as tk
 from pathlib import Path
 import warnings
 import os
-import sys
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border
 from openpyxl.utils.dataframe import dataframe_to_rows
-from scipy.stats import spearmanr, pearsonr
-from scipy import stats
 from datetime import datetime
 import matplotlib.pyplot as plt
-import seaborn as sns
 from copy import copy
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
+from metabolomics.utils.plotting import plot_pca_comparison_qc_style, setup_matplotlib
+from metabolomics.utils.constants import DATETIME_FORMAT_FULL
+from metabolomics.utils.file_io import (
+    build_plots_dir,
+    get_output_root,
+    generate_output_filename,
+)
+from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.console import safe_print as print
+
 warnings.filterwarnings('ignore')
 
 # ========== Matplotlib Global Settings ==========
-# Disable LaTeX rendering to avoid special character issues (e.g., %)
-plt.rcParams['text.usetex'] = False
-plt.rcParams['mathtext.default'] = 'regular'
-
-# Platform-aware font settings
-if sys.platform == 'darwin':  # macOS
-    plt.rcParams['font.family'] = 'Helvetica'
-else:
-    plt.rcParams['font.family'] = 'Arial'
-
-# Standardized font sizes for consistency
-FONT_SIZES = {
-    'title': 14,
-    'subtitle': 12,
-    'axis_label': 11,
-    'tick': 10,
-    'legend': 9,
-    'annotation': 9
-}
+# Use centralized setup
+setup_matplotlib()
 
 # Centralized summary metadata to avoid magic strings and ease maintenance
 SUMMARY_SHEET_NAME = "ConcNormalization_Summary"
 SUMMARY_REPORT_SEPARATOR = "-" * 80
-OUTPUT_BASE_DIR = Path(__file__).resolve().parent / "output"
 
 # ==================== 標準化方法 ====================
 
@@ -386,7 +372,6 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
     if total >= 3:
         try:
             from scipy.stats import wilcoxon
-            from statsmodels.stats.multitest import multipletests
 
             # Wilcoxon signed-rank test (配對雙尾檢驗)
             # 檢驗標準化前後 Cohen's d 絕對值是否有顯著差異
@@ -515,8 +500,9 @@ def plot_qc_variability(original_qc, normalized_qc, qc_names, output_path):
     output_path : Path
         輸出路徑
     """
-    fig = plt.figure(figsize=(18, 12))
-    gs = fig.add_gridspec(2, 3, height_ratios=[3.2, 1.2], hspace=0.35, wspace=0.3)
+    # 移除底部大型備註/解釋框，讓主圖占比更高
+    fig = plt.figure(figsize=(18, 6.5))
+    gs = fig.add_gridspec(1, 3, hspace=0.25, wspace=0.3)
 
     cv_before = calculate_rsd(original_qc)
     cv_after = calculate_rsd(normalized_qc)
@@ -571,64 +557,7 @@ def plot_qc_variability(original_qc, normalized_qc, qc_names, output_path):
     ax6.axhline(y=20, color='orange', linestyle='--', linewidth=1, alpha=0.5, label='20% threshold')
     ax6.legend(fontsize=8)
 
-    # === 統計摘要文字 ===
-    ax7 = fig.add_subplot(gs[1, :])
-    ax7.axis('off')
-    ax7.set_position([0.04, 0.03, 0.92, 0.22])
-
-    # 計算統計資訊
-    median_cv_before = np.median(cv_before)
-    median_cv_after = np.median(cv_after)
-    cv_improvement = median_cv_before - median_cv_after
-    cv_improvement_pct = (cv_improvement / median_cv_before) * 100 if median_cv_before > 0 else 0
-
-    features_below_20_after = np.sum(cv_after < 20) / len(cv_after) * 100
-
-    # 警示信息
-    warning_text = ""
-    if cv_improvement < 0:
-        warning_text = f"⚠️ WARNING: CV% increased by {abs(cv_improvement):.1f}% ({cv_improvement_pct:+.1f}%)"
-    elif cv_improvement < 2:
-        warning_text = f"⚠️ CV% slightly decreased ({cv_improvement:.1f}%, {cv_improvement_pct:+.1f}%)"
-
-    # 組織文字（移除主觀評級）
-    summary_text = f"""
-╔═══════════════════════════════════════════════════════════════════════════════════════╗
-║                            QC VARIABILITY ASSESSMENT (Fig4)                           ║
-╚═══════════════════════════════════════════════════════════════════════════════════════╝
-
-【CV% Metrics】
-  ├─ Before:        {median_cv_before:6.2f}%  (Median)    {np.mean(cv_before):6.2f}%  (Mean)
-  ├─ After:         {median_cv_after:6.2f}%  (Median)    {np.mean(cv_after):6.2f}%  (Mean)
-  └─ Change:        {cv_improvement:6.2f}%  ({cv_improvement_pct:+.1f}%)
-
-  {warning_text}
-
-【QC Criteria (FDA/EMA Guidelines)】
-  < 15%:  Excellent
-  < 20%:  Good {"✓" if median_cv_after < 20 else "✗"} (Current: {median_cv_after:.2f}%)
-  < 30%:  Acceptable {"✓" if median_cv_after < 30 else "✗"}
-  ≥ 30%:  Needs Improvement {"✓" if median_cv_after >= 30 else "✗"}
-
-【Features < 20% CV】
-  {features_below_20_after:.1f}% ({int(features_below_20_after * len(cv_after) / 100)}/{len(cv_after)} features)
-"""
-
-    # 設置邊框顏色
-    if median_cv_after < 15:
-        edge_color = 'green'
-    elif median_cv_after < 20:
-        edge_color = 'blue'
-    elif median_cv_after < 30:
-        edge_color = 'orange'
-    else:
-        edge_color = 'red'
-
-    ax7.text(0.5, 0.5, summary_text, transform=ax7.transAxes,
-            fontsize=11, verticalalignment='center', horizontalalignment='center',
-            family='monospace',
-            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8, edgecolor=edge_color, linewidth=2))
-
+    plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 
@@ -655,8 +584,9 @@ def plot_qc_reproducibility(original_qc, normalized_qc, qc_names, output_path):
     output_path : Path
         輸出路徑
     """
-    fig = plt.figure(figsize=(18, 10))
-    gs = fig.add_gridspec(2, 3, height_ratios=[3.2, 1.2], hspace=0.35, wspace=0.3)
+    # 移除底部大型備註/解釋框，讓主圖占比更高
+    fig = plt.figure(figsize=(18, 6.5))
+    gs = fig.add_gridspec(1, 3, hspace=0.25, wspace=0.3)
 
     # === 子圖 2: QC 樣本總強度 ===
     ax2 = fig.add_subplot(gs[0, 0])
@@ -715,43 +645,8 @@ def plot_qc_reproducibility(original_qc, normalized_qc, qc_names, output_path):
             text = ax4.text(j, i, f'{corr_after[i, j]:.2f}',
                            ha="center", va="center", color="black", fontsize=7)
 
-    # === 統計摘要文字 ===
-    ax7 = fig.add_subplot(gs[1, :])
-    ax7.axis('off')
-    ax7.set_position([0.05, 0.04, 0.9, 0.23])
-
-    # 計算統計資訊
-    mean_corr_before = np.mean(corr_before[np.triu_indices_from(corr_before, k=1)])
-    mean_corr_after = np.mean(corr_after[np.triu_indices_from(corr_after, k=1)])
-
-    total_cv_before = (np.std(total_before) / np.mean(total_before)) * 100
-    total_cv_after = (np.std(total_after) / np.mean(total_after)) * 100
-
-    # 組織文字
-    summary_text = f"""
-╔═══════════════════════════════════════════════════════════════════════════════════════╗
-║                          QC REPRODUCIBILITY ASSESSMENT (Fig5)                         ║
-╚═══════════════════════════════════════════════════════════════════════════════════════╝
-
-【QC Sample Correlation】
-  ├─ Before:    {mean_corr_before:.4f}  (Mean inter-QC correlation)
-  └─ After:     {mean_corr_after:.4f}  (Mean inter-QC correlation)
-
-【Total Intensity Stability】
-  ├─ CV% Before:    {total_cv_before:5.2f}%
-  └─ CV% After:     {total_cv_after:5.2f}%
-
-【Interpretation】
-  - High correlation (>0.95) indicates good technical reproducibility
-  - Low CV% of total intensity confirms instrument stability
-"""
-
-    ax7.text(0.5, 0.5, summary_text, transform=ax7.transAxes,
-            fontsize=11, verticalalignment='center', horizontalalignment='center',
-            family='monospace',
-            bbox=dict(boxstyle='round', facecolor='lightcyan', alpha=0.8, edgecolor='blue', linewidth=2))
-
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 
     print(f"  ✓ QC Reproducibility 圖已儲存 (Fig5 - Improved)")
@@ -771,13 +666,12 @@ def is_numeric_value(value):
 def get_non_qc_columns(df, sample_info_df):
     """獲取非QC樣本的欄位列表"""
     non_qc_columns = []
-    
-    sample_type_dict = {}
-    for idx, row in sample_info_df.iterrows():
-        sample_name = row.iloc[0]
-        sample_type = str(row.get('Sample_Type', '')).upper()
-        sample_type_dict[sample_name] = sample_type
-    
+
+    # Vectorized sample type dict building (faster than iterrows)
+    sample_names = sample_info_df.iloc[:, 0].astype(str)
+    sample_types = sample_info_df.get('Sample_Type', pd.Series([''] * len(sample_info_df))).fillna('').astype(str).str.upper()
+    sample_type_dict = dict(zip(sample_names, sample_types))
+
     for col in df.columns:
         if col != df.columns[0]:
             if col in sample_type_dict:
@@ -801,14 +695,12 @@ def get_sample_columns_only(df, sample_info_df):
     ]
     
     sample_columns = []
-    
-    # 建立樣本類型對應字典
-    sample_type_dict = {}
-    for idx, row in sample_info_df.iterrows():
-        sample_name = row.iloc[0]
-        sample_type = str(row.get('Sample_Type', ''), 'Unknown').upper()
-        sample_type_dict[sample_name] = sample_type
-    
+
+    # Vectorized sample type dict building (faster than iterrows)
+    sample_names = sample_info_df.iloc[:, 0].astype(str)
+    sample_types = sample_info_df.get('Sample_Type', pd.Series(['Unknown'] * len(sample_info_df))).fillna('Unknown').astype(str).str.upper()
+    sample_type_dict = dict(zip(sample_names, sample_types))
+
     for col in df.columns:
         if col == df.columns[0]:  # 跳過第一欄（特徵ID）
             continue
@@ -1219,24 +1111,7 @@ def plot_rle(original_data, normalized_data, sample_names, output_path, method_n
              transform=ax2.transAxes, fontsize=12, verticalalignment='top',
              bbox=dict(boxstyle='round', facecolor='lightgreen' if improvement > 0 else 'wheat', alpha=0.8))
 
-    # ===== RLE Plot Interpretation Guide =====
-    interpretation_text = (
-        "RLE Plot Interpretation Guide:\n"
-        "- Ideal: All boxplot medians align with green dashed line (RLE=0)\n"
-        "- Narrower boxes = Higher sample consistency\n"
-        "- Median deviation from 0 = Systematic bias in that sample\n"
-        "- Lower MAD = Better normalization quality (recommended < 0.5)"
-    )
-
-    # Add interpretation text at the bottom of the figure
-    fig.text(0.5, -0.02, interpretation_text,
-             ha='center', va='top', fontsize=10,
-             style='italic', color='#444444',
-             bbox=dict(boxstyle='round,pad=0.5', facecolor='#f0f0f0',
-                      edgecolor='#cccccc', alpha=0.9))
-
-    plt.subplots_adjust(bottom=0.15)  # Reserve space for interpretation text
-    plt.tight_layout(rect=[0, 0.08, 1, 1])  # Layout within bounds
+    plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 
@@ -1258,14 +1133,8 @@ def plot_cv_comparison(original_cv, normalized_cv, output_path, method_name):
     """
     from scipy.stats import wilcoxon
 
-    # 創建圖形（增加底部空間給解釋框）
-    fig = plt.figure(figsize=(20, 7))
-    gs = fig.add_gridspec(2, 3, height_ratios=[4, 1], hspace=0.4)
-
-    ax1 = fig.add_subplot(gs[0, 0])
-    ax2 = fig.add_subplot(gs[0, 1])
-    ax3 = fig.add_subplot(gs[0, 2])
-    ax_interpret = fig.add_subplot(gs[1, :])
+    # 創建圖形（移除底部備註框，讓主圖占比更高）
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 6))
 
     # 移除 NaN 值
     original_cv_clean = original_cv[~np.isnan(original_cv)]
@@ -1290,7 +1159,9 @@ def plot_cv_comparison(original_cv, normalized_cv, output_path, method_name):
             sig_mark = '*'
         else:
             sig_mark = 'n.s.'
-    except:
+    except (ValueError, TypeError) as e:
+        # ValueError: sample too small or all values identical
+        # TypeError: invalid input types
         w_stat, p_value = np.nan, np.nan
         sig_mark = 'N/A'
 
@@ -1391,34 +1262,27 @@ Features improved:
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black', linewidth=1.5),
             family='monospace')
 
-    # === 總標題（含警示） ===
-    warning_color = '#E74C3C' if abs(median_improvement) < 5 else '#27AE60'
-    fig.suptitle(f'Coefficient of Variation Analysis: PQN Impact\n⚠️ {"Minimal" if abs(median_improvement) < 5 else "Significant"} CV% Reduction Observed (Median Δ = {median_improvement:.2f}%)',
-                 fontsize=16, fontweight='bold', color=warning_color)
-
-    # === 解釋框 ===
-    ax_interpret.axis('off')
-
-    interpretation_text = """
-💡 INTERPRETATION:
-   1. ✓ Dilution not primary source of variation (PQN has minimal effect)
-   2. ✓ Biological variability dominates over technical variation
-   3. → Consider increasing sample size for statistical power
-   4. → Focus on biological factors rather than normalization method
-"""
-
-    ax_interpret.text(0.5, 0.5, interpretation_text, transform=ax_interpret.transAxes,
-                     fontsize=11, verticalalignment='center', horizontalalignment='center',
-                     bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.6, edgecolor='blue', linewidth=2),
-                     family='monospace')
-
+    fig.suptitle(
+        f'Coefficient of Variation (CV%) Comparison ({method_name})',
+        fontsize=16,
+        y=0.98,
+        fontweight='bold',
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 
     print(f"  ✓ CV%分佈圖已儲存 (Fig 2 - Improved)")
 
-def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_names,
-                                     sample_info_df, output_path, method_name):
+def plot_pca_with_confidence_ellipse(
+    original_data,
+    normalized_data,
+    sample_names,
+    sample_info_df,
+    output_path,
+    method_name,
+    exclude_qc=True,
+):
     """
     繪製 PCA 對比圖 (Fig 3 - Improved)
 
@@ -1455,6 +1319,20 @@ def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_name
             sample_groups.append('Unknown')
 
     sample_groups = np.array(sample_groups)
+
+    # 依需求：濃度校正的 PCA 可排除 QC 樣本
+    if exclude_qc:
+        non_qc_mask_all = sample_groups != 'QC'
+        if np.sum(non_qc_mask_all) < 3:
+            print("  ⚠ 非 QC 樣本不足，略過 PCA 對比圖")
+            return
+
+        original_clean = original_clean[non_qc_mask_all]
+        normalized_clean = normalized_clean[non_qc_mask_all]
+        sample_names_clean = [
+            sample_names_clean[i] for i in range(len(sample_names_clean)) if non_qc_mask_all[i]
+        ]
+        sample_groups = sample_groups[non_qc_mask_all]
 
     # 顏色映射
     color_palette = {
@@ -1557,171 +1435,60 @@ def plot_pca_with_confidence_ellipse(original_data, normalized_data, sample_name
         f_before, r2_before, p_before = np.nan, np.nan, np.nan
         f_after, r2_after, p_after = np.nan, np.nan, np.nan
 
-    # === 計算 QC 聚集度指標 ===
-    qc_mask = sample_groups == 'QC'
-
-    if np.sum(qc_mask) >= 3:
-        # Hotelling T² (相對於 QC 中心的平均距離平方)
-        qc_centroid_before = pc_original[qc_mask].mean(axis=0)
-        qc_centroid_after = pc_normalized[qc_mask].mean(axis=0)
-
-        qc_t2_before = np.mean([np.sum((pt - qc_centroid_before)**2) for pt in pc_original[qc_mask]])
-        qc_t2_after = np.mean([np.sum((pt - qc_centroid_after)**2) for pt in pc_normalized[qc_mask]])
-        qc_t2_reduction_pct = ((qc_t2_before - qc_t2_after) / qc_t2_before) * 100 if qc_t2_before > 0 else 0
-
-        # Mean distance to centroid
-        qc_mean_dist_before = np.mean([np.linalg.norm(pt - qc_centroid_before) for pt in pc_original[qc_mask]])
-        qc_mean_dist_after = np.mean([np.linalg.norm(pt - qc_centroid_after) for pt in pc_normalized[qc_mask]])
-        qc_dist_reduction_pct = ((qc_mean_dist_before - qc_mean_dist_after) / qc_mean_dist_before) * 100 if qc_mean_dist_before > 0 else 0
-    else:
+    # === 計算 QC 聚集度指標（若排除 QC，則不計算） ===
+    if exclude_qc:
         qc_t2_before, qc_t2_after, qc_t2_reduction_pct = np.nan, np.nan, np.nan
         qc_mean_dist_before, qc_mean_dist_after, qc_dist_reduction_pct = np.nan, np.nan, np.nan
+    else:
+        qc_mask = sample_groups == 'QC'
 
-    # ========== 繪圖 ==========
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 9.5))
-    fig.subplots_adjust(top=0.8, bottom=0.12, wspace=0.25)
+        if np.sum(qc_mask) >= 3:
+            # Hotelling T² (相對於 QC 中心的平均距離平方)
+            qc_centroid_before = pc_original[qc_mask].mean(axis=0)
+            qc_centroid_after = pc_normalized[qc_mask].mean(axis=0)
 
-    # ========== 子圖 1: 標準化前 ==========
-    # 繪製散點（QC 樣本加粗、增大）
-    for group in sorted(set(sample_groups)):
-        mask = sample_groups == group
-        edgecolor = 'black' if group == 'QC' else 'none'
-        linewidth = 1.2 if group == 'QC' else 0
-        size = 150 if group == 'QC' else 110
-        ax1.scatter(pc_original[mask, 0], pc_original[mask, 1],
-                    c=[color_palette.get(group, '#BEBADA')],
-                    marker=marker_palette.get(group, 'o'),
-                    label=group, s=size, alpha=0.8,
-                    edgecolors=edgecolor, linewidth=linewidth, zorder=3)
+            qc_t2_before = np.mean([np.sum((pt - qc_centroid_before)**2) for pt in pc_original[qc_mask]])
+            qc_t2_after = np.mean([np.sum((pt - qc_centroid_after)**2) for pt in pc_normalized[qc_mask]])
+            qc_t2_reduction_pct = ((qc_t2_before - qc_t2_after) / qc_t2_before) * 100 if qc_t2_before > 0 else 0
 
-    # 🎯 繪製信賴橢圆（只繪製 Control、Exposure、QC）
-    # 1. QC 樣本的橢圓
-    if np.sum(qc_mask) >= 3:
-        plot_confidence_ellipse(pc_original[qc_mask], ax1,
-                               color='#F39C12',
-                               label='QC 95% CI',
-                               linestyle='--',
-                               linewidth=2.5)
+            # Mean distance to centroid
+            qc_mean_dist_before = np.mean([np.linalg.norm(pt - qc_centroid_before) for pt in pc_original[qc_mask]])
+            qc_mean_dist_after = np.mean([np.linalg.norm(pt - qc_centroid_after) for pt in pc_normalized[qc_mask]])
+            qc_dist_reduction_pct = ((qc_mean_dist_before - qc_mean_dist_after) / qc_mean_dist_before) * 100 if qc_mean_dist_before > 0 else 0
+        else:
+            qc_t2_before, qc_t2_after, qc_t2_reduction_pct = np.nan, np.nan, np.nan
+            qc_mean_dist_before, qc_mean_dist_after, qc_dist_reduction_pct = np.nan, np.nan, np.nan
 
-    # 2. CONTROL 組的橢圓
-    control_mask = sample_groups == 'CONTROL'
-    if np.sum(control_mask) >= 3:
-        plot_confidence_ellipse(pc_original[control_mask], ax1,
-                               color='#3498DB',
-                               label='CONTROL 95% CI',
-                               linestyle=':',
-                               linewidth=2)
+    # ========== 繪圖（統一為 QC 子程式 PCA 風格）==========
+    sample_types = []
+    for group in sample_groups:
+        group_upper = str(group).upper()
+        if group_upper == 'QC':
+            sample_types.append('QC')
+        elif group_upper in ('EXPOSURE', 'EXPOSED', 'EXP', 'TREAT'):
+            sample_types.append('Exposure')
+        else:
+            sample_types.append('Control')
 
-    # 3. EXPOSURE 組的橢圓
-    exposure_mask = sample_groups == 'EXPOSURE'
-    if np.sum(exposure_mask) >= 3:
-        plot_confidence_ellipse(pc_original[exposure_mask], ax1,
-                               color='#E74C3C',
-                               label='EXPOSURE 95% CI',
-                               linestyle=':',
-                               linewidth=2)
+    plot_pca_comparison_qc_style(
+        pc_original,
+        pc_normalized,
+        var_original,
+        var_normalized,
+        sample_names_clean,
+        sample_types,
+        batch_labels=None,
+        grouping='sample_type',
+        suptitle=f'2D PCA Comparison: Before vs After Normalization ({method_name})',
+        left_title='Before Normalization',
+        right_title=f'After Normalization ({method_name})',
+        output_path=output_path,
+        dpi=300,
+    )
 
-    ax1.set_xlabel(f'PC1 ({var_original[0]*100:.1f}%)', fontsize=14, fontweight='bold')
-    ax1.set_ylabel(f'PC2 ({var_original[1]*100:.1f}%)', fontsize=14, fontweight='bold')
-    ax1.set_title('Before Normalization', fontsize=16, fontweight='bold')
-    ax1.legend(loc='best', fontsize=10, framealpha=0.9)
-    ax1.grid(True, alpha=0.3, linestyle='--')
-    ax1.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
-    ax1.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
+    plt.close('all')
 
-    # ========== 子圖 2: 標準化後 ==========
-    # 繪製散點（QC 樣本加粗、增大）
-    for group in sorted(set(sample_groups)):
-        mask = sample_groups == group
-        edgecolor = 'black' if group == 'QC' else 'none'
-        linewidth = 1.2 if group == 'QC' else 0
-        size = 150 if group == 'QC' else 110
-        ax2.scatter(pc_normalized[mask, 0], pc_normalized[mask, 1],
-                    c=[color_palette.get(group, '#BEBADA')],
-                    marker=marker_palette.get(group, 'o'),
-                    label=group, s=size, alpha=0.8,
-                    edgecolors=edgecolor, linewidth=linewidth, zorder=3)
-
-    # 🎯 繪製信賴橢圓（只繪製 Control、Exposure、QC）
-    # 1. QC 樣本的橢圓
-    if np.sum(qc_mask) >= 3:
-        plot_confidence_ellipse(pc_normalized[qc_mask], ax2,
-                               color='#F39C12',
-                               label='QC 95% CI',
-                               linestyle='--',
-                               linewidth=2)
-
-    # 2. CONTROL 組的橢圓
-    if np.sum(control_mask) >= 3:
-        plot_confidence_ellipse(pc_normalized[control_mask], ax2,
-                               color='#3498DB',
-                               label='CONTROL 95% CI',
-                               linestyle=':',
-                               linewidth=2)
-
-    # 3. EXPOSURE 組的橢圓
-    if np.sum(exposure_mask) >= 3:
-        plot_confidence_ellipse(pc_normalized[exposure_mask], ax2,
-                               color='#E74C3C',
-                               label='EXPOSURE 95% CI',
-                               linestyle=':',
-                               linewidth=2)
-
-    ax2.set_xlabel(f'PC1 ({var_normalized[0]*100:.1f}%)', fontsize=14, fontweight='bold')
-    ax2.set_ylabel(f'PC2 ({var_normalized[1]*100:.1f}%)', fontsize=14, fontweight='bold')
-    ax2.set_title(f'After Normalization ({method_name})', fontsize=16, fontweight='bold')
-    ax2.legend(loc='best', fontsize=10, framealpha=0.9)
-    ax2.grid(True, alpha=0.3, linestyle='--')
-    ax2.axhline(y=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
-    ax2.axvline(x=0, color='k', linestyle='-', linewidth=0.8, alpha=0.3)
-
-    # === 添加 PERMANOVA 統計框 ===
-    permanova_text = f"""PERMANOVA (Control vs Exposure):
-Before:
-  F = {f_before:.2f}
-  R² = {r2_before*100:.1f}%
-  p = {p_before:.3f}
-
-After:
-  F = {f_after:.2f}
-  R² = {r2_after*100:.1f}%
-  p = {p_after:.3f}
-
-Interpretation:
-  No significant separation
-"""
-
-    fig.text(0.02, 0.93, permanova_text,
-             fontsize=9, verticalalignment='top',
-             bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8,
-                       edgecolor='black', linewidth=1.5),
-             family='monospace')
-
-    # === 添加 QC 聚集度指標框 ===
-    if not np.isnan(qc_t2_before):
-        qc_text = f"""QC Clustering Metrics:
-Hotelling T² reduction:
-  Before: {qc_t2_before:.2f}
-  After:  {qc_t2_after:.2f}
-  ({qc_t2_reduction_pct:+.1f}%)
-
-Mean distance to centroid:
-  Before: {qc_mean_dist_before:.2f}
-  After:  {qc_mean_dist_after:.2f}
-  ({qc_dist_reduction_pct:+.1f}%)
-"""
-
-        fig.text(0.52, 0.93, qc_text,
-                 fontsize=9, verticalalignment='top',
-                 bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8,
-                           edgecolor='green', linewidth=1.5),
-                 family='monospace')
-
-    plt.tight_layout(rect=[0, 0, 1, 0.88])
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
-
-    print(f"  ✓ PCA 對比圖已儲存 (Fig 3 - Improved)")
+    print(f"  ✓ PCA 對比圖已儲存 (Fig 4)")
 
 
 def plot_confidence_ellipse(points, ax, color='blue', label=None, n_std=2.447, 
@@ -2147,6 +1914,7 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
 # ==================== 檔案處理函數 ====================
 
 def select_file():
+    raise RuntimeError("input_file is required; GUI must provide the file path.")
     """讓使用者選擇Excel檔案"""
     root = tk.Tk()
     root.withdraw()
@@ -2331,21 +2099,12 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
         print("錯誤：未找到有效的樣本欄位")
         return None
     
-    # 準備數據矩陣 (特徵 x 樣本)
-    data_matrix = []
-    feature_ids = []
-    
-    for idx, row in data_df.iterrows():
-        feature_ids.append(row[data_df.columns[0]])
-        feature_values = []
-        for col in sample_columns:
-            if col in data_df.columns and is_numeric_value(row[col]):
-                feature_values.append(float(row[col]))
-            else:
-                feature_values.append(np.nan)
-        data_matrix.append(feature_values)
-    
-    data_matrix = np.array(data_matrix)
+    # 準備數據矩陣 (特徵 x 樣本) - Vectorized (much faster than iterrows)
+    feature_ids = data_df[data_df.columns[0]].tolist()
+
+    # Extract sample columns and convert to numeric matrix directly
+    valid_sample_cols = [c for c in sample_columns if c in data_df.columns]
+    data_matrix = data_df[valid_sample_cols].apply(pd.to_numeric, errors='coerce').values
     print(f"✓ 數據矩陣形狀: {data_matrix.shape} (特徵 x 樣本)")
     
     # 保存原始數據用於對比
@@ -2363,7 +2122,9 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
                     reference_values.append(ref_val)
                 else:
                     reference_values.append(np.nan)
-            except:
+            except (ValueError, TypeError, KeyError):
+                # ValueError/TypeError: cannot convert to float
+                # KeyError: column not found
                 reference_values.append(np.nan)
         else:
             reference_values.append(np.nan)
@@ -2388,23 +2149,39 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     print(f"✓ 標準化完成")
     
     # 統一輸出目錄與圖表路徑
-    OUTPUT_BASE_DIR.mkdir(exist_ok=True)
-    output_dir = OUTPUT_BASE_DIR
-    run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_dir = get_output_root()
+    run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
     method_slug = method_name.replace(' ', '_')
-    figures_dir = OUTPUT_BASE_DIR / "Normalization_Figures" / f"{method_slug}_{run_timestamp}"
-    figures_dir.mkdir(parents=True, exist_ok=True)
-    print(f"✓ Excel 將輸出到: {OUTPUT_BASE_DIR}")
+    figures_dir = build_plots_dir(
+        "Normalization_Figures",
+        timestamp=run_timestamp,
+        session_prefix=method_slug
+    )
+    print(f"✓ Excel 將輸出到: {output_dir}")
     print(f"✓ 本次圖表輸出目錄: {figures_dir}")
 
     figure_paths = {
-        "boxplot": figures_dir / f"Fig1_Boxplot_{method_slug}_{run_timestamp}.png",
-        "cv": figures_dir / f"Fig2_CV_{method_slug}_{run_timestamp}.png",
-        "rle": figures_dir / f"Fig3_RLE_{method_slug}_{run_timestamp}.png",
-        "pca": figures_dir / f"Fig4_PCA_{method_slug}_{run_timestamp}.png",
-        "qc_variability": figures_dir / f"Fig5_QC_Variability_{method_slug}_{run_timestamp}.png",
-        "qc_reproducibility": figures_dir / f"Fig6_QC_Reproducibility_{method_slug}_{run_timestamp}.png",
-        "correlation": figures_dir / f"Fig7_Correlation_{method_slug}_{run_timestamp}.png"
+        "boxplot": figures_dir / generate_output_filename(
+            f"Fig1_Boxplot_{method_slug}", timestamp=run_timestamp, extension=".png"
+        ),
+        "cv": figures_dir / generate_output_filename(
+            f"Fig2_CV_{method_slug}", timestamp=run_timestamp, extension=".png"
+        ),
+        "rle": figures_dir / generate_output_filename(
+            f"Fig3_RLE_{method_slug}", timestamp=run_timestamp, extension=".png"
+        ),
+        "pca": figures_dir / generate_output_filename(
+            f"Fig4_PCA_{method_slug}", timestamp=run_timestamp, extension=".png"
+        ),
+        "qc_variability": figures_dir / generate_output_filename(
+            f"Fig5_QC_Variability_{method_slug}", timestamp=run_timestamp, extension=".png"
+        ),
+        "qc_reproducibility": figures_dir / generate_output_filename(
+            f"Fig6_QC_Reproducibility_{method_slug}", timestamp=run_timestamp, extension=".png"
+        ),
+        "correlation": figures_dir / generate_output_filename(
+            f"Fig7_Correlation_{method_slug}", timestamp=run_timestamp, extension=".png"
+        ),
     }
     # 分離有效樣本用於評估
     valid_sample_mask = ~np.isnan(normalized_data[0, :])
@@ -2462,7 +2239,8 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
         plot_pca_with_confidence_ellipse(
             original_data_valid, normalized_data_valid, sample_columns_valid, sample_info_df,
             figure_paths["pca"],
-            method_name
+            method_name,
+            exclude_qc=True,
         )
     except Exception as e:
         print(f"  ⚠ PCA對比圖生成失敗: {e}")
@@ -2538,8 +2316,10 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
 def save_normalization_results(normalized_df, summary_report, file_path, method_name, original_sheets, output_dir):
     """儲存標準化結果到Excel檔案"""
     try:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_filename = f"Normalized_{method_name}_{timestamp}.xlsx"
+        timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
+        output_filename = generate_output_filename(
+            f"Normalized_{method_name}", timestamp=timestamp, extension=".xlsx"
+        )
         output_path = output_dir / output_filename
         
         # 載入原始工作簿
@@ -2569,7 +2349,9 @@ def save_normalization_results(normalized_df, summary_report, file_path, method_
                 try:
                     if len(str(cell.value)) > max_length:
                         max_length = len(str(cell.value))
-                except:
+                except (TypeError, AttributeError):
+                    # TypeError: cell.value is None or non-stringable
+                    # AttributeError: cell has no value attribute
                     pass
             adjusted_width = min(max_length + 2, 50)
             ws_normalized.column_dimensions[column_letter].width = adjusted_width
@@ -2661,6 +2443,9 @@ def main(input_file=None):
     print("=" * 80)
     
     # 🔧 關鍵修正：如果沒有提供 input_file，則顯示對話框
+    if input_file is None:
+        raise ValueError("input_file is required; GUI must provide the file path.")
+
     if input_file is None:
         file_path = select_file()
         
@@ -2778,12 +2563,13 @@ def main(input_file=None):
     sample_count = len(normalized_df.columns) - 1
     metabolite_count = len(normalized_df)
     
-    return {
-        'file_path': input_file,
-        'metabolites': metabolite_count,
-        'samples': sample_count,
-        'output_path': output_path
-    }
+    return ProcessingResult(
+        file_path=input_file,
+        output_path=str(output_path),
+        plots_dir=str(figures_dir),
+        metabolites=metabolite_count,
+        samples=sample_count
+    )
 
 
 if __name__ == "__main__":

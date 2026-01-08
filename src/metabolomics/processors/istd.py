@@ -1,48 +1,30 @@
 import pandas as pd
 import numpy as np
 import os
-import sys
 from datetime import datetime
 from openpyxl import load_workbook
-from openpyxl.styles import Font, PatternFill
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import PatternFill
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
-from matplotlib import cm
 from matplotlib.patches import Ellipse
 import scipy.stats as stats
-from scipy.spatial.distance import mahalanobis
-from scipy.stats import chi2, f as f_dist
+from scipy.stats import chi2
 import warnings
-import tkinter as tk
-from tkinter import filedialog
 import copy
 
 warnings.filterwarnings('ignore')
 
-# ========== Matplotlib Global Settings ==========
-plt.rcParams['text.usetex'] = False
-plt.rcParams['mathtext.default'] = 'regular'
-if sys.platform == 'darwin':
-    plt.rcParams['font.family'] = 'Helvetica'
-else:
-    plt.rcParams['font.family'] = 'Arial'
+# ========== 匯入共用模組 ==========
+from metabolomics.utils.data_helpers import get_valid_values
+from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
+from metabolomics.utils.constants import DATETIME_FORMAT_FULL
+from metabolomics.utils.file_io import build_output_path, build_plots_dir, get_output_root
+from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.console import safe_print as print
 
-FONT_SIZES = {'title': 14, 'subtitle': 12, 'axis_label': 11, 'tick': 10, 'legend': 9, 'annotation': 9}
-
-def get_valid_values(row, columns):
-    """Helper: 從 row 中提取有效浮點值"""
-    values = []
-    for col in columns:
-        if col in row:
-            try:
-                val = float(row[col])
-                if not pd.isna(val) and val > 0:
-                    values.append(val)
-            except ValueError:
-                pass
-    return values
+# 設定 matplotlib
+setup_matplotlib()
 
 def load_and_process_data(file_path):
     try:
@@ -189,37 +171,37 @@ def load_and_process_data(file_path):
             if len(missing_in_info) > 5:
                 print(f"  ... 還有 {len(missing_in_info) - 5} 個樣本")
 
-        # 防呆：強制轉換 RawIntensity 的樣本欄位為數值
-        for col in sample_columns:
-            raw_df[col] = pd.to_numeric(raw_df[col], errors='coerce')
+        # 防呆：強制轉換 RawIntensity 的樣本欄位為數值 (向量化)
+        raw_df[sample_columns] = raw_df[sample_columns].apply(pd.to_numeric, errors='coerce')
 
-        # ===== 防呆13: 全为 NaN 或 0 的列检查 =====
-        for col in sample_columns:
-            non_zero_count = (raw_df[col] > 0).sum()
-            if non_zero_count == 0:
-                print(f"警告：樣本 '{col}' 的所有數值都是 0 或 NaN")
+        # ===== 防呆13: 全为 NaN 或 0 的列检查 (向量化) =====
+        non_zero_counts = (raw_df[sample_columns] > 0).sum()
+        zero_cols = non_zero_counts[non_zero_counts == 0].index.tolist()
+        for col in zero_cols:
+            print(f"警告：樣本 '{col}' 的所有數值都是 0 或 NaN")
 
         raw_df = raw_df.fillna(0)  # 填充 NaN 為 0
         print(f"RawIntensity 數據類型檢查：樣本欄位已轉換為數值型")
 
-        # ===== 防呆16: 数值范围检查 =====
-        negative_count = 0
-        extreme_high_count = 0
-        for col in sample_columns:
-            negative_values = (raw_df[col] < 0).sum()
-            if negative_values > 0:
-                negative_count += negative_values
-                print(f"⚠️ 警告：樣本 '{col}' 有 {negative_values} 個負值，已設為 0")
-                raw_df[col] = raw_df[col].clip(lower=0)
+        # ===== 防呆16: 数值范围检查 (向量化) =====
+        # Check for negative values across all columns at once
+        negative_mask = raw_df[sample_columns] < 0
+        negative_counts_per_col = negative_mask.sum()
+        negative_count = negative_counts_per_col.sum()
 
-            # 检查极端高值（可能是数据错误）
-            max_val = raw_df[col].max()
-            if max_val > 1e15:
-                extreme_high_count += 1
-                print(f"⚠️ 警告：樣本 '{col}' 有極端高值 ({max_val:.2e})，請檢查數據是否正確")
+        for col in negative_counts_per_col[negative_counts_per_col > 0].index:
+            print(f"⚠️ 警告：樣本 '{col}' 有 {negative_counts_per_col[col]} 個負值，已設為 0")
 
         if negative_count > 0:
+            # Clip all columns at once (vectorized)
+            raw_df[sample_columns] = raw_df[sample_columns].clip(lower=0)
             print(f"總計修正了 {negative_count} 個負值")
+
+        # 检查极端高值（可能是数据错误）
+        max_values = raw_df[sample_columns].max()
+        extreme_cols = max_values[max_values > 1e15]
+        for col, max_val in extreme_cols.items():
+            print(f"⚠️ 警告：樣本 '{col}' 有極端高值 ({max_val:.2e})，請檢查數據是否正確")
 
         if 'FeatureID' in raw_df.columns:
             def parse_feature_id(fid):
@@ -297,17 +279,26 @@ def identify_istd_signals(df):
     return df[df['is_ISTD']], df[~df['is_ISTD']]
 
 def calculate_istd_cv(istd_signals, sample_columns):
-    istd_cv = {}
-    for _, row in istd_signals.iterrows():
-        values = get_valid_values(row, sample_columns)
-        if len(values) >= 2:
-            mean_val = np.mean(values)
-            std_val = np.std(values, ddof=1)
-            cv_percent = (std_val / mean_val) * 100 if mean_val != 0 else np.nan
-        else:
-            cv_percent = np.nan
-        istd_cv[row['FeatureID']] = cv_percent
-    return istd_cv
+    """
+    Calculate CV% for each ISTD signal.
+
+    Vectorized implementation - much faster than iterrows().
+    """
+    from metabolomics.utils.safe_math import safe_cv_percent_vectorized
+
+    # Extract numeric matrix for sample columns
+    valid_cols = [c for c in sample_columns if c in istd_signals.columns]
+    if not valid_cols:
+        return {}
+
+    # Get numeric data matrix
+    numeric_data = istd_signals[valid_cols].apply(pd.to_numeric, errors='coerce').values
+
+    # Calculate CV% for each row (vectorized)
+    cv_values = safe_cv_percent_vectorized(numeric_data, axis=1, min_samples=2)
+
+    # Build result dictionary
+    return dict(zip(istd_signals['FeatureID'], cv_values))
 
 def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv, 
                                 sample_columns,  # ✅ 新增參數
@@ -371,49 +362,52 @@ def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv,
     if np.isnan(analyte_rt) or np.isnan(analyte_mz):
         return None, float('inf')
     
-    # ========== 步驟 1: 收集所有 ISTD 的指標 ==========
+    # ========== 步驟 1: 收集所有 ISTD 的指標 (向量化優化) ==========
+    # Pre-calculate median intensities for all ISTDs (vectorized)
+    valid_sample_cols = [c for c in sample_columns if c in istd_signals.columns]
+    if valid_sample_cols:
+        # Extract numeric matrix and calculate medians vectorized
+        numeric_data = istd_signals[valid_sample_cols].apply(pd.to_numeric, errors='coerce')
+        numeric_data = numeric_data.where(numeric_data > 0, np.nan)  # Replace <=0 with NaN
+        median_intensities = numeric_data.median(axis=1).values
+    else:
+        median_intensities = np.zeros(len(istd_signals))
+
+    # Pre-calculate RT and mz differences (vectorized)
+    istd_rts = istd_signals['rt'].values
+    istd_mzs = istd_signals['mz'].values
+    rt_diffs_all = np.abs(analyte_rt - istd_rts)
+    mz_diffs_all = np.abs(analyte_mz - istd_mzs) / analyte_mz * 1e6
+
     candidates = []
-    
-    for _, istd_row in istd_signals.iterrows():
-        istd_id = istd_row['FeatureID']
-        istd_rt = istd_row.get('rt', np.nan)
-        istd_mz = istd_row.get('mz', np.nan)
-        
+
+    for idx, istd_row in enumerate(istd_signals.itertuples()):
+        istd_id = istd_row.FeatureID
+        istd_rt = istd_rts[idx]
+        istd_mz = istd_mzs[idx]
+
         # 跳過缺少資訊的 ISTD
         if np.isnan(istd_rt) or np.isnan(istd_mz):
             continue
-        
-        # 計算 RT 差異
-        rt_diff = abs(analyte_rt - istd_rt)
-        
+
+        # 獲取預先計算的值
+        rt_diff = rt_diffs_all[idx]
+        mz_diff_ppm = mz_diffs_all[idx]
+        median_intensity = median_intensities[idx]
+
         # 獲取 CV%
         cv = istd_cv.get(istd_id, np.nan)
         if np.isnan(cv):
             cv = 100.0  # 如果沒有 CV%，設為高值
-        
-        # 計算 m/z 差異（ppm）
-        mz_diff_ppm = abs(analyte_mz - istd_mz) / analyte_mz * 1e6
-        
-        # 🔧 修正：使用明確的樣本欄位計算強度
-        values = []
-        for col in sample_columns:
-            if col in istd_row.index:
-                try:
-                    val = float(istd_row[col])
-                    if not pd.isna(val) and val > 0:
-                        values.append(val)
-                except (ValueError, TypeError):
-                    pass
-        
-        median_intensity = np.median(values) if values else 0.0
-        
-        # 儲存候選資訊
+
+        # 儲存候選資訊 (convert namedtuple row back to Series for compatibility)
+        istd_row_series = istd_signals.iloc[idx]
         candidates.append({
-            'istd_row': istd_row,
+            'istd_row': istd_row_series,
             'istd_id': istd_id,
             'rt_diff': rt_diff,
             'cv': cv,
-            'intensity': median_intensity,
+            'intensity': median_intensity if not np.isnan(median_intensity) else 0.0,
             'mz_diff_ppm': mz_diff_ppm
         })
     
@@ -476,11 +470,27 @@ def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv,
     return best_candidate['istd_row'], best_candidate['rt_diff']
 
 def calculate_istd_medians(istd_signals, sample_columns):
-    istd_medians = {}
-    for _, row in istd_signals.iterrows():
-        values = get_valid_values(row, sample_columns)
-        istd_medians[row['FeatureID']] = np.median(values) if values else np.nan
-    return istd_medians
+    """
+    Calculate median intensity for each ISTD signal.
+
+    Vectorized implementation - much faster than iterrows().
+    """
+    # Extract numeric matrix for sample columns
+    valid_cols = [c for c in sample_columns if c in istd_signals.columns]
+    if not valid_cols:
+        return {}
+
+    # Get numeric data and calculate median per row
+    numeric_data = istd_signals[valid_cols].apply(pd.to_numeric, errors='coerce').values
+
+    # Replace non-positive values with NaN for proper median calculation
+    numeric_data = np.where(numeric_data > 0, numeric_data, np.nan)
+
+    # Calculate median for each row (ignoring NaN)
+    medians = np.nanmedian(numeric_data, axis=1)
+
+    # Build result dictionary
+    return dict(zip(istd_signals['FeatureID'], medians))
 
 def calculate_corrected_ratios(df, sample_info_df):
     """
@@ -595,10 +605,10 @@ def calculate_corrected_ratios(df, sample_info_df):
     
     results_df = pd.DataFrame(results)
     
-    # 防呆：強制轉換 results_df 的樣本欄位為數值
-    for col in sample_columns:
-        if col in results_df.columns:
-            results_df[col] = pd.to_numeric(results_df[col], errors='coerce')
+    # 防呆：強制轉換 results_df 的樣本欄位為數值 (向量化)
+    valid_sample_cols = [col for col in sample_columns if col in results_df.columns]
+    if valid_sample_cols:
+        results_df[valid_sample_cols] = results_df[valid_sample_cols].apply(pd.to_numeric, errors='coerce')
     results_df = results_df.fillna(0)
     print(f"ISTD Correction 數據類型檢查：{results_df.dtypes}")
     
@@ -611,38 +621,66 @@ from scipy.stats import wilcoxon, levene
 def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_info_df, original_df):
     """
     計算 QC 樣本的 CV%，並進行正確的統計檢定
-    
+
     統計方法：
     1. Wilcoxon 配對符號等級檢定（檢驗中位數偏移，適用於非常態分佈）
     2. Levene's test（檢驗方差齊性）
+
+    Performance optimized:
+    - Uses indexed lookup instead of O(N) search per row (was O(N^2), now O(N))
+    - Pre-extracts numeric matrices for QC columns
     """
+    from metabolomics.utils.safe_math import safe_divide
+
     qc_samples = sample_info_df[sample_info_df['Sample_Type'].str.upper().str.contains('QC')]['Sample_Name'].tolist()
     qc_columns = [col for col in sample_columns if col in qc_samples]
-    
+
     print(f"\n{'='*70}")
     print(f"🔬 開始統計檢定（Wilcoxon 配對符號等級檢定 + Levene's test）")
     print(f"{'='*70}")
     print(f"  - QC 樣本數: {len(qc_columns)}")
     print(f"  - Feature 總數: {len(results_df)}")
-    
+
+    # ===== PERFORMANCE OPTIMIZATION: Pre-extract all QC data vectorized =====
+    # This replaces O(N*M) row-by-row extraction with O(N+M) vectorized operations
+    original_indexed = original_df.set_index('FeatureID')
+
+    # Pre-extract QC columns data for faster access
+    valid_qc_cols = [c for c in qc_columns if c in results_df.columns and c in original_df.columns]
+
+    # ===== VECTORIZED: Extract all QC data at once =====
+    # Convert to numeric and replace <=0 with NaN (vectorized)
+    qc_corrected_data = results_df[valid_qc_cols].apply(pd.to_numeric, errors='coerce')
+    qc_corrected_data = qc_corrected_data.where(qc_corrected_data > 0, np.nan)
+
+    qc_original_data = original_indexed[valid_qc_cols].apply(pd.to_numeric, errors='coerce')
+    qc_original_data = qc_original_data.where(qc_original_data > 0, np.nan)
+
     cv_results = []
-    
-    for idx, row in results_df.iterrows():
-        feature_id = row['FeatureID']
-        
-        # 校正後的 QC 值
-        qc_values_corrected = get_valid_values(row, qc_columns)
-        
-        # 原始的 QC 值
-        original_row = original_df[original_df['FeatureID'] == feature_id]
-        if not original_row.empty:
-            qc_values_original = get_valid_values(original_row.iloc[0], qc_columns)
-        else:
-            qc_values_original = []
-        
+    total_features = len(results_df)
+
+    # Use itertuples for faster iteration (2-3x faster than iterrows)
+    for row_idx, row_tuple in enumerate(results_df.itertuples()):
+        idx = row_tuple.Index
+        feature_id = row_tuple.FeatureID
+
+        # Extract QC values from pre-processed data (vectorized access)
+        try:
+            qc_values_corrected = qc_corrected_data.loc[idx].dropna().values
+        except KeyError:
+            qc_values_corrected = np.array([])
+
+        try:
+            if feature_id in qc_original_data.index:
+                qc_values_original = qc_original_data.loc[feature_id].dropna().values
+            else:
+                qc_values_original = np.array([])
+        except KeyError:
+            qc_values_original = np.array([])
+
         # 確保配對樣本數一致
         min_len = min(len(qc_values_original), len(qc_values_corrected))
-        
+
         if min_len < 3:
             cv_results.append({
                 'FeatureID': feature_id,
@@ -654,24 +692,26 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
                 'Significant_Improvement': 'N/A'
             })
             continue
-        
+
         qc_values_original = np.array(qc_values_original[:min_len])
         qc_values_corrected = np.array(qc_values_corrected[:min_len])
-        
-        # 計算 CV%
-        original_cv = (np.std(qc_values_original, ddof=1) / np.mean(qc_values_original)) * 100
-        corrected_cv = (np.std(qc_values_corrected, ddof=1) / np.mean(qc_values_corrected)) * 100
+
+        # 計算 CV% with safe division
+        orig_mean = np.mean(qc_values_original)
+        corr_mean = np.mean(qc_values_corrected)
+        original_cv = safe_divide(np.std(qc_values_original, ddof=1), orig_mean, np.nan) * 100
+        corrected_cv = safe_divide(np.std(qc_values_corrected, ddof=1), corr_mean, np.nan) * 100
         cv_improvement = original_cv - corrected_cv
-        
+
         # ✅ 1. Wilcoxon 配對符號等級檢定（檢驗中位數是否改變）
         try:
             # 計算差異
             differences = qc_values_original - qc_values_corrected
-            
+
             # 只有當存在非零差異時才進行檢定
             if np.any(differences != 0):
                 wilcoxon_stat, wilcoxon_pvalue = wilcoxon(
-                    qc_values_original, 
+                    qc_values_original,
                     qc_values_corrected,
                     alternative='two-sided',
                     zero_method='wilcox'  # 處理零差異的方法
@@ -679,15 +719,15 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
             else:
                 # 所有值都相同，p-value = 1.0
                 wilcoxon_pvalue = 1.0
-        except Exception as e:
+        except Exception:
             wilcoxon_pvalue = np.nan
-        
+
         # ✅ 2. Levene's test（檢驗方差齊性）
         try:
             levene_stat, variance_test_pvalue = levene(qc_values_original, qc_values_corrected)
         except Exception:
             variance_test_pvalue = np.nan
-        
+
         # ✅ 判斷顯著性
         if not np.isnan(variance_test_pvalue) and cv_improvement > 5:
             if variance_test_pvalue < 0.05:
@@ -698,7 +738,7 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
             significant = 'Yes (CV% only)'
         else:
             significant = 'No'
-        
+
         cv_results.append({
             'FeatureID': feature_id,
             'Original_QC_CV%': original_cv,
@@ -708,9 +748,9 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
             'Variance_Test_pvalue': variance_test_pvalue,
             'Significant_Improvement': significant
         })
-        
-        if (idx + 1) % 100 == 0:
-            print(f"  處理進度: {idx + 1}/{len(results_df)} features")
+
+        if (row_idx + 1) % 500 == 0:
+            print(f"  處理進度: {row_idx + 1}/{total_features} features")
     
     print(f"  ✓ 統計檢定完成！")
     
@@ -1037,7 +1077,13 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         print(f"已建立 'ISTD_Correction_plots' 資料夾: {plots_dir}")
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-    sample_meta = sample_info_df.set_index('Sample_Name')
+
+    # 🔧 修正：樣本名稱用 strip+lower 做穩健匹配，避免因空白/大小寫差異導致 QC 誤判不足
+    sample_info_norm = sample_info_df.copy()
+    sample_info_norm['Sample_Name_norm'] = (
+        sample_info_norm['Sample_Name'].astype(str).str.strip().str.lower()
+    )
+    sample_meta = sample_info_norm.set_index('Sample_Name_norm')
 
     # 識別 QC 樣本和樣本類型
     qc_columns = []
@@ -1046,8 +1092,9 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
     sample_type_map = {}
     
     for col in sample_columns:
-        if col in sample_meta.index:
-            sample_type = sample_meta.loc[col].get('Sample_Type', 'Unknown')
+        col_norm = str(col).strip().lower()
+        if col_norm in sample_meta.index:
+            sample_type = sample_meta.loc[col_norm].get('Sample_Type', 'Unknown')
             sample_type_map[col] = sample_type
             
             sample_type_upper = str(sample_type).upper()
@@ -1164,224 +1211,41 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         print(f"   - T² 閾值: {t2_threshold_right:.2f}")
         print(f"   - 異常值數量: {np.sum(outliers_right)}/{len(qc_columns)}")
 
-        # 繪製 2D PCA 圖
-        fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(16, 9))
-        fig.suptitle(f'2D PCA Comparison: {left_name} vs {right_name}',
-                     fontsize=18, y=0.98, fontweight='bold')
-
-        # ===== 左圖：校正前 =====
-        for i, col in enumerate(sample_columns):
-            color = color_map[col]
-            marker = marker_map[col]
-            
-            # 🔧 判斷是否為異常值
-            is_outlier = False
+        # 統一 PCA 圖樣式（以 QC 子程式風格為主）
+        sample_types = []
+        for col in sample_columns:
             if col in qc_columns:
-                qc_idx = qc_columns.index(col)
-                is_outlier = outliers_left[qc_idx]
-            
-            # 🎨 關鍵修改：只有 QC 樣本有邊框，且邊框變細
-            if col in qc_columns:
-                # QC 樣本：帶邊框（變細）
-                if is_outlier:
-                    edgecolor = 'red'
-                    linewidth = 1.5  # 🔧 
-                    size = 150
-                    alpha = 0.9
-                else:
-                    edgecolor = 'black'
-                    linewidth = 0.8  # 🔧 
-                    size = 120
-                    alpha = 0.8
+                sample_types.append('QC')
+            elif col in exposed_columns:
+                sample_types.append('Exposure')
             else:
-                # Control 和 Exposed：無邊框
-                edgecolor = 'none'
-                linewidth = 0
-                size = 120
-                alpha = 0.8
-            
-            ax_left.scatter(scores_left[i, 0], scores_left[i, 1],
-                          c=[color], marker=marker, s=size, alpha=alpha,
-                          edgecolors=edgecolor, linewidths=linewidth)
+                sample_types.append('Control')
 
-        # 繪製兩個 Hotelling T² 橢圓
-        all_bounds_left = []
-
-        bounds_all_left = draw_hotelling_t2_ellipse(ax_left, scores_left,
-                                                    label='95% CI (All Samples)',
-                                                    edgecolor='gray', linestyle='--', linewidth=2)
-        if bounds_all_left:
-            all_bounds_left.append(bounds_all_left)
-
-        bounds_qc_left = draw_hotelling_t2_ellipse(ax_left, qc_scores_left,
-                                                    label='95% CI (QC Only)',
-                                                    edgecolor='#9370DB', linestyle='-', linewidth=3)
-        if bounds_qc_left:
-            all_bounds_left.append(bounds_qc_left)
-
-        # 調整軸範圍
-        if all_bounds_left:
-            x_min = min([b[0] for b in all_bounds_left])
-            x_max = max([b[1] for b in all_bounds_left])
-            y_min = min([b[2] for b in all_bounds_left])
-            y_max = max([b[3] for b in all_bounds_left])
-        else:
-            x_min, x_max = np.min(scores_left[:, 0]), np.max(scores_left[:, 0])
-            y_min, y_max = np.min(scores_left[:, 1]), np.max(scores_left[:, 1])
-        
-        data_x_min, data_x_max = np.min(scores_left[:, 0]), np.max(scores_left[:, 0])
-        data_y_min, data_y_max = np.min(scores_left[:, 1]), np.max(scores_left[:, 1])
-        
-        x_min = min(x_min, data_x_min)
-        x_max = max(x_max, data_x_max)
-        y_min = min(y_min, data_y_min)
-        y_max = max(y_max, data_y_max)
-        
-        x_abs_max = max(abs(x_min), abs(x_max))
-        y_abs_max = max(abs(y_min), abs(y_max))
-        
-        x_margin = x_abs_max * 0.2
-        y_margin = y_abs_max * 0.2
-        
-        ax_left.set_xlim(-x_abs_max - x_margin, x_abs_max + x_margin)
-        ax_left.set_ylim(-y_abs_max - y_margin, y_abs_max + y_margin)
-        
-        ax_left.set_title(f'{left_name}\nPC1: {var_left[0]:.1%}, PC2: {var_left[1]:.1%}\nHotelling T² Threshold: {t2_threshold_left:.2f}',
-                         fontsize=13, fontweight='bold', pad=10)
-        ax_left.set_xlabel(f't[1] ({var_left[0]:.1%})', fontsize=12, fontweight='bold')
-        ax_left.set_ylabel(f't[2] ({var_left[1]:.1%})', fontsize=12, fontweight='bold')
-        ax_left.grid(True, alpha=0.3, linestyle='--')
-        ax_left.axhline(y=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-        ax_left.axvline(x=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-
-        # ===== 右圖：校正後（相同邏輯）=====
-        for i, col in enumerate(sample_columns):
-            color = color_map[col]
-            marker = marker_map[col]
-            
-            is_outlier = False
-            if col in qc_columns:
-                qc_idx = qc_columns.index(col)
-                is_outlier = outliers_right[qc_idx]
-            
-            # 🎨 關鍵修改：只有 QC 樣本有邊框，且邊框變細
-            if col in qc_columns:
-                if is_outlier:
-                    edgecolor = 'red'
-                    linewidth = 1.5  # 🔧 
-                    size = 150
-                    alpha = 0.9
-                else:
-                    edgecolor = 'black'
-                    linewidth = 0.8  # 🔧 
-                    size = 120
-                    alpha = 0.8
-            else:
-                edgecolor = 'none'
-                linewidth = 0
-                size = 120
-                alpha = 0.8
-            
-            ax_right.scatter(scores_right[i, 0], scores_right[i, 1],
-                           c=[color], marker=marker, s=size, alpha=alpha,
-                           edgecolors=edgecolor, linewidths=linewidth)
-
-        all_bounds_right = []
-        
-        bounds_all_right = draw_hotelling_t2_ellipse(ax_right, scores_right,
-                                                      label='95% CI (All Samples)',
-                                                      edgecolor='gray', linestyle='--', linewidth=2)
-        if bounds_all_right:
-            all_bounds_right.append(bounds_all_right)
-        
-        bounds_qc_right = draw_hotelling_t2_ellipse(ax_right, qc_scores_right,
-                                                     label='95% CI (QC Only)',
-                                                     edgecolor='#9370DB', linestyle='-', linewidth=3)
-        if bounds_qc_right:
-            all_bounds_right.append(bounds_qc_right)
-        
-        if all_bounds_right:
-            x_min = min([b[0] for b in all_bounds_right])
-            x_max = max([b[1] for b in all_bounds_right])
-            y_min = min([b[2] for b in all_bounds_right])
-            y_max = max([b[3] for b in all_bounds_right])
-        else:
-            x_min, x_max = np.min(scores_right[:, 0]), np.max(scores_right[:, 0])
-            y_min, y_max = np.min(scores_right[:, 1]), np.max(scores_right[:, 1])
-        
-        data_x_min, data_x_max = np.min(scores_right[:, 0]), np.max(scores_right[:, 0])
-        data_y_min, data_y_max = np.min(scores_right[:, 1]), np.max(scores_right[:, 1])
-        
-        x_min = min(x_min, data_x_min)
-        x_max = max(x_max, data_x_max)
-        y_min = min(y_min, data_y_min)
-        y_max = max(y_max, data_y_max)
-        
-        x_abs_max = max(abs(x_min), abs(x_max))
-        y_abs_max = max(abs(y_min), abs(y_max))
-        
-        x_margin = x_abs_max * 0.2
-        y_margin = y_abs_max * 0.2
-        
-        ax_right.set_xlim(-x_abs_max - x_margin, x_abs_max + x_margin)
-        ax_right.set_ylim(-y_abs_max - y_margin, y_abs_max + y_margin)
-        
-        ax_right.set_title(f'{right_name}\nPC1: {var_right[0]:.1%}, PC2: {var_right[1]:.1%}\nHotelling T² Threshold: {t2_threshold_right:.2f}',
-                          fontsize=13, fontweight='bold', pad=10)
-        ax_right.set_xlabel(f't[1] ({var_right[0]:.1%})', fontsize=12, fontweight='bold')
-        ax_right.set_ylabel(f't[2] ({var_right[1]:.1%})', fontsize=12, fontweight='bold')
-        ax_right.grid(True, alpha=0.3, linestyle='--')
-        ax_right.axhline(y=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-        ax_right.axvline(x=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-
-        # ===== 🎨 修改後的圖例（更新邊框粗細說明）=====
-        sample_legend_elements = [
-            plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='#4169E1',
-                      markersize=12, label='Control', 
-                      markeredgecolor='none', markeredgewidth=0),
-            plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='#DC143C',
-                      markersize=12, label='Exposed', 
-                      markeredgecolor='none', markeredgewidth=0),
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
-                      markersize=12, label='QC', 
-                      markeredgecolor='black', markeredgewidth=0.8),  # 🔧 更新為 0.8
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
-                      markersize=12, label='QC Outlier', 
-                      markeredgecolor='red', markeredgewidth=1.5)  # 🔧 更新為 1.5
-        ]
-        
-        ellipse_legend_elements = [
-            plt.Line2D([0], [0], linestyle='--', color='gray',
-                      linewidth=2, label='95% CI (All Samples)'),
-            plt.Line2D([0], [0], linestyle='-', color='#9370DB',
-                      linewidth=3, label='95% CI (QC Only)')
-        ]
-        
-        legend1 = fig.legend(handles=sample_legend_elements, 
-                            loc='center left', 
-                            bbox_to_anchor=(1.01, 0.7),
-                            fontsize=11,
-                            title='Sample Type', 
-                            title_fontsize=12,
-                            frameon=True, 
-                            fancybox=True, 
-                            shadow=True)
-        
-        legend2 = fig.legend(handles=ellipse_legend_elements, 
-                            loc='center left', 
-                            bbox_to_anchor=(1.01, 0.3),
-                            fontsize=11,
-                            title='Confidence Ellipse', 
-                            title_fontsize=12,
-                            frameon=True, 
-                            fancybox=True, 
-                            shadow=True)
-
-        plt.tight_layout(rect=[0, 0, 0.88, 0.96])
+        qc_outliers_left = {qc_columns[i] for i in range(len(qc_columns)) if outliers_left[i]}
+        qc_outliers_right = {qc_columns[i] for i in range(len(qc_columns)) if outliers_right[i]}
 
         output_path = os.path.join(plots_dir, f"2D_PCA_{left_name.replace(' ', '_')}_vs_{right_name.replace(' ', '_')}_{timestamp}.png")
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        plt.close()
+        plot_pca_comparison_qc_style(
+            scores_left,
+            scores_right,
+            var_left,
+            var_right,
+            sample_columns,
+            sample_types,
+            batch_labels=None,
+            grouping='sample_type',
+            suptitle=f'2D PCA Comparison: {left_name} vs {right_name}',
+            left_title=left_name,
+            right_title=right_name,
+            left_threshold_text=f'Hotelling T² Threshold: {t2_threshold_left:.2f}',
+            right_threshold_text=f'Hotelling T² Threshold: {t2_threshold_right:.2f}',
+            qc_outlier_names_left=qc_outliers_left,
+            qc_outlier_names_right=qc_outliers_right,
+            output_path=output_path,
+            dpi=300,
+        )
+
+        plt.close('all')
         print(f"✓ 2D PCA 圖已儲存: {output_path}")
 
         # ===== 輸出異常值摘要 =====
@@ -1637,10 +1501,12 @@ def main(input_file=None):
         - None: 用戶取消檔案選擇
         - dict: 執行成功，包含統計資訊
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if input_file is None:
+        raise ValueError("input_file is required; GUI must provide the file path.")
+
     
     # 🔧 建立 output 資料夾
-    output_dir = os.path.join(script_dir, "output")
+    output_dir = get_output_root()
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
         print(f"已建立 'output' 資料夾: {output_dir}")
@@ -1685,15 +1551,13 @@ def main(input_file=None):
         raise Exception("校正計算失敗")
     
     # 🔧 修改：儲存結果到 output 資料夾
-    run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_file = os.path.join(
-        output_dir,
-        f"ISTD_Results_{run_timestamp}.xlsx"
+    run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
+    output_file = build_output_path("ISTD_Results", timestamp=run_timestamp)
+    plots_session_dir = build_plots_dir(
+        "ISTD_Correction_plots",
+        timestamp=run_timestamp,
+        session_prefix="ISTD_Correction"
     )
-    plots_root = os.path.join(output_dir, "ISTD_Correction_plots")
-    os.makedirs(plots_root, exist_ok=True)
-    plots_session_dir = os.path.join(plots_root, f"ISTD_Correction_{run_timestamp}")
-    os.makedirs(plots_session_dir, exist_ok=True)
 
     # ===== 防呆17: 输出目录权限检查 =====
     try:
@@ -1737,12 +1601,13 @@ def main(input_file=None):
     print("\n💡 請使用輸出的檔案進行後續 QC LOWESS 處理。\n")
     
     # 🎯 返回統計資訊給 GUI
-    return {
-        'file_path': input_file,
-        'metabolites': len(original_df),
-        'samples': len(sample_columns),
-        'output_path': output_file
-    }
+    return ProcessingResult(
+        file_path=input_file,
+        output_path=str(output_file),
+        plots_dir=str(plots_session_dir),
+        metabolites=len(original_df),
+        samples=len(sample_columns)
+    )
 
 
 if __name__ == "__main__":

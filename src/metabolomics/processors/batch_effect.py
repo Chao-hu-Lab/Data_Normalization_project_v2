@@ -1,54 +1,57 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score
 from sklearn.metrics.pairwise import manhattan_distances, euclidean_distances
 from pycombat import pycombat
 import warnings
-import tkinter as tk
-from tkinter import filedialog
 import os
 import datetime
-import sys
-from openpyxl import load_workbook, Workbook
+from openpyxl import load_workbook
 from copy import copy
 from scipy import stats
 from matplotlib.patches import Ellipse
 from openpyxl.styles import PatternFill, Font
-from scipy.spatial.distance import mahalanobis
 from scipy.stats import chi2, f as f_dist
 
 warnings.filterwarnings('ignore')
 
-# ========== Matplotlib Global Settings ==========
-plt.rcParams['text.usetex'] = False
-plt.rcParams['mathtext.default'] = 'regular'
-if sys.platform == 'darwin':
-    plt.rcParams['font.family'] = 'Helvetica'
-else:
-    plt.rcParams['font.family'] = 'Arial'
+# ========== 匯入共用模組 ==========
+from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
+from metabolomics.utils.constants import COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL
+from metabolomics.utils.file_io import (
+    build_output_path,
+    build_plots_dir,
+    get_output_root,
+    generate_output_filename,
+)
+from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.console import safe_print as print
 
-FONT_SIZES = {'title': 14, 'subtitle': 12, 'axis_label': 11, 'tick': 10, 'legend': 9, 'annotation': 9}
+# 設定 matplotlib
+setup_matplotlib()
 
 # Centralized naming to avoid magic strings in downstream logic
-SUMMARY_SHEET_NAME = "Batch_Effect_summary"
+SUMMARY_SHEET_NAME = SHEET_NAMES.get('batch_summary', "Batch_Effect_summary")
 PLOT_FOLDER_NAME = "Batch_Effect_plots"
 
-# 設定色盲友善的顏色
-COLORBLIND_COLORS = ['#0173B2', '#DE8F05', '#029E73', '#CC78BC', '#CA9161', '#949494', '#ECE133', '#56B4E9']
+# 確保安裝 scikit-bio (graceful fallback for testing)
+SKBIO_AVAILABLE = False
+skbio_permanova = None
+DistanceMatrix = None
 
-# 確保安裝 scikit-bio
 try:
     from skbio.stats.distance import permanova as skbio_permanova
     from skbio import DistanceMatrix
+    SKBIO_AVAILABLE = True
 except ImportError:
-    print("⚠️ 警告: 未安裝 scikit-bio，請執行: pip install scikit-bio")
-    sys.exit(1)
+    print("⚠️ 警告: 未安裝 scikit-bio，PERMANOVA 功能將無法使用")
+    print("   請執行: pip install scikit-bio")
 
 def select_file():
+    raise RuntimeError("input_file is required; GUI must provide the file path.")
     """開啟檔案選擇對話框"""
     root = tk.Tk()
     root.withdraw()
@@ -224,16 +227,14 @@ def prepare_data_for_combat(data, sample_info):
         print(f"  SampleInfo 欄位: {', '.join(sample_info.columns.tolist())}")
         raise ValueError("SampleInfo 缺少 'Sample_Name' 欄位")
 
-    # 匹配樣本
-    sample_to_batch = {}
-    batch_na_count = 0
+    # 匹配樣本 - Vectorized (faster than iterrows)
+    batch_na_count = sample_info['Batch'].isna().sum()
 
-    for _, row in sample_info.iterrows():
-        sample_name = str(row['Sample_Name']).strip()
-        if pd.notna(row['Batch']):
-            sample_to_batch[sample_name] = row['Batch']
-        else:
-            batch_na_count += 1
+    # Build sample_to_batch dictionary using vectorized operations
+    valid_batch_mask = sample_info['Batch'].notna()
+    sample_names = sample_info.loc[valid_batch_mask, 'Sample_Name'].astype(str).str.strip()
+    batch_values = sample_info.loc[valid_batch_mask, 'Batch']
+    sample_to_batch = dict(zip(sample_names, batch_values))
 
     if batch_na_count > 0:
         print(f"⚠️ 警告：{batch_na_count} 個樣本的 Batch 資訊為空")
@@ -569,6 +570,11 @@ def calculate_permanova(data, batch_labels, distance_metric='manhattan', permuta
 
     包含完整的參數驗證
     """
+    # ===== 檢查 scikit-bio 是否可用 =====
+    if not SKBIO_AVAILABLE:
+        print("❌ 錯誤：scikit-bio 未安裝，無法執行 PERMANOVA")
+        raise ImportError("scikit-bio is required for PERMANOVA. Install with: pip install scikit-bio")
+
     # ===== 防呆29: 輸入數據驗證 =====
     if data is None or data.size == 0:
         print(f"❌ 錯誤：輸入數據為空")
@@ -701,10 +707,12 @@ def calculate_permdisp(data, batch_labels, distance_metric='manhattan', permutat
     """
     PERMDISP: 檢驗批次間離散度同質性
     (Homogeneity of Multivariate Dispersions)
-    
+
     用途：確認 PERMANOVA 的顯著性是否來自位置差異（批次效應）
          還是離散度差異（變異不同質）
-    
+
+    Note: Requires scikit-bio to be installed.
+
     Parameters:
     -----------
     data : np.ndarray
@@ -715,13 +723,23 @@ def calculate_permdisp(data, batch_labels, distance_metric='manhattan', permutat
         距離度量
     permutations : int
         排列次數
-    
+
     Returns:
     --------
     dict: PERMDISP 結果
     """
+    # ===== 檢查 scikit-bio 是否可用 =====
+    if not SKBIO_AVAILABLE:
+        print("\n🔍 執行 PERMDISP 檢驗 (檢驗離散度同質性)...")
+        print("   ⚠️ scikit-bio 未安裝，無法執行 PERMDISP")
+        return {
+            'f_statistic': np.nan,
+            'p_value': np.nan,
+            'permutations': 0
+        }
+
     print(f"\n🔍 執行 PERMDISP 檢驗 (檢驗離散度同質性)...")
-    
+
     try:
         from skbio.stats.distance import permdisp
         
@@ -767,20 +785,33 @@ def calculate_permdisp(data, batch_labels, distance_metric='manhattan', permutat
             'permutations': 0
         }
 
-def paired_permutation_test(data_before, data_after, batch_labels, 
-                            metric='permanova', distance_metric='manhattan', 
+def paired_permutation_test(data_before, data_after, batch_labels,
+                            metric='permanova', distance_metric='manhattan',
                             n_permutations=1000):
     """
     配對排列檢定：測試校正是否顯著改善批次效應
-    
+
     H0: 校正前後的批次效應指標無差異
     H1: 校正後的批次效應指標顯著低於校正前
-    
+
     Parameters:
     -----------
     metric : str
         'permanova' 或 'silhouette'
     """
+    # ===== 檢查 scikit-bio 是否可用 (僅 permanova metric 需要) =====
+    if metric == 'permanova' and not SKBIO_AVAILABLE:
+        print(f"\n🎲 執行配對排列檢定 ({metric.upper()}, {n_permutations} 次排列)...")
+        print("   ⚠️ scikit-bio 未安裝，無法執行 PERMANOVA 排列檢定")
+        return {
+            'observed_improvement': np.nan,
+            'p_value': np.nan,
+            'null_mean': np.nan,
+            'null_std': np.nan,
+            'effect_size': np.nan,
+            'metric': metric
+        }
+
     print(f"\n🎲 執行配對排列檢定 ({metric.upper()}, {n_permutations} 次排列)...")
     
     # 計算觀察到的改善
@@ -1274,38 +1305,39 @@ def draw_hotelling_t2_ellipse(ax, scores, alpha=0.05, label=None,
 def create_comparison_pca_plot(original_data, corrected_data, sample_info, 
                                sample_columns, batch_info, 
                                title_suffix="", grouping="batch"):
-    """
-    創建前後對比的 PCA 圖（左圖：校正前，右圖：校正後）
-    
-    Parameters:
-    -----------
+    """創建前後對比的 PCA 圖（左圖：校正前，右圖：校正後）。
+
+    Parameters
+    ----------
     grouping : str
         'batch' 或 'sample_type'
     """
+
     # 識別樣本類型
-    sample_meta = sample_info.set_index('Sample_Name')
-    
+    sample_meta = sample_info.set_index('Sample_Name') if 'Sample_Name' in sample_info.columns else sample_info
+
     qc_columns = []
     control_columns = []
     exposed_columns = []
     sample_batches = {}
-    
+
     for col in sample_columns:
-        if col in sample_meta.index:
+        col_upper = str(col).upper()
+        if hasattr(sample_meta, 'index') and col in sample_meta.index:
             sample_type = sample_meta.loc[col].get('Sample_Type', 'Unknown')
             sample_type_upper = str(sample_type).upper()
             batch = sample_meta.loc[col].get('Batch', 'Unknown')
-            
+            if (batch == 'Unknown' or pd.isna(batch)) and isinstance(batch_info, dict):
+                batch = batch_info.get(col, batch)
             sample_batches[col] = batch
-            
+
             if 'QC' in sample_type_upper:
                 qc_columns.append(col)
-            elif 'CONTROL' in sample_type_upper or 'CTL' in sample_type_upper or 'CON' in sample_type_upper:
+            elif any(x in sample_type_upper for x in ['CONTROL', 'CTL', 'CON']):
                 control_columns.append(col)
-            elif 'EXPOSED' in sample_type_upper or 'EXP' in sample_type_upper or 'TREAT' in sample_type_upper:
+            elif any(x in sample_type_upper for x in ['EXPOSED', 'EXP', 'TREAT']):
                 exposed_columns.append(col)
             else:
-                col_upper = col.upper()
                 if 'QC' in col_upper:
                     qc_columns.append(col)
                 elif any(x in col_upper for x in ['CONTROL', 'CTL', 'CON']):
@@ -1315,13 +1347,18 @@ def create_comparison_pca_plot(original_data, corrected_data, sample_info,
                 else:
                     control_columns.append(col)
         else:
-            control_columns.append(col)
-            sample_batches[col] = 'Unknown'
-    
+            sample_batches[col] = batch_info.get(col, 'Unknown') if isinstance(batch_info, dict) else 'Unknown'
+            if 'QC' in col_upper:
+                qc_columns.append(col)
+            elif any(x in col_upper for x in ['EXPOSED', 'EXP', 'TREAT']):
+                exposed_columns.append(col)
+            else:
+                control_columns.append(col)
+
     if len(sample_columns) < 3:
         print("   ⚠ 樣本數量不足，無法進行 PCA 分析")
         return None
-    
+
     # 數據預處理
     def preprocess_data(data):
         data_processed = data.astype(float)
@@ -1331,27 +1368,26 @@ def create_comparison_pca_plot(original_data, corrected_data, sample_info,
         data_log = np.log2(data_processed + 1)
         scaler = StandardScaler()
         return scaler.fit_transform(data_log)
-    
+
     original_scaled = preprocess_data(original_data)
     corrected_scaled = preprocess_data(corrected_data)
-    
+
     # PCA
     pca_original = PCA(n_components=2)
     pca_corrected = PCA(n_components=2)
-    
+
     scores_original = pca_original.fit_transform(original_scaled)
     scores_corrected = pca_corrected.fit_transform(corrected_scaled)
-    
+
     var_original = pca_original.explained_variance_ratio_
     var_corrected = pca_corrected.explained_variance_ratio_
-    
+
     # Hotelling T² 檢測 QC 異常值
     qc_indices = [i for i, col in enumerate(sample_columns) if col in qc_columns]
-    
     if len(qc_indices) >= 3:
         qc_scores_original = scores_original[qc_indices]
         qc_scores_corrected = scores_corrected[qc_indices]
-        
+
         if grouping == "batch":
             t2_orig, t2_threshold_orig, outliers_orig = calculate_hotelling_t2_outliers(
                 qc_scores_original, scores_original, alpha=0.05
@@ -1366,326 +1402,57 @@ def create_comparison_pca_plot(original_data, corrected_data, sample_info,
             t2_corr, t2_threshold_corr, outliers_corr = calculate_hotelling_t2_outliers_internal(
                 qc_scores_corrected, alpha=0.05
             )
-        
-        # 輸出異常值檢測結果
-        print(f"\n🔍 Hotelling T² 異常值檢測 (模式: {grouping}):")
-        print(f"   校正前: 異常值數量 {np.sum(outliers_orig)}/{len(qc_columns)}")
-        if np.sum(outliers_orig) > 0:
-            outlier_samples = [qc_columns[i] for i in range(len(outliers_orig)) if outliers_orig[i]]
-            outlier_t2_values = [t2_orig[i] for i in range(len(outliers_orig)) if outliers_orig[i]]
-            for sample, t2_val in zip(outlier_samples, outlier_t2_values):
-                print(f"     • {sample}: T² = {t2_val:.2f}")
-        
-        print(f"   校正後: 異常值數量 {np.sum(outliers_corr)}/{len(qc_columns)}")
-        if np.sum(outliers_corr) > 0:
-            outlier_samples = [qc_columns[i] for i in range(len(outliers_corr)) if outliers_corr[i]]
-            outlier_t2_values = [t2_corr[i] for i in range(len(outliers_corr)) if outliers_corr[i]]
-            for sample, t2_val in zip(outlier_samples, outlier_t2_values):
-                print(f"     • {sample}: T² = {t2_val:.2f}")
     else:
-        outliers_orig = np.zeros(len(qc_indices), dtype=bool)
-        outliers_corr = np.zeros(len(qc_indices), dtype=bool)
-    
-    # 創建畫布
-    fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(20, 8))
-    
-    if grouping == "batch":
-        fig.suptitle(f'2D PCA Comparison: Before vs After Correction (Grouped by Batch){title_suffix}',
-                     fontsize=16, y=0.98, fontweight='bold')
-    else:
-        fig.suptitle(f'2D PCA Comparison: Before vs After Correction (Grouped by Sample Type){title_suffix}',
-                     fontsize=16, y=0.98, fontweight='bold')
-    
-    # 顏色設定
-    color_map = {
-        'QC': '#9370DB',
-        'Control': '#4169E1',
-        'Exposure': '#DC143C'
-    }
-    markers = {'QC': 'o', 'Control': 's', 'Exposure': '^'}
-    
-    unique_batches = sorted(list(set(sample_batches.values())))
-    batch_colors = COLORBLIND_COLORS[:len(unique_batches)]
-    batch_color_map = {batch: batch_colors[i] for i, batch in enumerate(unique_batches)}
-    
-    # ========== 左圖：校正前 ==========
-    for i, col in enumerate(sample_columns):
+        t2_threshold_orig = np.nan
+        t2_threshold_corr = np.nan
+        outliers_orig = np.zeros(0, dtype=bool)
+        outliers_corr = np.zeros(0, dtype=bool)
+
+    # 統一 PCA 圖樣式（以 QC 子程式風格為主）
+    suptitle = (
+        f'2D PCA Comparison: Before vs After Correction (Grouped by Batch){title_suffix}'
+        if grouping == 'batch'
+        else f'2D PCA Comparison: Before vs After Correction (Grouped by Sample Type){title_suffix}'
+    )
+
+    sample_types = []
+    batch_labels = []
+    for col in sample_columns:
         if col in qc_columns:
-            sample_type = 'QC'
-            qc_idx = qc_columns.index(col)
-            is_outlier = outliers_orig[qc_idx] if qc_idx < len(outliers_orig) else False
+            sample_types.append('QC')
         elif col in exposed_columns:
-            sample_type = 'Exposure'
-            is_outlier = False
+            sample_types.append('Exposure')
         else:
-            sample_type = 'Control'
-            is_outlier = False
-        
-        color = color_map[sample_type]
-        marker = markers[sample_type]
-        
-        if is_outlier:
-            edgecolor = 'red'
-            linewidth = 3
-            size = 150
-            alpha = 0.9
-        else:
-            edgecolor = 'black'
-            linewidth = 1
-            size = 100
-            alpha = 0.7
-        
-        ax_left.scatter(scores_original[i, 0], scores_original[i, 1],
-                       c=[color], marker=marker, s=size, alpha=alpha,
-                       edgecolors=edgecolor, linewidths=linewidth)
-    
-    # 繪製橢圓（左圖）
-    all_bounds_left = []
-    
-    if grouping == "batch":
-        for batch in unique_batches:
-            batch_sample_cols = [col for col in sample_columns if sample_batches.get(col) == batch]
-            batch_indices = [i for i, col in enumerate(sample_columns) if col in batch_sample_cols]
-            
-            if len(batch_indices) >= 3:
-                batch_scores = scores_original[batch_indices]
-                try:
-                    bounds = draw_hotelling_t2_ellipse(ax_left, batch_scores, 
-                                                       label=f'95% CI (Batch {batch})', 
-                                                       edgecolor=batch_color_map[batch], 
-                                                       linestyle='-', 
-                                                       linewidth=2.5)
-                    if bounds is not None:
-                        all_bounds_left.append(bounds)
-                except:
-                    pass
-    else:
-        try:
-            bounds_all = draw_hotelling_t2_ellipse(ax_left, scores_original, 
-                                                   label='95% CI (All Samples)', 
-                                                   edgecolor='gray', 
-                                                   linestyle='--', 
-                                                   linewidth=3)
-            if bounds_all is not None:
-                all_bounds_left.append(bounds_all)
-        except:
-            pass
-        
-        if len(qc_indices) >= 3:
-            try:
-                bounds_qc = draw_hotelling_t2_ellipse(ax_left, qc_scores_original, 
-                                                      label='95% CI (QC Only)', 
-                                                      edgecolor='#9370DB', 
-                                                      linestyle='-', 
-                                                      linewidth=3)
-                if bounds_qc is not None:
-                    all_bounds_left.append(bounds_qc)
-            except:
-                pass
-    
-    # 調整左圖軸範圍
-    if all_bounds_left:
-        x_min = min([b[0] for b in all_bounds_left])
-        x_max = max([b[1] for b in all_bounds_left])
-        y_min = min([b[2] for b in all_bounds_left])
-        y_max = max([b[3] for b in all_bounds_left])
-    else:
-        x_min, x_max = np.min(scores_original[:, 0]), np.max(scores_original[:, 0])
-        y_min, y_max = np.min(scores_original[:, 1]), np.max(scores_original[:, 1])
-    
-    data_x_min, data_x_max = np.min(scores_original[:, 0]), np.max(scores_original[:, 0])
-    data_y_min, data_y_max = np.min(scores_original[:, 1]), np.max(scores_original[:, 1])
-    
-    x_min = min(x_min, data_x_min)
-    x_max = max(x_max, data_x_max)
-    y_min = min(y_min, data_y_min)
-    y_max = max(y_max, data_y_max)
-    
-    x_margin = (x_max - x_min) * 0.2
-    y_margin = (y_max - y_min) * 0.2
-    
-    ax_left.set_xlim(x_min - x_margin, x_max + x_margin)
-    ax_left.set_ylim(y_min - y_margin, y_max + y_margin)
-    
-    ax_left.set_xlabel(f'PC1 ({var_original[0]*100:.1f}%)', fontsize=12, fontweight='bold')
-    ax_left.set_ylabel(f'PC2 ({var_original[1]*100:.1f}%)', fontsize=12, fontweight='bold')
-    ax_left.set_title('Before Correction', fontsize=14, fontweight='bold', pad=15)
-    ax_left.axhline(y=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-    ax_left.axvline(x=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-    ax_left.grid(True, alpha=0.3, linestyle='--')
-    
-    # ========== 右圖：校正後 ==========
-    for i, col in enumerate(sample_columns):
-        if col in qc_columns:
-            sample_type = 'QC'
-            qc_idx = qc_columns.index(col)
-            is_outlier = outliers_corr[qc_idx] if qc_idx < len(outliers_corr) else False
-        elif col in exposed_columns:
-            sample_type = 'Exposure'
-            is_outlier = False
-        else:
-            sample_type = 'Control'
-            is_outlier = False
-        
-        color = color_map[sample_type]
-        marker = markers[sample_type]
-        
-        if is_outlier:
-            edgecolor = 'red'
-            linewidth = 3
-            size = 150
-            alpha = 0.9
-        else:
-            edgecolor = 'black'
-            linewidth = 1
-            size = 100
-            alpha = 0.7
-        
-        ax_right.scatter(scores_corrected[i, 0], scores_corrected[i, 1],
-                        c=[color], marker=marker, s=size, alpha=alpha,
-                        edgecolors=edgecolor, linewidths=linewidth)
-    
-    # 繪製橢圓（右圖）
-    all_bounds_right = []
-    
-    if grouping == "batch":
-        for batch in unique_batches:
-            batch_sample_cols = [col for col in sample_columns if sample_batches.get(col) == batch]
-            batch_indices = [i for i, col in enumerate(sample_columns) if col in batch_sample_cols]
-            
-            if len(batch_indices) >= 3:
-                batch_scores = scores_corrected[batch_indices]
-                try:
-                    bounds = draw_hotelling_t2_ellipse(ax_right, batch_scores, 
-                                                       label=f'95% CI (Batch {batch})', 
-                                                       edgecolor=batch_color_map[batch], 
-                                                       linestyle='-', 
-                                                       linewidth=2.5)
-                    if bounds is not None:
-                        all_bounds_right.append(bounds)
-                except:
-                    pass
-    else:
-        try:
-            bounds_all = draw_hotelling_t2_ellipse(ax_right, scores_corrected, 
-                                                   label='95% CI (All Samples)', 
-                                                   edgecolor='gray', 
-                                                   linestyle='--', 
-                                                   linewidth=3)
-            if bounds_all is not None:
-                all_bounds_right.append(bounds_all)
-        except:
-            pass
-        
-        if len(qc_indices) >= 3:
-            try:
-                bounds_qc = draw_hotelling_t2_ellipse(ax_right, qc_scores_corrected, 
-                                                      label='95% CI (QC Only)', 
-                                                      edgecolor='#9370DB', 
-                                                      linestyle='-', 
-                                                      linewidth=3)
-                if bounds_qc is not None:
-                    all_bounds_right.append(bounds_qc)
-            except:
-                pass
-    
-    # 調整右圖軸範圍
-    if all_bounds_right:
-        x_min = min([b[0] for b in all_bounds_right])
-        x_max = max([b[1] for b in all_bounds_right])
-        y_min = min([b[2] for b in all_bounds_right])
-        y_max = max([b[3] for b in all_bounds_right])
-    else:
-        x_min, x_max = np.min(scores_corrected[:, 0]), np.max(scores_corrected[:, 0])
-        y_min, y_max = np.min(scores_corrected[:, 1]), np.max(scores_corrected[:, 1])
-    
-    data_x_min, data_x_max = np.min(scores_corrected[:, 0]), np.max(scores_corrected[:, 0])
-    data_y_min, data_y_max = np.min(scores_corrected[:, 1]), np.max(scores_corrected[:, 1])
-    
-    x_min = min(x_min, data_x_min)
-    x_max = max(x_max, data_x_max)
-    y_min = min(y_min, data_y_min)
-    y_max = max(y_max, data_y_max)
-    
-    x_margin = (x_max - x_min) * 0.2
-    y_margin = (y_max - y_min) * 0.2
-    
-    ax_right.set_xlim(x_min - x_margin, x_max + x_margin)
-    ax_right.set_ylim(y_min - y_margin, y_max + y_margin)
-    
-    ax_right.set_xlabel(f'PC1 ({var_corrected[0]*100:.1f}%)', fontsize=12, fontweight='bold')
-    ax_right.set_ylabel(f'PC2 ({var_corrected[1]*100:.1f}%)', fontsize=12, fontweight='bold')
-    ax_right.set_title('After Correction', fontsize=14, fontweight='bold', pad=15)
-    ax_right.axhline(y=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-    ax_right.axvline(x=0, color='k', linestyle='-', linewidth=1.5, alpha=0.5)
-    ax_right.grid(True, alpha=0.3, linestyle='--')
-    
-    # 添加圖例
-    sample_legend_elements = [
-        plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='#4169E1',
-                  markersize=10, label='Control', markeredgecolor='black', markeredgewidth=1),
-        plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='#DC143C',
-                  markersize=10, label='Exposure', markeredgecolor='black', markeredgewidth=1),
-        plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
-                  markersize=10, label='QC', markeredgecolor='black', markeredgewidth=1),
-        plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='gray',
-                  markersize=10, label='QC Outlier', markeredgecolor='red', markeredgewidth=3)
-    ]
-    
-    if grouping == "batch":
-        ellipse_legend_elements = [
-            plt.Line2D([0], [0], linestyle='-', color=batch_color_map[batch],
-                      linewidth=2.5, label=f'95% CI (Batch {batch})')
-            for batch in unique_batches
-        ]
-    else:
-        ellipse_legend_elements = [
-            plt.Line2D([0], [0], linestyle='-', color='#9370DB',
-                      linewidth=3, label='95% CI (QC Only)'),
-            plt.Line2D([0], [0], linestyle='--', color='gray',
-                      linewidth=3, label='95% CI (All Samples)')
-        ]
-    
-    legend1_left = ax_left.legend(handles=sample_legend_elements, 
-                                  loc='upper left', 
-                                  fontsize=9,
-                                  title='Sample Type', 
-                                  title_fontsize=10,
-                                  frameon=True, 
-                                  fancybox=True, 
-                                  shadow=True)
-    ax_left.add_artist(legend1_left)
-    
-    ax_left.legend(handles=ellipse_legend_elements, 
-                   loc='upper right', 
-                   fontsize=9,
-                   title='Confidence Ellipse', 
-                   title_fontsize=10,
-                   frameon=True, 
-                   fancybox=True, 
-                   shadow=True)
-    
-    legend1_right = ax_right.legend(handles=sample_legend_elements, 
-                                    loc='upper left', 
-                                    fontsize=9,
-                                    title='Sample Type', 
-                                    title_fontsize=10,
-                                    frameon=True, 
-                                    fancybox=True, 
-                                    shadow=True)
-    ax_right.add_artist(legend1_right)
-    
-    ax_right.legend(handles=ellipse_legend_elements, 
-                    loc='upper right', 
-                    fontsize=9,
-                    title='Confidence Ellipse', 
-                    title_fontsize=10,
-                    frameon=True, 
-                    fancybox=True, 
-                    shadow=True)
-    
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    
+            sample_types.append('Control')
+        batch_labels.append(sample_batches.get(col, 'Unknown'))
+
+    qc_outliers_left = set()
+    qc_outliers_right = set()
+    if len(qc_indices) >= 3:
+        for i, qc_name in enumerate(qc_columns):
+            if i < len(outliers_orig) and outliers_orig[i]:
+                qc_outliers_left.add(qc_name)
+            if i < len(outliers_corr) and outliers_corr[i]:
+                qc_outliers_right.add(qc_name)
+
+    fig, _ = plot_pca_comparison_qc_style(
+        scores_original,
+        scores_corrected,
+        var_original,
+        var_corrected,
+        sample_columns,
+        sample_types,
+        batch_labels=batch_labels,
+        grouping=('batch' if grouping == 'batch' else 'sample_type'),
+        suptitle=suptitle,
+        left_title='Before Correction',
+        right_title='After Correction',
+        left_threshold_text=(f'Hotelling T² Threshold: {t2_threshold_orig:.2f}' if len(qc_indices) >= 3 else None),
+        right_threshold_text=(f'Hotelling T² Threshold: {t2_threshold_corr:.2f}' if len(qc_indices) >= 3 else None),
+        qc_outlier_names_left=qc_outliers_left,
+        qc_outlier_names_right=qc_outliers_right,
+    )
+
     return fig, outliers_orig, outliers_corr
 
 def plot_permanova_comparison(permanova_before, permanova_after, perm_test_result):
@@ -1867,8 +1634,6 @@ def plot_batch_residuals(data_before, data_after, batch_labels):
     
     用途：檢查校正後是否還有系統性的批次偏差
     """
-    from scipy.stats import zscore
-    
     # 計算每個批次的中心
     batch_labels_array = np.array(batch_labels)
     unique_batches = sorted(list(set(batch_labels_array)))
@@ -2455,6 +2220,9 @@ def main(input_file=None):
 
     # ========== 1. 檔案選擇 ==========
     if input_file is None:
+        raise ValueError("input_file is required; GUI must provide the file path.")
+
+    if input_file is None:
         print("\n請選擇要處理的Excel檔案...")
         input_file = select_file()
 
@@ -2476,8 +2244,7 @@ def main(input_file=None):
     print(f"  路徑: {input_file}")
 
     # ========== 2. 設定輸出路徑 ==========
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(script_dir, 'output')
+    output_dir = get_output_root()
 
     # ===== 防呆36: 輸出目錄創建與權限檢查 =====
     try:
@@ -2504,15 +2271,15 @@ def main(input_file=None):
         print(f"  詳細錯誤: {e}")
         raise Exception(f"輸出目錄無寫入權限: {output_dir}")
 
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join(output_dir, f'Combat_corrected_{timestamp}.xlsx')
+    timestamp = datetime.datetime.now().strftime(DATETIME_FORMAT_FULL)
+    output_file = build_output_path("Combat_corrected", timestamp=timestamp)
 
     # ===== 防呆38: 輸出文件檢查 =====
     if os.path.exists(output_file):
         print(f"⚠️ 警告：輸出檔案已存在，將被覆蓋")
         print(f"  {output_file}")
 
-    plots_dir = os.path.join(output_dir, PLOT_FOLDER_NAME)
+    plots_dir = build_plots_dir(PLOT_FOLDER_NAME)
 
     # ===== 防呆39: 圖表目錄創建 =====
     try:
@@ -2526,8 +2293,11 @@ def main(input_file=None):
         print(f"詳細錯誤: {e}")
         raise Exception(f"無法創建圖表目錄: {e}")
 
-    run_plot_dir = os.path.join(plots_dir, f"Batch_Effect_{timestamp}")
-    os.makedirs(run_plot_dir, exist_ok=True)
+    run_plot_dir = build_plots_dir(
+        PLOT_FOLDER_NAME,
+        timestamp=timestamp,
+        session_prefix="Batch_Effect"
+    )
     print(f"✓ 本次圖表輸出子資料夾: {run_plot_dir}")
     
     try:
@@ -2554,7 +2324,17 @@ def main(input_file=None):
         
         if len(unique_batches) < 2:
             print("\n⚠️ 警告：只有一個批次，無需進行批次效應校正")
-            return None
+            return {
+                'file_path': input_file,
+                'metabolites': len(feature_ids),
+                'samples': len(sample_columns),
+                'batches': len(unique_batches),
+                'output_path': input_file,
+                'plots_dir': run_plot_dir,
+                'skipped': True,
+                'skip_reason': 'single_batch',
+                'success': True,
+            }
         
         # ========== 5. 校正前評估 ==========
         print("\n" + "="*70)
@@ -2605,7 +2385,20 @@ def main(input_file=None):
             print("Next Step: Run Concentration Normalization directly.")
             print("           It will automatically use 'QC LOWESS result' sheet.")
             print("="*70)
-            return  # Complete skip - no file output
+            # Return a valid result dict so the pipeline/GUI can continue.
+            # Use the original input file as output since no correction is applied.
+            return {
+                'file_path': input_file,
+                'metabolites': len(feature_ids),
+                'samples': len(sample_columns),
+                'batches': len(unique_batches),
+                'output_path': input_file,
+                'plots_dir': run_plot_dir,
+                'skipped': True,
+                'skip_reason': 'batch_sample_type_confounded',
+                'confounding': confounding_result,
+                'success': False,
+            }
 
         corrected_data = perform_combat_correction(data_matrix, batch_info)
         print("✓ 批次效應校正完成")
@@ -2707,7 +2500,9 @@ def main(input_file=None):
         fig1 = plot_permanova_comparison(permanova_before, permanova_after, 
                                         perm_test_permanova)
         if fig1:
-            fig1_file = os.path.join(run_plot_dir, f'Fig1_PERMANOVA_comparison_{timestamp}.png')
+            fig1_file = run_plot_dir / generate_output_filename(
+                "Fig1_PERMANOVA_comparison", timestamp=timestamp, extension=".png"
+            )
             fig1.savefig(fig1_file, dpi=300, bbox_inches='tight')
             plt.close(fig1)
             print(f"✓ 已儲存: {os.path.basename(fig1_file)}")
@@ -2723,7 +2518,9 @@ def main(input_file=None):
         )
         if result:
             fig2, outliers_orig_batch, outliers_corr_batch = result
-            fig2_file = os.path.join(run_plot_dir, f'Fig2_PCA_by_batch_{timestamp}.png')
+            fig2_file = run_plot_dir / generate_output_filename(
+                "Fig2_PCA_by_batch", timestamp=timestamp, extension=".png"
+            )
             fig2.savefig(fig2_file, dpi=300, bbox_inches='tight')
             plt.close(fig2)
             print(f"✓ 已儲存: {os.path.basename(fig2_file)}")
@@ -2735,7 +2532,9 @@ def main(input_file=None):
         fig3 = plot_permutation_null_distribution(perm_test_permanova, 
                                                 metric_name='PERMANOVA F')
         if fig3:
-            fig3_file = os.path.join(run_plot_dir, f'Fig3_Permutation_Test_{timestamp}.png')
+            fig3_file = run_plot_dir / generate_output_filename(
+                "Fig3_Permutation_Test", timestamp=timestamp, extension=".png"
+            )
             fig3.savefig(fig3_file, dpi=300, bbox_inches='tight')
             plt.close(fig3)
             print(f"✓ 已儲存: {os.path.basename(fig3_file)}")
@@ -2749,7 +2548,9 @@ def main(input_file=None):
         )
         if result:
             fig4, outliers_orig_type, outliers_corr_type = result
-            fig4_file = os.path.join(run_plot_dir, f'Fig4_PCA_by_sample_type_{timestamp}.png')
+            fig4_file = run_plot_dir / generate_output_filename(
+                "Fig4_PCA_by_sample_type", timestamp=timestamp, extension=".png"
+            )
             fig4.savefig(fig4_file, dpi=300, bbox_inches='tight')
             plt.close(fig4)
             print(f"✓ 已儲存: {os.path.basename(fig4_file)}")
@@ -2760,7 +2561,9 @@ def main(input_file=None):
         print("\n生成圖 5: Cohen's d 森林圖...")
         fig5 = plot_cohens_d_forest(cohens_d_before, cohens_d_after)
         if fig5:
-            fig5_file = os.path.join(run_plot_dir, f'Fig5_Cohens_d_Forest_{timestamp}.png')
+            fig5_file = run_plot_dir / generate_output_filename(
+                "Fig5_Cohens_d_Forest", timestamp=timestamp, extension=".png"
+            )
             fig5.savefig(fig5_file, dpi=300, bbox_inches='tight')
             plt.close(fig5)
             print(f"✓ 已儲存: {os.path.basename(fig5_file)}")
@@ -2769,7 +2572,9 @@ def main(input_file=None):
         print("\n生成圖 6: 批次效應殘差分析...")
         fig6 = plot_batch_residuals(original_scaled, corrected_scaled, batch_info)
         if fig6:
-            fig6_file = os.path.join(run_plot_dir, f'Fig6_Residual_Analysis_{timestamp}.png')
+            fig6_file = run_plot_dir / generate_output_filename(
+                "Fig6_Residual_Analysis", timestamp=timestamp, extension=".png"
+            )
             fig6.savefig(fig6_file, dpi=300, bbox_inches='tight')
             plt.close(fig6)
             print(f"✓ 已儲存: {os.path.basename(fig6_file)}")
@@ -2884,26 +2689,28 @@ def main(input_file=None):
         print("\n" + "="*70 + "\n")
         
         # 返回統計資訊給 GUI
-        return {
-            'file_path': input_file,
-            'metabolites': len(feature_ids),
-            'samples': len(sample_columns),
-            'batches': len(unique_batches),
-            'output_path': output_file,
-            'plots_dir': run_plot_dir,
-            'permanova_f_before': permanova_before['pseudo_f'],
-            'permanova_f_after': permanova_after['pseudo_f'],
-            'permanova_p_before': permanova_before['p_value'],
-            'permanova_p_after': permanova_after['p_value'],
-            'r2_before': permanova_before['r_squared'],
-            'r2_after': permanova_after['r_squared'],
-            'perm_test_pvalue': perm_test_permanova['p_value'],
-            'qc_cv_before': qc_cv_before['median_cv'],
-            'qc_cv_after': qc_cv_after['median_cv'],
-            'cohens_d_before': cohens_d_before['overall_cohens_d'],
-            'cohens_d_after': cohens_d_after['overall_cohens_d'],
-            'success': success_count >= 2
-        }
+        return ProcessingResult(
+            file_path=input_file,
+            output_path=str(output_file),
+            plots_dir=str(run_plot_dir),
+            metabolites=len(feature_ids),
+            samples=len(sample_columns),
+            extra={
+                'batches': len(unique_batches),
+                'permanova_f_before': permanova_before['pseudo_f'],
+                'permanova_f_after': permanova_after['pseudo_f'],
+                'permanova_p_before': permanova_before['p_value'],
+                'permanova_p_after': permanova_after['p_value'],
+                'r2_before': permanova_before['r_squared'],
+                'r2_after': permanova_after['r_squared'],
+                'perm_test_pvalue': perm_test_permanova['p_value'],
+                'qc_cv_before': qc_cv_before['median_cv'],
+                'qc_cv_after': qc_cv_after['median_cv'],
+                'cohens_d_before': cohens_d_before['overall_cohens_d'],
+                'cohens_d_after': cohens_d_after['overall_cohens_d'],
+                'success': success_count >= 2
+            }
+        )
         
     except Exception as e:
         print(f"\n❌ 錯誤: {str(e)}")

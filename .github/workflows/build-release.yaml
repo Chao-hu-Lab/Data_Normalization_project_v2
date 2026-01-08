@@ -1,0 +1,325 @@
+# GitHub Actions workflow for building and releasing the application
+# Triggers on:
+#   - Push tags (v*.*.*)
+#   - Manual workflow dispatch
+#   - Pull requests (build only, no release)
+
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 2.0.0)'
+        required: false
+        default: 'dev'
+
+env:
+  APP_NAME: MetabolomicsNormalization
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # ============================================================
+  # Build job - Creates Windows executable
+  # ============================================================
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION="${{ github.ref_name }}"
+          elif [[ "${{ github.event.inputs.version }}" != "" && "${{ github.event.inputs.version }}" != "dev" ]]; then
+            VERSION="v${{ github.event.inputs.version }}"
+          else
+            VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable with PyInstaller
+        run: |
+          # Use spec file for reliable builds
+          pyinstaller --clean --noconfirm build/MetabolomicsNormalization.spec
+        shell: pwsh
+
+      - name: Verify build
+        run: |
+          if (Test-Path "dist/${{ env.APP_NAME }}.exe") {
+            $size = (Get-Item "dist/${{ env.APP_NAME }}.exe").Length / 1MB
+            Write-Host "Build successful! File size: $([math]::Round($size, 2)) MB"
+          } else {
+            Write-Error "Build failed - executable not found"
+            exit 1
+          }
+        shell: pwsh
+
+      - name: Create distribution package
+        run: |
+          $distDir = "dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-windows"
+          New-Item -ItemType Directory -Path $distDir -Force
+
+          # Copy executable
+          Copy-Item "dist/${{ env.APP_NAME }}.exe" $distDir
+
+          # Copy documentation
+          Copy-Item "README.md" $distDir -ErrorAction SilentlyContinue
+          Copy-Item -Path "docs" -Destination "$distDir/docs" -Recurse -ErrorAction SilentlyContinue
+
+          # Create version info
+          @"
+          Version: ${{ steps.version.outputs.version }}
+          Build Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
+          Commit: ${{ github.sha }}
+          Python: ${{ env.PYTHON_VERSION }}
+          "@ | Out-File "$distDir/VERSION.txt"
+
+          # Create ZIP archive
+          Compress-Archive -Path $distDir -DestinationPath "dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-windows.zip"
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-windows
+          path: dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-windows.zip
+          retention-days: 30
+
+  # ============================================================
+  # Build job - Creates macOS executable
+  # ============================================================
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Get version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION="${{ github.ref_name }}"
+          elif [[ "${{ github.event.inputs.version }}" != "" && "${{ github.event.inputs.version }}" != "dev" ]]; then
+            VERSION="v${{ github.event.inputs.version }}"
+          else
+            VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable with PyInstaller
+        run: |
+          # macOS uses : as path separator in --add-data
+          pyinstaller --clean --noconfirm \
+            --name "${{ env.APP_NAME }}" \
+            --windowed \
+            --onefile \
+            --add-data "src/metabolomics:metabolomics" \
+            --add-data "docs:docs" \
+            --hidden-import "sklearn.utils._typedefs" \
+            --hidden-import "sklearn.utils._heap" \
+            --hidden-import "sklearn.utils._sorting" \
+            --hidden-import "sklearn.utils._vector_sentinel" \
+            --hidden-import "scipy.special._cdflib" \
+            --collect-submodules "statsmodels" \
+            --osx-bundle-identifier "com.metabolomics.normalization" \
+            src/metabolomics/gui/app.py
+
+      - name: Verify build
+        run: |
+          if [ -f "dist/${{ env.APP_NAME }}" ]; then
+            SIZE=$(du -h "dist/${{ env.APP_NAME }}" | cut -f1)
+            echo "Build successful! File size: $SIZE"
+          else
+            echo "Build failed - executable not found"
+            exit 1
+          fi
+
+      - name: Create distribution package
+        run: |
+          DIST_DIR="dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-macos"
+          mkdir -p "$DIST_DIR"
+
+          # Copy executable
+          cp "dist/${{ env.APP_NAME }}" "$DIST_DIR/"
+
+          # Copy documentation
+          cp README.md "$DIST_DIR/" 2>/dev/null || true
+          cp -r docs "$DIST_DIR/docs" 2>/dev/null || true
+
+          # Create version info
+          cat > "$DIST_DIR/VERSION.txt" << EOF
+          Version: ${{ steps.version.outputs.version }}
+          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Commit: ${{ github.sha }}
+          Python: ${{ env.PYTHON_VERSION }}
+          Platform: macOS
+          EOF
+
+          # Create ZIP archive
+          cd dist
+          zip -r "${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-macos.zip" \
+            "${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-macos"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-macos
+          path: dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-macos.zip
+          retention-days: 30
+
+  # ============================================================
+  # Release job - Creates GitHub release (only on tag push)
+  # ============================================================
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-windows
+          path: release-assets
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-macos
+          path: release-assets
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          cat << 'EOF' > release_notes.md
+          ## Metabolomics Data Normalization ${{ steps.version.outputs.version }}
+
+          ### Features
+          - ISTD Correction (Step 1)
+          - QC-LOWESS Smoothing (Step 2)
+          - Batch Effect Correction with ComBat (Step 3)
+          - Concentration Normalization with PQN (Step 4)
+
+          ### Downloads
+          | Platform | File |
+          |----------|------|
+          | Windows | `${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-windows.zip` |
+          | macOS | `${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-macos.zip` |
+
+          ### Installation
+
+          **Windows:**
+          1. Download the Windows ZIP file
+          2. Extract to a folder
+          3. Run `${{ env.APP_NAME }}.exe`
+
+          **macOS:**
+          1. Download the macOS ZIP file
+          2. Extract to a folder
+          3. Run `${{ env.APP_NAME }}` (may need to allow in Security & Privacy)
+          4. If blocked: Right-click → Open → Open
+
+          ### Requirements
+          - Windows 10/11 (64-bit) or macOS 11+ (Intel/Apple Silicon)
+          - No Python installation required
+
+          ---
+          *Built with GitHub Actions*
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          files: |
+            release-assets/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ============================================================
+  # Test job - Runs on PRs to verify build works
+  # ============================================================
+  test-build:
+    runs-on: windows-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/ -v --tb=short -x
+        continue-on-error: true
+
+      - name: Verify imports
+        run: |
+          $env:PYTHONPATH = "src"
+          python -c "from metabolomics.processors import istd; print('istd: OK')"
+          python -c "from metabolomics.processors import qc_lowess; print('qc_lowess: OK')"
+          python -c "from metabolomics.processors import batch_effect; print('batch_effect: OK')"
+          python -c "from metabolomics.processors import normalization; print('normalization: OK')"
+          python -c "from metabolomics import utils; print('utils: OK')"
+        shell: pwsh
