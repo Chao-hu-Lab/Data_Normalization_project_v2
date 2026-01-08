@@ -9,6 +9,10 @@ import os
 import sys
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
+# Resolve paths relative to project root (spec lives in build/).
+here = os.path.abspath(os.path.dirname(__file__))
+project_root = os.path.abspath(os.path.join(here, os.pardir))
+
 # Collect all submodules for packages that need them
 hiddenimports = []
 hiddenimports += collect_submodules('sklearn')
@@ -37,20 +41,21 @@ hiddenimports += [
 
 # Data files to include (paths relative to project root)
 datas = [
-    ('src/metabolomics', 'metabolomics'),
-    ('docs', 'docs'),
+    (os.path.join(project_root, 'src', 'metabolomics'), 'metabolomics'),
+    (os.path.join(project_root, 'docs'), 'docs'),
 ]
 
 # Add assets if exists
-if os.path.exists('build/assets'):
-    datas.append(('build/assets', 'assets'))
+assets_path = os.path.join(project_root, 'build', 'assets')
+if os.path.exists(assets_path):
+    datas.append((assets_path, 'assets'))
 
 # Check for icon
-icon_path = 'build/assets/icon.ico' if os.path.exists('build/assets/icon.ico') else None
+icon_path = os.path.join(assets_path, 'icon.ico') if os.path.exists(os.path.join(assets_path, 'icon.ico')) else None
 
 a = Analysis(
-    ['src/metabolomics/gui/app.py'],
-    pathex=['src'],
+    [os.path.join(project_root, 'src', 'metabolomics', 'gui', 'app.py')],
+    pathex=[os.path.join(project_root, 'src')],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
