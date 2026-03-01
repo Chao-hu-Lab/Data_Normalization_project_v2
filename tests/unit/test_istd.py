@@ -8,8 +8,6 @@ These tests verify:
 4. Return value format
 """
 import pytest
-import os
-import pandas as pd
 
 
 class TestISTDCorrectionInput:

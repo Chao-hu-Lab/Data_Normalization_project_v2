@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score
@@ -12,16 +11,15 @@ import os
 import datetime
 import sys
 from openpyxl import load_workbook, Workbook
+from copy import copy
 from scipy import stats
 from matplotlib.patches import Ellipse
 from openpyxl.styles import PatternFill, Font
-from scipy.spatial.distance import mahalanobis
 from scipy.stats import chi2, f as f_dist
 
 warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
-from metabolomics.utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
 from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
 from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL, NON_SAMPLE_COLUMNS, STAT_COLUMN_KEYWORDS, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS
 from metabolomics.utils.sample_classification import SampleClassifier, identify_sample_columns, normalize_sample_type
@@ -1664,8 +1662,6 @@ def plot_batch_residuals(data_before, data_after, batch_labels):
     
     用途：檢查校正後是否還有系統性的批次偏差
     """
-    from scipy.stats import zscore
-    
     # 計算每個批次的中心
     batch_labels_array = np.array(batch_labels)
     unique_batches = sorted(list(set(batch_labels_array)))

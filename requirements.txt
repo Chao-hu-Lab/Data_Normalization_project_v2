@@ -19,12 +19,9 @@ scikit-learn>=1.2.0
 statsmodels>=0.14.0
 
 # Batch effect correction
-pycombat>=0.40
+pycombat>=0.4.0
+scikit-bio>=0.5.8
 
 # System utilities
 psutil>=5.9.0
 
-# =============================================================================
-# Optional dependencies (uncomment if needed)
-# =============================================================================
-# scikit-bio>=0.5.8  # For PERMANOVA analysis (difficult to install on Windows)

@@ -9,7 +9,6 @@ These tests verify:
 """
 import pytest
 import os
-import pandas as pd
 
 
 class TestConcentrationNormInput:

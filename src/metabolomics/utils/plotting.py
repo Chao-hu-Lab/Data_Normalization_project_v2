@@ -282,7 +282,7 @@ def plot_pca_comparison_qc_style(
     return fig, (ax_left, ax_right)
 
 
-# FONT_SIZES and COLORBLIND_COLORS are now imported from .constants
+# COLORBLIND_COLORS is imported from .constants
 
 
 def setup_matplotlib():

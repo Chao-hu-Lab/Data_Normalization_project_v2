@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 import os
-import sys
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
@@ -20,13 +19,9 @@ warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
 from metabolomics.utils.data_helpers import get_valid_values
-from metabolomics.utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
 from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
 from metabolomics.utils.constants import (
-    FONT_SIZES,
-    COLORBLIND_COLORS,
     NON_SAMPLE_COLUMNS,
-    STAT_COLUMN_KEYWORDS,
     SHEET_NAMES,
     DATETIME_FORMAT_FULL,
     FEATURE_ID_COLUMN,
