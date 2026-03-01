@@ -48,10 +48,12 @@ def normalize_sample_type(sample_type: str) -> str:
     # Partial match for keywords
     if 'QC' in type_upper or 'POOL' in type_upper:
         return 'QC'
-    if any(k in type_upper for k in ('CONTROL', 'CTL', 'CON')):
+    if any(k in type_upper for k in ('CONTROL', 'CTL', 'CON', 'BENIGN')):
         return 'Control'
     if any(k in type_upper for k in ('EXPOSURE', 'EXPOSED', 'EXP', 'TREAT')):
         return 'Exposure'
+    if any(k in type_upper for k in ('NORMAL', 'NOR')):
+        return 'Normal'
     if any(k in type_upper for k in ('BLANK', 'BLK')):
         return 'Blank'
 
@@ -149,6 +151,7 @@ class SampleClassifier:
     ) -> Tuple[List[str], List[str], List[str], List[str]]:
         """
         Classify columns into QC, Control, Exposure, and Other.
+        Note: Normal samples are classified as separate from Control.
 
         Args:
             columns: List of column names to classify
@@ -162,7 +165,7 @@ class SampleClassifier:
             sample_type = self.get_sample_type(col)
             if sample_type == 'QC':
                 qc.append(col)
-            elif sample_type == 'Control':
+            elif sample_type in ('Control', 'Normal'):
                 control.append(col)
             elif sample_type == 'Exposure':
                 exposure.append(col)
@@ -222,6 +225,10 @@ class SampleClassifier:
     def get_exposure_samples(self, columns: List[str]) -> List[str]:
         """Convenience method to get Exposure sample columns."""
         return self.get_samples_by_type(columns, 'Exposure')
+
+    def get_normal_samples(self, columns: List[str]) -> List[str]:
+        """Convenience method to get Normal sample columns."""
+        return self.get_samples_by_type(columns, 'Normal')
 
     def get_type_counts(self, columns: List[str]) -> Dict[str, int]:
         """

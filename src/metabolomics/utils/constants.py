@@ -22,6 +22,7 @@ SAMPLE_TYPE_COLORS = {
     'QC': '#9370DB',       # Purple
     'Control': '#4169E1',  # Royal Blue
     'Exposure': '#DC143C', # Crimson
+    'Normal': '#029E73',   # Green
     'Unknown': '#808080',  # Gray
 }
 
@@ -30,6 +31,7 @@ SAMPLE_TYPE_MARKERS = {
     'QC': 'o',        # Circle
     'Control': 's',   # Square
     'Exposure': '^',  # Triangle
+    'Normal': 'D',    # Diamond
     'Unknown': 'x',   # X
 }
 
@@ -43,6 +45,9 @@ FONT_SIZES = {
     'annotation': 9
 }
 
+# ========== Feature ID Column ==========
+FEATURE_ID_COLUMN = 'Mz/RT'
+
 # ========== Sheet Names ==========
 SHEET_NAMES = {
     'raw_intensity': 'RawIntensity',
@@ -53,6 +58,7 @@ SHEET_NAMES = {
     'batch_effect': 'Batch_effect_result',
     'batch_summary': 'Batch_Effect_summary',
     'concentration': 'ConcNormalization_Summary',
+    'pqn_result': 'PQN_SampleSpecific_Result',
 }
 
 # ========== Validation Thresholds ==========
@@ -65,10 +71,24 @@ VALIDATION_THRESHOLDS = {
     'alpha': 0.05,  # Statistical significance level
 }
 
+# ========== Statistical Thresholds (cross-module) ==========
+# Cohen's d effect size interpretation boundaries
+COHENS_D_THRESHOLDS = {
+    'small': 0.2,
+    'medium': 0.5,
+    'large': 0.8,
+}
+
+# CV% quality grading boundaries
+CV_QUALITY_THRESHOLDS = {
+    'excellent': 20.0,   # CV% < 20% = excellent
+    'acceptable': 30.0,  # CV% < 30% = acceptable, >= 30% = poor
+}
+
 # ========== Non-Sample Columns ==========
 # Columns that should never be treated as sample intensity columns
 NON_SAMPLE_COLUMNS = {
-    'FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference', 'ISTD_Median',
+    'Mz/RT', 'FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference', 'ISTD_Median',
     'QC_CV%', 'Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%',
     'Variance_Test_pvalue', 'Wilcoxon_pvalue', 'Wilcoxon_qvalue',
     'Shapiro_pvalue', 'MK_Trend_pvalue', 'Kendall_Tau',
@@ -101,6 +121,10 @@ SAMPLE_TYPE_ALIASES = {
     'EXPOSURE': 'Exposure', 'EXPOSED': 'Exposure',
     'EXP': 'Exposure', 'TREAT': 'Exposure', 'TREATED': 'Exposure',
     'TREATMENT': 'Exposure', 'E': 'Exposure',
+    # Normal variants (independent category)
+    'NORMAL': 'Normal', 'NOR': 'Normal', 'N': 'Normal',
+    # Benign variants (mapped to Control)
+    'BENIGN': 'Control',
     # Blank variants
     'BLANK': 'Blank', 'BLK': 'Blank', 'B': 'Blank',
 }

@@ -32,6 +32,7 @@ __pycache__/
 # 開發環境
 .vscode/
 .idea/
+.claude/
 
 # 其他
 /Data_Normalization_project_v2/

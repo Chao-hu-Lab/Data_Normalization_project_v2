@@ -10,7 +10,7 @@ import numpy as np
 from typing import Tuple, List, Optional, Dict, Any
 from dataclasses import dataclass, field
 
-from .constants import VALIDATION_THRESHOLDS, SHEET_NAMES, NON_SAMPLE_COLUMNS
+from .constants import VALIDATION_THRESHOLDS, SHEET_NAMES, NON_SAMPLE_COLUMNS, FEATURE_ID_COLUMN
 
 
 @dataclass
@@ -219,19 +219,20 @@ class DataValidator:
 
         result.info['feature_count'] = len(df)
 
-        # Check FeatureID column
-        if 'FeatureID' not in df.columns:
-            # Check first column
+        # Check feature ID column (supports both 'Mz/RT' and 'FeatureID')
+        if FEATURE_ID_COLUMN not in df.columns and 'FeatureID' not in df.columns:
             if len(df.columns) > 0:
                 result.add_warning(
-                    f"未找到 'FeatureID' 欄位，使用第一欄 '{df.columns[0]}' 作為特徵ID"
+                    f"未找到 '{FEATURE_ID_COLUMN}' 欄位，使用第一欄 '{df.columns[0]}' 作為特徵ID"
                 )
             else:
                 result.add_error("RawIntensity 沒有任何欄位")
                 return result
 
         # Check for duplicate FeatureIDs
-        feature_col = 'FeatureID' if 'FeatureID' in df.columns else df.columns[0]
+        feature_col = (FEATURE_ID_COLUMN if FEATURE_ID_COLUMN in df.columns
+                       else 'FeatureID' if 'FeatureID' in df.columns
+                       else df.columns[0])
         duplicates = df[df[feature_col].duplicated(keep=False)]
         if not duplicates.empty:
             dup_count = len(duplicates[feature_col].unique())

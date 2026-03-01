@@ -12,12 +12,11 @@ from scipy import stats
 from datetime import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
-from copy import copy
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 from metabolomics.utils.plotting import plot_pca_comparison_qc_style, setup_matplotlib
-from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES, DATETIME_FORMAT_FULL
+from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS
 from metabolomics.utils.sample_classification import SampleClassifier, normalize_sample_type
 from metabolomics.utils.file_io import (
     build_output_path,
@@ -35,32 +34,61 @@ warnings.filterwarnings('ignore')
 setup_matplotlib()
 
 # Centralized summary metadata to avoid magic strings and ease maintenance
-SUMMARY_SHEET_NAME = "ConcNormalization_Summary"
+SUMMARY_SHEET_NAME = SHEET_NAMES.get('concentration', "ConcNormalization_Summary")
 SUMMARY_REPORT_SEPARATOR = "-" * 80
+
+def _lookup_sample_type(sample, sample_info_df, col_to_info_row=None, default='UNKNOWN'):
+    """Helper: look up sample type using col_to_info_row mapping or fallback."""
+    if col_to_info_row and sample in col_to_info_row:
+        return str(col_to_info_row[sample].get('Sample_Type', default)).upper()
+    # Direct lookup fallback
+    rows = sample_info_df[sample_info_df.iloc[:, 0] == sample]
+    if not rows.empty:
+        return str(rows.iloc[0].get('Sample_Type', default)).upper()
+    # Column-name keyword fallback
+    s_upper = str(sample).upper()
+    if any(kw in s_upper for kw in ['QC', 'POOLED']):
+        return 'QC'
+    return default.upper()
 
 # ==================== 標準化方法 ====================
 
-def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns, reference_values):
+def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns, reference_values,
+                               col_to_info_row=None):
     """
     改進版 PQN 標準化：優先使用 QC 樣本作為參考
+
+    Parameters:
+    -----------
+    col_to_info_row : dict, optional
+        Mapping from data column name to SampleInfo row (Series).
+        Used when column names don't match SampleInfo names.
     """
     print("\n執行改進版混合標準化方法：")
-    
+
     # ========== 🔍 除錯輸出 ==========
     print(f"\n【除錯資訊】")
     print(f"  總樣本數: {len(sample_columns)}")
-    
+
      # ========== Step 1: 分離 QC 和真實樣本（改進版）==========
     sample_types = {}
     for sample in sample_columns:
-        sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
-        if not sample_row.empty:
-            sample_type = str(sample_row.iloc[0].get('Sample_Type', ''))
-
-            # 將所有可能的樣本類型轉為大寫
+        info_row = col_to_info_row.get(sample) if col_to_info_row else None
+        if info_row is not None:
+            sample_type = str(info_row.get('Sample_Type', ''))
             sample_types[sample] = sample_type.upper()
         else:
-            sample_types[sample] = 'UNKNOWN'
+            # Fallback: try exact match
+            sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
+            if not sample_row.empty:
+                sample_type = str(sample_row.iloc[0].get('Sample_Type', ''))
+                sample_types[sample] = sample_type.upper()
+            else:
+                # Fallback: detect QC from column name keywords
+                if any(kw in str(sample).upper() for kw in ['QC', 'POOLED']):
+                    sample_types[sample] = 'QC'
+                else:
+                    sample_types[sample] = 'UNKNOWN'
     
     qc_indices = [i for i, s in enumerate(sample_columns) if sample_types[s] == 'QC']
     real_indices = [i for i, s in enumerate(sample_columns) if sample_types[s] != 'QC']
@@ -99,7 +127,7 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns, refe
         print(f"  QC 質量評估:")
         print(f"    - QC 中位數 CV%: {qc_cv_median:.2f}%")
         
-        if qc_count >= 3 and qc_cv_median < 30:
+        if qc_count >= VALIDATION_THRESHOLDS['min_qc_samples'] and qc_cv_median < CV_QUALITY_THRESHOLDS['acceptable']:
             reference_strategy = 'QC'
             print(f"    - ✓ QC 樣本質量良好，使用 QC 作為 PQN 參考")
         elif qc_count >= 1:
@@ -258,13 +286,14 @@ def calculate_cohens_d(group1, group2):
     
     return d
 
-def evaluate_group_difference_preservation(original_data, normalized_data, 
-                                           sample_info_df, sample_columns):
+def evaluate_group_difference_preservation(original_data, normalized_data,
+                                           sample_info_df, sample_columns,
+                                           col_to_info_row=None):
     """
     評估標準化對組間差異的影響
-    
+
     基於 Sample_Type: CONTROL vs EXPOSURE
-    
+
     Parameters:
     -----------
     original_data : np.ndarray
@@ -282,19 +311,11 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
     """
     
     # 1. 提取組別資訊
-    sample_groups = []
-    for sample in sample_columns:
-        sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
-        if not sample_row.empty:
-            sample_type = str(sample_row.iloc[0].get('Sample_Type', ''))
+    sample_groups = np.array([
+        _lookup_sample_type(s, sample_info_df, col_to_info_row)
+        for s in sample_columns
+    ])
 
-            # 將所有可能的樣本類型轉為大寫
-            sample_groups.append(sample_type.upper())
-        else:
-            sample_groups.append('UNKNOWN')
-    
-    sample_groups = np.array(sample_groups)
-    
     # 2. 識別 CONTROL 和 EXPOSURE
     control_indices = np.where(sample_groups == 'CONTROL')[0]
     exposure_indices = np.where(sample_groups == 'EXPOSURE')[0]
@@ -802,7 +823,7 @@ def plot_density_comparison(original_data, normalized_data, sample_names, output
     
     print(f"  ✓ 密度圖已儲存")
 
-def plot_boxplot_comparison(original_data, normalized_data, sample_names, output_path, method_name, sample_info_df):
+def plot_boxplot_comparison(original_data, normalized_data, sample_names, output_path, method_name, sample_info_df, col_to_info_row=None):
     """
     繪製標準化前後的盒鬚圖與樣本總強度 (Fig 1 - Integrated)
 
@@ -821,14 +842,10 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
         'Unknown': '#95A5A6'
     }
 
-    sample_groups = []
-    for sample in sample_names:
-        sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
-        if not sample_row.empty:
-            sample_type = str(sample_row.iloc[0].get('Sample_Type', 'Unknown')).upper()
-            sample_groups.append(sample_type)
-        else:
-            sample_groups.append('Unknown')
+    sample_groups = [
+        _lookup_sample_type(s, sample_info_df, col_to_info_row, default='Unknown')
+        for s in sample_names
+    ]
 
     from collections import Counter
     group_counts = Counter(sample_groups)
@@ -1178,11 +1195,11 @@ def plot_cv_comparison(original_cv, normalized_cv, output_path, method_name):
 
     # 效應量解讀
     abs_d = abs(cohens_d)
-    if abs_d < 0.2:
+    if abs_d < COHENS_D_THRESHOLDS['small']:
         effect_interpretation = 'Negligible'
-    elif abs_d < 0.5:
+    elif abs_d < COHENS_D_THRESHOLDS['medium']:
         effect_interpretation = 'Small'
-    elif abs_d < 0.8:
+    elif abs_d < COHENS_D_THRESHOLDS['large']:
         effect_interpretation = 'Medium'
     else:
         effect_interpretation = 'Large'
@@ -1289,6 +1306,7 @@ def plot_pca_with_confidence_ellipse(
     output_path,
     method_name,
     exclude_qc=True,
+    col_to_info_row=None,
 ):
     """
     繪製 PCA 對比圖 (Fig 3 - Improved)
@@ -1316,16 +1334,10 @@ def plot_pca_with_confidence_ellipse(
     sample_names_clean = [sample_names[i] for i in range(len(sample_names)) if valid_samples[i]]
 
     # 獲取樣本分組信息
-    sample_groups = []
-    for sample in sample_names_clean:
-        sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
-        if not sample_row.empty:
-            sample_type = str(sample_row.iloc[0].get('Sample_Type', 'Unknown')).upper()
-            sample_groups.append(sample_type)
-        else:
-            sample_groups.append('Unknown')
-
-    sample_groups = np.array(sample_groups)
+    sample_groups = np.array([
+        _lookup_sample_type(s, sample_info_df, col_to_info_row, default='Unknown')
+        for s in sample_names_clean
+    ])
 
     # 依需求：濃度校正的 PCA 可排除 QC 樣本
     if exclude_qc:
@@ -1467,15 +1479,7 @@ def plot_pca_with_confidence_ellipse(
             qc_mean_dist_before, qc_mean_dist_after, qc_dist_reduction_pct = np.nan, np.nan, np.nan
 
     # ========== 繪圖（統一為 QC 子程式 PCA 風格）==========
-    sample_types = []
-    for group in sample_groups:
-        group_upper = str(group).upper()
-        if group_upper == 'QC':
-            sample_types.append('QC')
-        elif group_upper in ('EXPOSURE', 'EXPOSED', 'EXP', 'TREAT'):
-            sample_types.append('Exposure')
-        else:
-            sample_types.append('Control')
+    sample_types = [normalize_sample_type(group) for group in sample_groups]
 
     plot_pca_comparison_qc_style(
         pc_original,
@@ -1702,9 +1706,9 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
         
         if pqn_info['qc_count'] > 0 and not np.isnan(pqn_info['qc_cv']):
             report.append(f"QC 中位數 CV%: {pqn_info['qc_cv']:.2f}%")
-            if pqn_info['qc_cv'] < 20:
+            if pqn_info['qc_cv'] < CV_QUALITY_THRESHOLDS['excellent']:
                 report.append("QC 質量評估: ✓✓ 優秀")
-            elif pqn_info['qc_cv'] < 30:
+            elif pqn_info['qc_cv'] < CV_QUALITY_THRESHOLDS['acceptable']:
                 report.append("QC 質量評估: ✓ 良好")
             else:
                 report.append("QC 質量評估: ⚠ 需改進")
@@ -1955,10 +1959,10 @@ def load_excel_sheets(file_path):
 def determine_correction_sheet(sheets):
     """按指定順序確定要標準化的資料工作表"""
     priority_sheets = [
-        "Batch_effect_result",
-        "QC LOWESS result", 
-        "ISTD_Correction", 
-        "RawIntensity"
+        SHEET_NAMES['batch_effect'],
+        SHEET_NAMES['qc_lowess'],
+        SHEET_NAMES['istd_correction'],
+        SHEET_NAMES['raw_intensity']
     ]
     
     for sheet_name in priority_sheets:
@@ -1971,7 +1975,7 @@ def determine_correction_sheet(sheets):
 
 def find_sample_info_sheet(sheets):
     """尋找包含樣本資訊的工作表"""
-    possible_names = ['SampleInfo', 'Sample_Info', 'sample_info', 'Sample Info']
+    possible_names = [SHEET_NAMES['sample_info'], 'Sample_Info', 'sample_info', 'Sample Info']
     
     for name in possible_names:
         if name in sheets:
@@ -2044,47 +2048,7 @@ def clean_dataframe_for_excel(df):
     
     return cleaned_df
 
-def copy_cell_style(src_cell, dest_cell):
-    """完整複製儲存格的所有樣式和格式"""
-    try:
-        if src_cell.font:
-            dest_cell.font = Font(
-                name=src_cell.font.name,
-                size=src_cell.font.size,
-                bold=src_cell.font.bold,
-                italic=src_cell.font.italic,
-                underline=src_cell.font.underline,
-                strike=src_cell.font.strike,
-                color=src_cell.font.color
-            )
-        
-        if src_cell.fill:
-            dest_cell.fill = PatternFill(
-                fill_type=src_cell.fill.fill_type,
-                start_color=src_cell.fill.start_color,
-                end_color=src_cell.fill.end_color
-            )
-        
-        if src_cell.border:
-            dest_cell.border = Border(
-                left=copy(src_cell.border.left),
-                right=copy(src_cell.border.right),
-                top=copy(src_cell.border.top),
-                bottom=copy(src_cell.border.bottom)
-            )
-        
-        if src_cell.alignment:
-            dest_cell.alignment = Alignment(
-                horizontal=src_cell.alignment.horizontal,
-                vertical=src_cell.alignment.vertical,
-                wrap_text=src_cell.alignment.wrap_text
-            )
-        
-        if src_cell.number_format:
-            dest_cell.number_format = src_cell.number_format
-        
-    except Exception as style_error:
-        pass
+from metabolomics.utils.excel_format import copy_cell_style  # noqa: E302
 
 # ==================== 主要處理函數 ====================
 
@@ -2117,31 +2081,97 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     # 保存原始數據用於對比
     original_data = data_matrix.copy()
     
-    # 獲取參考值（肌酐濃度）
+    # 獲取參考值（肌酐/DNA 濃度）
+    # 先嘗試精確匹配，若失敗則用位置對齊
+    info_names = sample_info_df.iloc[:, 0].tolist()
+    exact_match_count = sum(1 for s in sample_columns if s in info_names)
+
+    if exact_match_count >= len(sample_columns) * 0.5:
+        # 精確匹配
+        col_to_info_row = {}
+        for s in sample_columns:
+            rows = sample_info_df[sample_info_df.iloc[:, 0] == s]
+            if not rows.empty:
+                col_to_info_row[s] = rows.iloc[0]
+        print(f"  名稱匹配: 精確匹配 {len(col_to_info_row)}/{len(sample_columns)}")
+    else:
+        # 位置對齊 fallback
+        col_to_info_row = {}
+        if len(info_names) == len(sample_columns):
+            for i, col in enumerate(sample_columns):
+                col_to_info_row[col] = sample_info_df.iloc[i]
+            print(f"  名稱匹配: 位置對齊 {len(col_to_info_row)}/{len(sample_columns)}")
+        else:
+            # 嘗試模糊匹配（使用 ISTD 中的 token 方法）
+            import re
+            def _extract_tokens(name):
+                s = str(name).strip().lower()
+                s = re.sub(r'^(dna|rna)_program\d+_', '', s)
+                parts = re.split(r'[\s_\-/]+', s)
+                tokens = set()
+                numbers = set()
+                for part in parts:
+                    sub = re.findall(r'[a-z]+|[0-9]+', part)
+                    tokens.update(sub)
+                    combo = re.findall(r'[a-z]+\d+', part)
+                    tokens.update(combo)
+                    # Extract pure numbers (specimen IDs)
+                    nums = re.findall(r'\d{3,}', part)
+                    numbers.update(nums)
+                generic = {'tissue', 'cancer', 'breast', 'pooled', 'fat', 'dna', 'rna', 'and', 'program1'}
+                return tokens - generic, numbers
+
+            for col in sample_columns:
+                col_tokens, col_nums = _extract_tokens(col)
+                best_match = None
+                best_score = 0
+                for idx, info_name in enumerate(info_names):
+                    info_tokens, info_nums = _extract_tokens(info_name)
+                    # Numeric ID match is strongest signal
+                    num_overlap = len(col_nums & info_nums)
+                    token_overlap = len(col_tokens & info_tokens)
+                    if num_overlap > 0:
+                        score = 0.8 + 0.2 * (token_overlap / max(len(col_tokens), len(info_tokens), 1))
+                    elif col_tokens and info_tokens:
+                        score = token_overlap / max(len(col_tokens), len(info_tokens))
+                    else:
+                        score = 0
+                    if score > best_score:
+                        best_score = score
+                        best_match = idx
+                if best_match is not None and best_score >= 0.5:
+                    col_to_info_row[col] = sample_info_df.iloc[best_match]
+            print(f"  名稱匹配: 模糊匹配 {len(col_to_info_row)}/{len(sample_columns)}")
+
     reference_values = []
-    
     for sample in sample_columns:
-        sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
-        if not sample_row.empty and pd.notna(sample_row.iloc[0][correction_col]):
+        info_row = col_to_info_row.get(sample)
+        if info_row is not None and pd.notna(info_row.get(correction_col)):
             try:
-                ref_val = float(sample_row.iloc[0][correction_col])
+                ref_val = float(info_row[correction_col])
                 if ref_val > 0:
                     reference_values.append(ref_val)
                 else:
                     reference_values.append(np.nan)
             except (ValueError, TypeError, KeyError):
-                # ValueError/TypeError: cannot convert to float
-                # KeyError: column not found
                 reference_values.append(np.nan)
         else:
             reference_values.append(np.nan)
-    
+
     reference_values = np.array(reference_values)
-    
+
+    # 計算有效參考值（排除 QC 樣本，因為 QC 不需要濃度校正）
+    non_qc_mask = np.array([
+        not (str(col_to_info_row[s].get('Sample_Type', '')).upper() == 'QC')
+        if s in col_to_info_row else
+        not any(kw in str(s).upper() for kw in ['QC', 'POOLED'])
+        for s in sample_columns
+    ])
+    non_qc_count = np.sum(non_qc_mask)
     valid_count = np.sum(~np.isnan(reference_values) & (reference_values > 0))
-    print(f"✓ 有效參考值數量: {valid_count}/{len(sample_columns)}")
-    
-    if valid_count < len(sample_columns) * 0.3:
+    print(f"✓ 有效參考值數量: {valid_count}/{non_qc_count} (排除 {len(sample_columns) - non_qc_count} 個 QC 樣本)")
+
+    if non_qc_count > 0 and valid_count < non_qc_count * 0.3:
         print("警告：有效參考值不足30%")
         return None
     
@@ -2150,7 +2180,8 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
         data_matrix,           # 完整的數據矩陣
         sample_info_df,        # 樣本資訊表
         sample_columns,        # 樣本名稱列表
-        reference_values       # 參考值（肌酐濃度）
+        reference_values,      # 參考值（肌酐濃度）
+        col_to_info_row=col_to_info_row  # 名稱映射
     )
     
     print(f"✓ 標準化完成")
@@ -2203,7 +2234,8 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     # ========== 組間差異保留評估 ==========
     try:
         group_diff_results = evaluate_group_difference_preservation(
-            original_data_valid, normalized_data_valid, sample_info_df, sample_columns_valid
+            original_data_valid, normalized_data_valid, sample_info_df, sample_columns_valid,
+            col_to_info_row=col_to_info_row
         )
     except Exception as e:
         print(f"  ⚠ 組間差異評估失敗: {e}")
@@ -2219,7 +2251,8 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
         original_data_valid, normalized_data_valid, sample_columns_valid,
         figure_paths["boxplot"],
         method_name,
-        sample_info_df  # 新增參數
+        sample_info_df,
+        col_to_info_row=col_to_info_row
     )
     
     # 3. CV%分佈圖
@@ -2248,6 +2281,7 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
             figure_paths["pca"],
             method_name,
             exclude_qc=True,
+            col_to_info_row=col_to_info_row,
         )
     except Exception as e:
         print(f"  ⚠ PCA對比圖生成失敗: {e}")
@@ -2271,12 +2305,10 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
             qc_indices = []
             qc_names = []
             for i, sample in enumerate(sample_columns_valid):
-                sample_row = sample_info_df[sample_info_df.iloc[:, 0] == sample]
-                if not sample_row.empty:
-                    sample_type = str(sample_row.iloc[0].get('Sample_Type', '')).upper()
-                    if sample_type == 'QC':
-                        qc_indices.append(i)
-                        qc_names.append(sample)
+                sample_type = _lookup_sample_type(sample, sample_info_df, col_to_info_row)
+                if sample_type == 'QC':
+                    qc_indices.append(i)
+                    qc_names.append(sample)
             
             if len(qc_indices) > 0:
                 original_qc = original_data_valid[:, qc_indices]
@@ -2497,7 +2529,14 @@ def main(input_file=None):
         raise Exception("找不到資料工作表")
     
     print(f"✓ 使用資料工作表: {data_sheet_name}")
-    
+
+    # 提取 Sample_Type 資訊行（不參與數值計算，保存時回插）
+    from metabolomics.utils.data_helpers import extract_sample_type_row
+    feature_col = data_df.columns[0]
+    data_df, sample_type_row = extract_sample_type_row(data_df, feature_col)
+    if sample_type_row is not None:
+        print(f"✓ 偵測到 Sample_Type 資訊行，已提取保存（不參與計算）")
+
     # 執行標準化
     result = perform_normalization(data_df, sample_info_df, correction_col, input_file)
     
@@ -2509,6 +2548,11 @@ def main(input_file=None):
     
    
     
+    # 回插 Sample_Type 資訊行到 normalized_df（若有）
+    if sample_type_row is not None:
+        from metabolomics.utils.data_helpers import insert_sample_type_row
+        normalized_df = insert_sample_type_row(normalized_df, sample_type_row, feature_col)
+
     # 儲存結果
     print("\n儲存結果...")
     output_path = save_normalization_results(

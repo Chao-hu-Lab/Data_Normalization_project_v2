@@ -12,7 +12,6 @@ import os
 import datetime
 import sys
 from openpyxl import load_workbook, Workbook
-from copy import copy
 from scipy import stats
 from matplotlib.patches import Ellipse
 from openpyxl.styles import PatternFill, Font
@@ -24,8 +23,8 @@ warnings.filterwarnings('ignore')
 # ========== 匯入共用模組 ==========
 from metabolomics.utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
 from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
-from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL
-from metabolomics.utils.sample_classification import SampleClassifier, identify_sample_columns
+from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL, NON_SAMPLE_COLUMNS, STAT_COLUMN_KEYWORDS, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS
+from metabolomics.utils.sample_classification import SampleClassifier, identify_sample_columns, normalize_sample_type
 from metabolomics.utils.file_io import (
     build_output_path,
     build_plots_dir,
@@ -46,6 +45,21 @@ PLOT_FOLDER_NAME = "Batch_Effect_plots"
 SKBIO_AVAILABLE = False
 skbio_permanova = None
 DistanceMatrix = None
+
+def _has_valid_permanova(d):
+    """Check if a PERMANOVA result dict contains real (non-NaN) values."""
+    if d is None:
+        return False
+    return not np.isnan(d.get('pseudo_f', np.nan))
+
+def _safe_get(d, key, default=np.nan):
+    """Safely get a value from a dict that may be None or contain NaN."""
+    if d is None:
+        return default
+    val = d.get(key, default)
+    if isinstance(val, float) and np.isnan(val):
+        return default
+    return val
 
 try:
     from skbio.stats.distance import permanova as skbio_permanova
@@ -110,35 +124,35 @@ def read_excel_data(file_path):
     print(f"✓ 找到工作表: {', '.join(sheet_names)}")
 
     # ===== 防呆5: 必要工作表檢查 =====
-    if 'SampleInfo' not in sheet_names:
-        print(f"❌ 錯誤：找不到 'SampleInfo' 工作表")
+    if SHEET_NAMES['sample_info'] not in sheet_names:
+        print(f"❌ 錯誤：找不到 '{SHEET_NAMES['sample_info']}' 工作表")
         print(f"可用的工作表: {', '.join(sheet_names)}")
-        raise ValueError("找不到 'SampleInfo' 工作表")
+        raise ValueError(f"找不到 '{SHEET_NAMES['sample_info']}' 工作表")
 
     # ===== 防呆6: 讀取 SampleInfo =====
     try:
-        sample_info = pd.read_excel(file_path, sheet_name='SampleInfo')
+        sample_info = pd.read_excel(file_path, sheet_name=SHEET_NAMES['sample_info'])
     except Exception as e:
-        print(f"❌ 錯誤：讀取 'SampleInfo' 工作表失敗")
+        print(f"❌ 錯誤：讀取 '{SHEET_NAMES['sample_info']}' 工作表失敗")
         print(f"詳細錯誤: {e}")
-        raise ValueError(f"讀取 'SampleInfo' 失敗: {e}")
+        raise ValueError(f"讀取 '{SHEET_NAMES['sample_info']}' 失敗: {e}")
 
     # ===== 防呆7: SampleInfo 完整性檢查 =====
     if sample_info.empty:
-        print(f"❌ 錯誤：'SampleInfo' 工作表為空")
-        raise ValueError("'SampleInfo' 工作表為空")
+        print(f"❌ 錯誤：'{SHEET_NAMES['sample_info']}' 工作表為空")
+        raise ValueError(f"'{SHEET_NAMES['sample_info']}' 工作表為空")
 
     required_columns = ['Sample_Name']
     missing_cols = [col for col in required_columns if col not in sample_info.columns]
     if missing_cols:
-        print(f"❌ 錯誤：'SampleInfo' 缺少必要欄位: {', '.join(missing_cols)}")
+        print(f"❌ 錯誤：'{SHEET_NAMES['sample_info']}' 缺少必要欄位: {', '.join(missing_cols)}")
         print(f"找到的欄位: {', '.join(sample_info.columns.tolist())}")
-        raise ValueError(f"'SampleInfo' 缺少必要欄位: {missing_cols}")
+        raise ValueError(f"'{SHEET_NAMES['sample_info']}' 缺少必要欄位: {missing_cols}")
 
     print(f"✓ SampleInfo 包含 {len(sample_info)} 筆樣本資訊")
 
     # 選擇數據工作表
-    sheet_priority = ['QC LOWESS result', 'ISTD_Correction', 'Batch_effect_result', 'RawIntensity']
+    sheet_priority = [SHEET_NAMES['qc_lowess'], SHEET_NAMES['istd_correction'], SHEET_NAMES['batch_effect'], SHEET_NAMES['raw_intensity']]
     data_sheet = None
 
     for sheet in sheet_priority:
@@ -148,7 +162,7 @@ def read_excel_data(file_path):
 
     if data_sheet is None:
         for sheet in sheet_names:
-            if sheet != 'SampleInfo':
+            if sheet != SHEET_NAMES['sample_info']:
                 data_sheet = sheet
                 break
 
@@ -168,6 +182,13 @@ def read_excel_data(file_path):
         print(f"詳細錯誤: {e}")
         raise ValueError(f"讀取 '{data_sheet}' 失敗: {e}")
 
+    # ===== 提取 Sample_Type 資訊行（不參與數值計算，保存時回插）=====
+    from metabolomics.utils.data_helpers import extract_sample_type_row
+    feature_col = data.columns[0]  # 通常是 FeatureID 或 Mz/RT
+    data, sample_type_row = extract_sample_type_row(data, feature_col)
+    if sample_type_row is not None:
+        print(f"✓ 偵測到 Sample_Type 資訊行，已提取保存（不參與計算）")
+
     # ===== 防呆10: 數據基本檢查 =====
     if data.empty:
         print(f"❌ 錯誤：'{data_sheet}' 工作表為空")
@@ -179,7 +200,7 @@ def read_excel_data(file_path):
 
     print(f"✓ 數據維度: {data.shape[0]} 列 × {data.shape[1]} 欄")
 
-    return data, sample_info, data_sheet
+    return data, sample_info, data_sheet, sample_type_row
 
 def prepare_data_for_combat(data, sample_info):
     """
@@ -202,7 +223,11 @@ def prepare_data_for_combat(data, sample_info):
         raise ValueError("數據欄位數不足")
 
     feature_col = data_columns[0]
-    sample_columns = data_columns[1:]
+    # 排除已知的非樣本欄位（統計欄位等）
+    non_sample = NON_SAMPLE_COLUMNS | {feature_col}
+    sample_columns = [col for col in data_columns[1:]
+                      if col not in non_sample
+                      and not any(kw in str(col).lower() for kw in STAT_COLUMN_KEYWORDS)]
 
     print(f"\n準備 Combat 數據格式...")
     print(f"  - 特徵欄位: '{feature_col}'")
@@ -273,6 +298,20 @@ def prepare_data_for_combat(data, sample_info):
                 valid_batches.append(batch)
                 print(f"  ✓ 部分匹配: '{col}' → '{original_name}'")
 
+        # 嘗試按順序對齊（SampleInfo 與數據欄位順序一致）
+        if len(valid_samples) < 2:
+            all_info_names = sample_info['Sample_Name'].astype(str).str.strip().tolist()
+            if len(all_info_names) == len(sample_columns):
+                print(f"  ⚠️ 名稱不匹配，嘗試按順序對齊...")
+                valid_samples = list(sample_columns)
+                valid_batches = []
+                for info_name in all_info_names:
+                    if info_name in sample_to_batch:
+                        valid_batches.append(sample_to_batch[info_name])
+                    else:
+                        valid_batches.append('Unknown')
+                print(f"  ✓ 按順序對齊成功: {len(valid_samples)} 個樣本")
+
         if len(valid_samples) < 2:
             print(f"❌ 錯誤：有效樣本數不足 ({len(valid_samples)} < 2)")
             print(f"  數據欄位: {', '.join(sample_columns[:5])}...")
@@ -301,7 +340,10 @@ def prepare_data_for_combat(data, sample_info):
 
     # ===== 防呆17: 數據矩陣提取 =====
     try:
-        data_matrix = data[valid_samples].values
+        # 確保樣本欄位為 numeric dtype（Sample_Type 行移除後可能仍為 object）
+        for col in valid_samples:
+            data[col] = pd.to_numeric(data[col], errors='coerce')
+        data_matrix = data[valid_samples].values.astype(np.float64)
     except Exception as e:
         print(f"❌ 錯誤：提取數據矩陣失敗")
         print(f"詳細錯誤: {e}")
@@ -964,14 +1006,14 @@ def calculate_cohens_d_batch_effect(data, batch_labels):
     overall_cohens_d = np.mean(feature_cohens_d)
     
     print(f"   - 整體平均 Cohen's d: {overall_cohens_d:.4f}")
-    if overall_cohens_d < 0.2:
-        print(f"     • 小效果 (d < 0.2)")
-    elif overall_cohens_d < 0.5:
-        print(f"     • 小至中等效果 (0.2 ≤ d < 0.5)")
-    elif overall_cohens_d < 0.8:
-        print(f"     • 中等效果 (0.5 ≤ d < 0.8)")
+    if overall_cohens_d < COHENS_D_THRESHOLDS['small']:
+        print(f"     • 小效果 (d < {COHENS_D_THRESHOLDS['small']})")
+    elif overall_cohens_d < COHENS_D_THRESHOLDS['medium']:
+        print(f"     • 小至中等效果 ({COHENS_D_THRESHOLDS['small']} ≤ d < {COHENS_D_THRESHOLDS['medium']})")
+    elif overall_cohens_d < COHENS_D_THRESHOLDS['large']:
+        print(f"     • 中等效果 ({COHENS_D_THRESHOLDS['medium']} ≤ d < {COHENS_D_THRESHOLDS['large']})")
     else:
-        print(f"     • 大效果 (d ≥ 0.8)")
+        print(f"     • 大效果 (d ≥ {COHENS_D_THRESHOLDS['large']})")
     
     print(f"\n   批次對之間的 Cohen's d:")
     for pair, d_value in pairwise_results.items():
@@ -1022,15 +1064,15 @@ def calculate_qc_cv(data, sample_info, sample_columns):
     
     median_cv = np.median(qc_cv)
     mean_cv = np.mean(qc_cv)
-    cv_below_20 = np.sum(qc_cv < 20) / len(qc_cv) * 100
-    cv_below_30 = np.sum(qc_cv < 30) / len(qc_cv) * 100
-    
+    cv_below_20 = np.sum(qc_cv < CV_QUALITY_THRESHOLDS['excellent']) / len(qc_cv) * 100
+    cv_below_30 = np.sum(qc_cv < CV_QUALITY_THRESHOLDS['acceptable']) / len(qc_cv) * 100
+
     print(f"   - QC CV% 中位數: {median_cv:.2f}%")
-    print(f"   - CV% < 20% 的代謝物: {cv_below_20:.1f}%")
-    
-    if median_cv < 20:
+    print(f"   - CV% < {CV_QUALITY_THRESHOLDS['excellent']:.0f}% 的代謝物: {cv_below_20:.1f}%")
+
+    if median_cv < CV_QUALITY_THRESHOLDS['excellent']:
         print(f"   ✅ 技術重現性優良")
-    elif median_cv < 30:
+    elif median_cv < CV_QUALITY_THRESHOLDS['acceptable']:
         print(f"   ⚠ 技術重現性可接受")
     else:
         print(f"   ❌ 技術重現性較差")
@@ -1072,43 +1114,46 @@ def generate_quality_warnings(permanova_before, permanova_after,
     warnings_list = []
     
     # 1. 檢查 PERMANOVA 校正後是否仍顯著
-    if permanova_after['p_value'] < 0.05:
-        warnings_list.append({
-            'level': 'WARNING',
-            'category': '批次效應未完全消除',
-            'details': f"PERMANOVA 校正後仍顯著 (p={permanova_after['p_value']:.4f} < 0.05)",
-            'suggestion': [
-                "1. 檢查樣本資訊是否正確標記批次",
-                "2. 考慮移除異常批次後重新校正",
-                "3. 或使用其他校正方法 (如 Limma)"
-            ]
-        })
-    
-    # 2. 檢查 R² 是否仍過高
-    if permanova_after['r_squared'] > 0.15:
-        warnings_list.append({
-            'level': 'WARNING',
-            'category': '批次仍解釋較多變異',
-            'details': f"R² = {permanova_after['r_squared']*100:.1f}% (建議 < 10%)",
-            'suggestion': [
-                "1. 批次效應可能與生物學差異混淆",
-                "2. 檢查批次內樣本數是否足夠",
-                "3. 考慮使用更強的校正參數"
-            ]
-        })
-    
+    if _has_valid_permanova(permanova_after):
+        if permanova_after['p_value'] < 0.05:
+            warnings_list.append({
+                'level': 'WARNING',
+                'category': '批次效應未完全消除',
+                'details': f"PERMANOVA 校正後仍顯著 (p={permanova_after['p_value']:.4f} < 0.05)",
+                'suggestion': [
+                    "1. 檢查樣本資訊是否正確標記批次",
+                    "2. 考慮移除異常批次後重新校正",
+                    "3. 或使用其他校正方法 (如 Limma)"
+                ]
+            })
+
+        # 2. 檢查 R² 是否仍過高
+        if permanova_after['r_squared'] > 0.15:
+            warnings_list.append({
+                'level': 'WARNING',
+                'category': '批次仍解釋較多變異',
+                'details': f"R² = {permanova_after['r_squared']*100:.1f}% (建議 < 10%)",
+                'suggestion': [
+                    "1. 批次效應可能與生物學差異混淆",
+                    "2. 檢查批次內樣本數是否足夠",
+                    "3. 考慮使用更強的校正參數"
+                ]
+            })
+
     # 3. 檢查配對檢定是否顯著
-    if perm_test_results['permanova']['p_value'] > 0.05:
-        warnings_list.append({
-            'level': 'WARNING',
-            'category': '改善統計上不顯著',
-            'details': f"配對排列檢定 p={perm_test_results['permanova']['p_value']:.4f} (p > 0.05)",
-            'suggestion': [
-                "1. 增加排列次數 (1000 → 5000) 確認結果",
-                "2. 檢查批次分組是否正確",
-                "3. 考慮使用更強的校正參數"
-            ]
-        })
+    perm_permanova = perm_test_results.get('permanova') if perm_test_results else None
+    if perm_permanova and not np.isnan(perm_permanova.get('p_value', np.nan)):
+        if perm_permanova['p_value'] > 0.05:
+            warnings_list.append({
+                'level': 'WARNING',
+                'category': '改善統計上不顯著',
+                'details': f"配對排列檢定 p={perm_permanova['p_value']:.4f} (p > 0.05)",
+                'suggestion': [
+                    "1. 增加排列次數 (1000 → 5000) 確認結果",
+                    "2. 檢查批次分組是否正確",
+                    "3. 考慮使用更強的校正參數"
+                ]
+            })
     
     # 4. 檢查 QC CV% 是否惡化
     if not np.isnan(qc_cv_before['median_cv']) and not np.isnan(qc_cv_after['median_cv']):
@@ -1124,11 +1169,11 @@ def generate_quality_warnings(permanova_before, permanova_after,
                 ]
             })
         
-        if qc_cv_after['median_cv'] > 30:
+        if qc_cv_after['median_cv'] > CV_QUALITY_THRESHOLDS['acceptable']:
             warnings_list.append({
                 'level': 'WARNING',
                 'category': 'QC 穩定性差',
-                'details': f"QC CV% 中位數 = {qc_cv_after['median_cv']:.2f}% (> 30%)",
+                'details': f"QC CV% 中位數 = {qc_cv_after['median_cv']:.2f}% (> {CV_QUALITY_THRESHOLDS['acceptable']:.0f}%)",
                 'suggestion': [
                     "1. QC 樣本可能存在品質問題",
                     "2. 檢查儀器穩定性",
@@ -1325,40 +1370,28 @@ def create_comparison_pca_plot(original_data, corrected_data, sample_info,
     control_columns = []
     exposed_columns = []
     sample_batches = {}
+    sample_type_map = {}
 
     for col in sample_columns:
-        col_upper = str(col).upper()
         if hasattr(sample_meta, 'index') and col in sample_meta.index:
-            sample_type = sample_meta.loc[col].get('Sample_Type', 'Unknown')
-            sample_type_upper = str(sample_type).upper()
+            raw_type = str(sample_meta.loc[col].get('Sample_Type', 'Unknown'))
             batch = sample_meta.loc[col].get('Batch', 'Unknown')
             if (batch == 'Unknown' or pd.isna(batch)) and isinstance(batch_info, dict):
                 batch = batch_info.get(col, batch)
-            sample_batches[col] = batch
-
-            if 'QC' in sample_type_upper:
-                qc_columns.append(col)
-            elif any(x in sample_type_upper for x in ['CONTROL', 'CTL', 'CON']):
-                control_columns.append(col)
-            elif any(x in sample_type_upper for x in ['EXPOSED', 'EXP', 'TREAT']):
-                exposed_columns.append(col)
-            else:
-                if 'QC' in col_upper:
-                    qc_columns.append(col)
-                elif any(x in col_upper for x in ['CONTROL', 'CTL', 'CON']):
-                    control_columns.append(col)
-                elif any(x in col_upper for x in ['EXPOSED', 'EXP', 'TREAT']):
-                    exposed_columns.append(col)
-                else:
-                    control_columns.append(col)
         else:
-            sample_batches[col] = batch_info.get(col, 'Unknown') if isinstance(batch_info, dict) else 'Unknown'
-            if 'QC' in col_upper:
-                qc_columns.append(col)
-            elif any(x in col_upper for x in ['EXPOSED', 'EXP', 'TREAT']):
-                exposed_columns.append(col)
-            else:
-                control_columns.append(col)
+            raw_type = 'Unknown'
+            batch = batch_info.get(col, 'Unknown') if isinstance(batch_info, dict) else 'Unknown'
+
+        norm_type = normalize_sample_type(raw_type)
+        sample_type_map[col] = norm_type
+        sample_batches[col] = batch
+
+        if norm_type == 'QC':
+            qc_columns.append(col)
+        elif norm_type == 'Exposure':
+            exposed_columns.append(col)
+        elif norm_type in ('Control', 'Normal'):
+            control_columns.append(col)
 
     if len(sample_columns) < 3:
         print("   ⚠ 樣本數量不足，無法進行 PCA 分析")
@@ -1420,16 +1453,8 @@ def create_comparison_pca_plot(original_data, corrected_data, sample_info,
         else f'2D PCA Comparison: Before vs After Correction (Grouped by Sample Type){title_suffix}'
     )
 
-    sample_types = []
-    batch_labels = []
-    for col in sample_columns:
-        if col in qc_columns:
-            sample_types.append('QC')
-        elif col in exposed_columns:
-            sample_types.append('Exposure')
-        else:
-            sample_types.append('Control')
-        batch_labels.append(sample_batches.get(col, 'Unknown'))
+    sample_types = [sample_type_map.get(col, 'Unknown') for col in sample_columns]
+    batch_labels = [sample_batches.get(col, 'Unknown') for col in sample_columns]
 
     qc_outliers_left = set()
     qc_outliers_right = set()
@@ -1796,19 +1821,7 @@ def plot_permutation_null_distribution(perm_test_result, metric_name='PERMANOVA 
     
     return fig
 
-def copy_sheet_with_style(src_ws, tgt_ws):
-    """複製工作表的所有儲存格值與格式"""
-    for row in src_ws.iter_rows():
-        for cell in row:
-            new_cell = tgt_ws[cell.coordinate]
-            new_cell.value = cell.value
-            if cell.has_style:
-                new_cell.font = copy(cell.font)
-                new_cell.border = copy(cell.border)
-                new_cell.fill = copy(cell.fill)
-                new_cell.number_format = cell.number_format
-                new_cell.protection = copy(cell.protection)
-                new_cell.alignment = copy(cell.alignment)
+from metabolomics.utils.excel_format import copy_sheet_with_style  # noqa: E302
 
 def color_result_cells(ws):
     """
@@ -1902,62 +1915,73 @@ def create_statistical_summary_sheet(wb, permanova_before, permanova_after,
     data_rows = []
     
     # ===== 1. PERMANOVA =====
-    f_improvement = permanova_before['pseudo_f'] - permanova_after['pseudo_f']
-    f_improvement_pct = (f_improvement / permanova_before['pseudo_f'] * 100) if permanova_before['pseudo_f'] > 0 else 0
-    
-    r2_improvement = permanova_before['r_squared'] - permanova_after['r_squared']
-    r2_improvement_pct = (r2_improvement / permanova_before['r_squared'] * 100) if permanova_before['r_squared'] > 0 else 0
-    
-    eta2_improvement = permanova_before.get('eta_squared', 0) - permanova_after.get('eta_squared', 0)
-    eta2_improvement_pct = (eta2_improvement / permanova_before.get('eta_squared', 1) * 100) if permanova_before.get('eta_squared', 0) > 0 else 0
-    
-    data_rows.append(['PERMANOVA', 'Pseudo-F', 
-                     f"{permanova_before['pseudo_f']:.4f}", 
-                     f"{permanova_after['pseudo_f']:.4f}",
-                     f"{f_improvement:.4f}",
-                     f"{f_improvement_pct:.1f}%",
-                     f"{perm_test_permanova['p_value']:.6f}",
-                     get_significance_mark(perm_test_permanova['p_value'])])
-    
-    data_rows.append(['', 'R² (變異解釋)', 
-                     f"{permanova_before['r_squared']:.4f}", 
-                     f"{permanova_after['r_squared']:.4f}",
-                     f"{r2_improvement:.4f}",
-                     f"{r2_improvement_pct:.1f}%",
-                     '-',
-                     '-'])
-    
-    data_rows.append(['', 'η² (效應量)', 
-                     f"{permanova_before.get('eta_squared', 0):.4f}", 
-                     f"{permanova_after.get('eta_squared', 0):.4f}",
-                     f"{eta2_improvement:.4f}",
-                     f"{eta2_improvement_pct:.1f}%",
-                     '-',
-                     '-'])
-    
-    data_rows.append(['', 'p-value', 
-                     f"{permanova_before['p_value']:.4f}", 
-                     f"{permanova_after['p_value']:.4f}",
-                     '-',
-                     '-',
-                     '-',
-                     f"{get_significance_mark(permanova_before['p_value'])} → {get_significance_mark(permanova_after['p_value'])}"])
-    
-    data_rows.append(['', '距離度量', 
-                     permanova_before.get('distance_metric', 'manhattan').capitalize(),
-                     permanova_after.get('distance_metric', 'manhattan').capitalize(),
-                     '-',
-                     '-',
-                     '-',
-                     '-'])
-    
-    data_rows.append(['', '排列次數', 
-                     f"{permanova_before.get('permutations', 999)}",
-                     f"{permanova_after.get('permutations', 999)}",
-                     '-',
-                     '-',
-                     '-',
-                     '-'])
+    _perm_available = _has_valid_permanova(permanova_before) and _has_valid_permanova(permanova_after)
+    if _perm_available:
+        f_improvement = permanova_before['pseudo_f'] - permanova_after['pseudo_f']
+        f_improvement_pct = (f_improvement / permanova_before['pseudo_f'] * 100) if permanova_before['pseudo_f'] > 0 else 0
+
+        r2_improvement = permanova_before['r_squared'] - permanova_after['r_squared']
+        r2_improvement_pct = (r2_improvement / permanova_before['r_squared'] * 100) if permanova_before['r_squared'] > 0 else 0
+
+        eta2_improvement = permanova_before.get('eta_squared', 0) - permanova_after.get('eta_squared', 0)
+        eta2_improvement_pct = (eta2_improvement / permanova_before.get('eta_squared', 1) * 100) if permanova_before.get('eta_squared', 0) > 0 else 0
+
+        _pt_pval = perm_test_permanova['p_value'] if perm_test_permanova and not np.isnan(perm_test_permanova.get('p_value', np.nan)) else np.nan
+        _pt_pval_str = f"{_pt_pval:.6f}" if not np.isnan(_pt_pval) else 'N/A'
+        _pt_sig = get_significance_mark(_pt_pval) if not np.isnan(_pt_pval) else 'N/A'
+
+        data_rows.append(['PERMANOVA', 'Pseudo-F',
+                         f"{permanova_before['pseudo_f']:.4f}",
+                         f"{permanova_after['pseudo_f']:.4f}",
+                         f"{f_improvement:.4f}",
+                         f"{f_improvement_pct:.1f}%",
+                         _pt_pval_str,
+                         _pt_sig])
+
+        data_rows.append(['', 'R² (變異解釋)',
+                         f"{permanova_before['r_squared']:.4f}",
+                         f"{permanova_after['r_squared']:.4f}",
+                         f"{r2_improvement:.4f}",
+                         f"{r2_improvement_pct:.1f}%",
+                         '-',
+                         '-'])
+
+        data_rows.append(['', 'η² (效應量)',
+                         f"{permanova_before.get('eta_squared', 0):.4f}",
+                         f"{permanova_after.get('eta_squared', 0):.4f}",
+                         f"{eta2_improvement:.4f}",
+                         f"{eta2_improvement_pct:.1f}%",
+                         '-',
+                         '-'])
+
+        data_rows.append(['', 'p-value',
+                         f"{permanova_before['p_value']:.4f}",
+                         f"{permanova_after['p_value']:.4f}",
+                         '-',
+                         '-',
+                         '-',
+                         f"{get_significance_mark(permanova_before['p_value'])} → {get_significance_mark(permanova_after['p_value'])}"])
+
+        data_rows.append(['', '距離度量',
+                         permanova_before.get('distance_metric', 'manhattan').capitalize(),
+                         permanova_after.get('distance_metric', 'manhattan').capitalize(),
+                         '-',
+                         '-',
+                         '-',
+                         '-'])
+
+        data_rows.append(['', '排列次數',
+                         f"{permanova_before.get('permutations', 999)}",
+                         f"{permanova_after.get('permutations', 999)}",
+                         '-',
+                         '-',
+                         '-',
+                         '-'])
+    else:
+        data_rows.append(['PERMANOVA', '狀態',
+                         'N/A (scikit-bio 未安裝)',
+                         'N/A (scikit-bio 未安裝)',
+                         '-', '-', '-', '-'])
     
     # ===== 2. PERMDISP =====
     if not np.isnan(permdisp_before['f_statistic']) and not np.isnan(permdisp_after['f_statistic']):
@@ -1994,29 +2018,37 @@ def create_statistical_summary_sheet(wb, permanova_before, permanova_after,
                          '-'])
     
     # ===== 3. 配對排列檢定 =====
-    data_rows.append(['配對排列檢定', 'PERMANOVA F', 
-                     '-', 
-                     '-',
-                     f"{perm_test_permanova['observed_improvement']:.4f}",
-                     '-',
-                     f"{perm_test_permanova['p_value']:.6f}",
-                     get_significance_mark(perm_test_permanova['p_value'])])
-    
-    data_rows.append(['', '排列次數', 
-                     '-', 
-                     '-',
-                     f"{len(perm_test_permanova['null_distribution']):,}",
-                     '-',
-                     '-',
-                     '-'])
-    
-    data_rows.append(['', 'Silhouette', 
-                     '-', 
-                     '-',
-                     f"{perm_test_silhouette['observed_improvement']:.4f}",
-                     '-',
-                     f"{perm_test_silhouette['p_value']:.6f}",
-                     get_significance_mark(perm_test_silhouette['p_value'])])
+    if perm_test_permanova and not np.isnan(perm_test_permanova.get('p_value', np.nan)):
+        data_rows.append(['配對排列檢定', 'PERMANOVA F',
+                         '-',
+                         '-',
+                         f"{perm_test_permanova['observed_improvement']:.4f}",
+                         '-',
+                         f"{perm_test_permanova['p_value']:.6f}",
+                         get_significance_mark(perm_test_permanova['p_value'])])
+
+        data_rows.append(['', '排列次數',
+                         '-',
+                         '-',
+                         f"{len(perm_test_permanova.get('null_distribution', [])):,}",
+                         '-',
+                         '-',
+                         '-'])
+    else:
+        data_rows.append(['配對排列檢定', 'PERMANOVA F',
+                         '-', '-', 'N/A (跳過)', '-', 'N/A', 'N/A'])
+
+    if perm_test_silhouette and not np.isnan(perm_test_silhouette.get('p_value', np.nan)):
+        data_rows.append(['', 'Silhouette',
+                         '-',
+                         '-',
+                         f"{perm_test_silhouette['observed_improvement']:.4f}",
+                         '-',
+                         f"{perm_test_silhouette['p_value']:.6f}",
+                         get_significance_mark(perm_test_silhouette['p_value'])])
+    else:
+        data_rows.append(['', 'Silhouette',
+                         '-', '-', 'N/A', '-', 'N/A', 'N/A'])
     
     # ===== 4. Silhouette =====
     sil_improvement = silhouette_before - silhouette_after
@@ -2092,8 +2124,8 @@ def create_statistical_summary_sheet(wb, permanova_before, permanova_after,
                          '-'])
         
         # QC 品質評級
-        qc_grade_before = "優良" if qc_cv_before['median_cv'] < 20 else ("可接受" if qc_cv_before['median_cv'] < 30 else "較差")
-        qc_grade_after = "優良" if qc_cv_after['median_cv'] < 20 else ("可接受" if qc_cv_after['median_cv'] < 30 else "較差")
+        qc_grade_before = "優良" if qc_cv_before['median_cv'] < CV_QUALITY_THRESHOLDS['excellent'] else ("可接受" if qc_cv_before['median_cv'] < CV_QUALITY_THRESHOLDS['acceptable'] else "較差")
+        qc_grade_after = "優良" if qc_cv_after['median_cv'] < CV_QUALITY_THRESHOLDS['excellent'] else ("可接受" if qc_cv_after['median_cv'] < CV_QUALITY_THRESHOLDS['acceptable'] else "較差")
         
         data_rows.append(['', '品質評級', 
                          qc_grade_before,
@@ -2144,24 +2176,30 @@ def get_significance_mark(p_value):
     else:
         return 'n.s.'
 
-def save_results_to_excel(input_file, output_file, data, sample_info, 
+def save_results_to_excel(input_file, output_file, data, sample_info,
                           corrected_df, data_sheet_name,
                           permanova_before, permanova_after,
-                          permdisp_before, permdisp_after,  # 🆕 新增
+                          permdisp_before, permdisp_after,
                           perm_test_permanova, perm_test_silhouette,
                           silhouette_before, silhouette_after,
                           cohens_d_before, cohens_d_after,
-                          qc_cv_before, qc_cv_after):
+                          qc_cv_before, qc_cv_after,
+                          sample_type_row=None):
     """
     保存結果到 Excel，複製所有原始工作表並新增結果
     """
     print("\n💾 保存結果到 Excel...")
-    
+
+    # 回插 Sample_Type 資訊行（若有）
+    if sample_type_row is not None:
+        from metabolomics.utils.data_helpers import insert_sample_type_row
+        corrected_df = insert_sample_type_row(corrected_df, sample_type_row)
+
     # 首先創建基本結構
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         # 寫入主要結果
-        corrected_df.to_excel(writer, sheet_name='Batch_effect_result', index=False)
-        sample_info.to_excel(writer, sheet_name='SampleInfo', index=False)
+        corrected_df.to_excel(writer, sheet_name=SHEET_NAMES['batch_effect'], index=False)
+        sample_info.to_excel(writer, sheet_name=SHEET_NAMES['sample_info'], index=False)
     
     # 加載輸出文件
     output_wb = load_workbook(output_file)
@@ -2176,8 +2214,8 @@ def save_results_to_excel(input_file, output_file, data, sample_info,
                                      qc_cv_before, qc_cv_after)
     
     # 對 Batch_effect_result 進行條件格式化
-    if 'Batch_effect_result' in output_wb.sheetnames:
-        ws = output_wb['Batch_effect_result']
+    if SHEET_NAMES['batch_effect'] in output_wb.sheetnames:
+        ws = output_wb[SHEET_NAMES['batch_effect']]
         color_result_cells(ws)
     
     # 複製原始文件的其他工作表
@@ -2186,11 +2224,11 @@ def save_results_to_excel(input_file, output_file, data, sample_info,
         
         for sheet_name in input_wb.sheetnames:
             # 跳過已經存在的工作表
-            if sheet_name in ['Batch_effect_result', 'SampleInfo', SUMMARY_SHEET_NAME]:
+            if sheet_name in [SHEET_NAMES['batch_effect'], SHEET_NAMES['sample_info'], SUMMARY_SHEET_NAME]:
                 continue
             
             # 對於 QC LOWESS result 保留格式
-            if sheet_name == 'QC LOWESS result':
+            if sheet_name == SHEET_NAMES['qc_lowess']:
                 if sheet_name in output_wb.sheetnames:
                     std = output_wb[sheet_name]
                     output_wb.remove(std)
@@ -2310,7 +2348,7 @@ def main(input_file=None):
     try:
         # ========== 3. 讀取數據 ==========
         print("\n正在讀取數據...")
-        data, sample_info, sheet_name = read_excel_data(input_file)
+        data, sample_info, sheet_name, sample_type_row = read_excel_data(input_file)
         print(f"✓ 已讀取工作表: {sheet_name}")
         
         # 二次檢查 Batch 資訊
@@ -2355,15 +2393,30 @@ def main(input_file=None):
         scaler_before = StandardScaler()
         original_scaled = scaler_before.fit_transform(original_data_log)
         
-        # 5.1 PERMANOVA
-        permanova_before = calculate_permanova(original_scaled, batch_info, 
-                                            distance_metric='manhattan', 
-                                            permutations=999)
+        # 5.1 PERMANOVA (optional - requires scikit-bio)
+        permanova_before = None
+        permdisp_before = None
+        try:
+            permanova_before = calculate_permanova(original_scaled, batch_info,
+                                                distance_metric='manhattan',
+                                                permutations=999)
+            # 🆕 5.1b PERMDISP (檢驗離散度同質性)
+            permdisp_before = calculate_permdisp(original_scaled, batch_info,
+                                                distance_metric='manhattan',
+                                                permutations=999)
+        except (ImportError, Exception) as e:
+            print(f"  ⚠️ PERMANOVA/PERMDISP 跳過: {e}")
 
-        # 🆕 5.1b PERMDISP (檢驗離散度同質性)
-        permdisp_before = calculate_permdisp(original_scaled, batch_info,
-                                            distance_metric='manhattan',
-                                            permutations=999)
+        # 提供預設值，確保後續程式碼不會因 None 而崩潰
+        _default_permanova = {'pseudo_f': np.nan, 'p_value': np.nan, 'r_squared': np.nan,
+                              'eta_squared': np.nan, 'distance_metric': 'manhattan', 'permutations': 0}
+        _default_permdisp = {'f_statistic': np.nan, 'p_value': np.nan}
+        _default_perm_test = {'p_value': np.nan, 'observed_improvement': np.nan, 'null_distribution': []}
+        if permanova_before is None:
+            permanova_before = _default_permanova
+        if permdisp_before is None:
+            permdisp_before = _default_permdisp
+
         # 5.2 Silhouette
         silhouette_before = calculate_silhouette_overall(original_scaled, batch_info, 
                                                          distance_metric='manhattan')
@@ -2425,15 +2478,24 @@ def main(input_file=None):
         scaler_after = StandardScaler()
         corrected_scaled = scaler_after.fit_transform(corrected_data_log)
         
-        # 7.1 PERMANOVA
-        permanova_after = calculate_permanova(corrected_scaled, batch_info, 
-                                            distance_metric='manhattan', 
+        # 7.1 PERMANOVA (optional - requires scikit-bio)
+        permanova_after = None
+        permdisp_after = None
+        try:
+            permanova_after = calculate_permanova(corrected_scaled, batch_info,
+                                                distance_metric='manhattan',
+                                                permutations=999)
+            # 🆕 7.1b PERMDISP
+            permdisp_after = calculate_permdisp(corrected_scaled, batch_info,
+                                            distance_metric='manhattan',
                                             permutations=999)
+        except (ImportError, Exception) as e:
+            print(f"  ⚠️ PERMANOVA/PERMDISP 跳過: {e}")
+        if permanova_after is None:
+            permanova_after = _default_permanova
+        if permdisp_after is None:
+            permdisp_after = _default_permdisp
 
-        # 🆕 7.1b PERMDISP
-        permdisp_after = calculate_permdisp(corrected_scaled, batch_info,
-                                        distance_metric='manhattan',
-                                        permutations=999)
         # 7.2 Silhouette
         silhouette_after = calculate_silhouette_overall(corrected_scaled, batch_info, 
                                                         distance_metric='manhattan')
@@ -2450,36 +2512,51 @@ def main(input_file=None):
         print("="*70)
 
         # 8.1 PERMANOVA F-statistic (增加到 10,000 次)
-        perm_test_permanova = paired_permutation_test(
-            original_scaled, corrected_scaled, batch_info,
-            metric='permanova', distance_metric='manhattan', n_permutations=10000  # 🔧 改為 10000
-        )
+        perm_test_permanova = None
+        try:
+            perm_test_permanova = paired_permutation_test(
+                original_scaled, corrected_scaled, batch_info,
+                metric='permanova', distance_metric='manhattan', n_permutations=10000
+            )
+        except (ImportError, Exception) as e:
+            print(f"  ⚠️ PERMANOVA 排列檢定跳過: {e}")
 
         # 8.2 Silhouette Coefficient (保持 1000 次即可)
-        perm_test_silhouette = paired_permutation_test(
-            original_scaled, corrected_scaled, batch_info,
-            metric='silhouette', distance_metric='manhattan', n_permutations=1000
-        )
+        perm_test_silhouette = None
+        try:
+            perm_test_silhouette = paired_permutation_test(
+                original_scaled, corrected_scaled, batch_info,
+                metric='silhouette', distance_metric='manhattan', n_permutations=1000
+            )
+        except (ImportError, Exception) as e:
+            print(f"  ⚠️ Silhouette 排列檢定跳過: {e}")
+
         # ========== 9. 統計摘要 ==========
         print("\n" + "="*70)
         print("📈 批次效應校正前後對比統計摘要")
         print("="*70)
-        
+
+        _perm_ok = _has_valid_permanova(permanova_before) and _has_valid_permanova(permanova_after)
         print("\n1️⃣ PERMANOVA (主要指標):")
-        print(f"   校正前: F={permanova_before['pseudo_f']:.4f}, p={permanova_before['p_value']:.4f}, R²={permanova_before['r_squared']*100:.1f}%")
-        print(f"   校正後: F={permanova_after['pseudo_f']:.4f}, p={permanova_after['p_value']:.4f}, R²={permanova_after['r_squared']*100:.1f}%")
-        
-        f_reduction = (permanova_before['pseudo_f'] - permanova_after['pseudo_f']) / permanova_before['pseudo_f'] * 100
-        r2_reduction = (permanova_before['r_squared'] - permanova_after['r_squared']) / permanova_before['r_squared'] * 100
-        
-        print(f"   改善: Pseudo-F 降低 {f_reduction:.1f}%, R² 降低 {r2_reduction:.1f}%")
-        print(f"   配對檢定 p-value: {perm_test_permanova['p_value']:.4f} {get_significance_mark(perm_test_permanova['p_value'])}")
+        if _perm_ok:
+            print(f"   校正前: F={permanova_before['pseudo_f']:.4f}, p={permanova_before['p_value']:.4f}, R²={permanova_before['r_squared']*100:.1f}%")
+            print(f"   校正後: F={permanova_after['pseudo_f']:.4f}, p={permanova_after['p_value']:.4f}, R²={permanova_after['r_squared']*100:.1f}%")
+
+            f_reduction = (permanova_before['pseudo_f'] - permanova_after['pseudo_f']) / permanova_before['pseudo_f'] * 100
+            r2_reduction = (permanova_before['r_squared'] - permanova_after['r_squared']) / permanova_before['r_squared'] * 100
+
+            print(f"   改善: Pseudo-F 降低 {f_reduction:.1f}%, R² 降低 {r2_reduction:.1f}%")
+        else:
+            print("   ⚠️ 跳過（scikit-bio 未安裝）")
+        if perm_test_permanova and not np.isnan(perm_test_permanova.get('p_value', np.nan)):
+            print(f"   配對檢定 p-value: {perm_test_permanova['p_value']:.4f} {get_significance_mark(perm_test_permanova['p_value'])}")
         
         print("\n2️⃣ Silhouette Coefficient (次要指標):")
         print(f"   校正前: {silhouette_before:.4f}")
         print(f"   校正後: {silhouette_after:.4f}")
         print(f"   改善: {silhouette_before - silhouette_after:.4f}")
-        print(f"   配對檢定 p-value: {perm_test_silhouette['p_value']:.4f} {get_significance_mark(perm_test_silhouette['p_value'])}")
+        if perm_test_silhouette and not np.isnan(perm_test_silhouette.get('p_value', np.nan)):
+            print(f"   配對檢定 p-value: {perm_test_silhouette['p_value']:.4f} {get_significance_mark(perm_test_silhouette['p_value'])}")
         
         print("\n3️⃣ Cohen's d (效果量):")
         print(f"   校正前: {cohens_d_before['overall_cohens_d']:.4f}")
@@ -2503,16 +2580,19 @@ def main(input_file=None):
         print("="*70)
 
         # 圖 1: PERMANOVA 前後對比
-        print("\n生成圖 1: PERMANOVA 統計摘要...")
-        fig1 = plot_permanova_comparison(permanova_before, permanova_after, 
-                                        perm_test_permanova)
-        if fig1:
-            fig1_file = run_plot_dir / generate_output_filename(
-                "Fig1_PERMANOVA_comparison", timestamp=timestamp, extension=".png"
-            )
-            fig1.savefig(fig1_file, dpi=300, bbox_inches='tight')
-            plt.close(fig1)
-            print(f"✓ 已儲存: {os.path.basename(fig1_file)}")
+        if permanova_before and permanova_after:
+            print("\n生成圖 1: PERMANOVA 統計摘要...")
+            fig1 = plot_permanova_comparison(permanova_before, permanova_after,
+                                            perm_test_permanova)
+            if fig1:
+                fig1_file = run_plot_dir / generate_output_filename(
+                    "Fig1_PERMANOVA_comparison", timestamp=timestamp, extension=".png"
+                )
+                fig1.savefig(fig1_file, dpi=300, bbox_inches='tight')
+                plt.close(fig1)
+                print(f"✓ 已儲存: {os.path.basename(fig1_file)}")
+        else:
+            print("\n⚠️ 跳過圖 1: PERMANOVA 未執行（scikit-bio 未安裝）")
 
         # 圖 2: PCA 前後對比（按 Batch）
         print("\n生成圖 2: PCA 前後對比（按 Batch 分組）...")
@@ -2535,9 +2615,13 @@ def main(input_file=None):
             print("   ⚠ 樣本不足或繪圖失敗，跳過圖 2")
 
         # 圖 3: Permutation Test Null Distribution
-        print("\n生成圖 3: Permutation Test 顯著性檢驗...")
-        fig3 = plot_permutation_null_distribution(perm_test_permanova, 
-                                                metric_name='PERMANOVA F')
+        if perm_test_permanova:
+            print("\n生成圖 3: Permutation Test 顯著性檢驗...")
+            fig3 = plot_permutation_null_distribution(perm_test_permanova,
+                                                    metric_name='PERMANOVA F')
+        else:
+            fig3 = None
+            print("\n⚠️ 跳過圖 3: PERMANOVA 排列檢定未執行")
         if fig3:
             fig3_file = run_plot_dir / generate_output_filename(
                 "Fig3_Permutation_Test", timestamp=timestamp, extension=".png"
@@ -2615,14 +2699,15 @@ def main(input_file=None):
         print(f"   - 添加統計欄位: Cohen's d (前/後/改善), QC CV% (前/後/改善)")
         
         # 保存到 Excel
-        save_results_to_excel(input_file, output_file, data, sample_info, 
+        save_results_to_excel(input_file, output_file, data, sample_info,
                      corrected_df, sheet_name,
                      permanova_before, permanova_after,
-                     permdisp_before, permdisp_after,  # 🆕 新增
+                     permdisp_before, permdisp_after,
                      perm_test_permanova, perm_test_silhouette,
                      silhouette_before, silhouette_after,
                      cohens_d_before, cohens_d_after,
-                     qc_cv_before, qc_cv_after)
+                     qc_cv_before, qc_cv_after,
+                     sample_type_row=sample_type_row)
         
         # ========== 12. 品質檢查與警告 ==========
         print("\n" + "="*70)
@@ -2646,30 +2731,45 @@ def main(input_file=None):
         print("="*70)
         
         # 判斷校正成功與否
-        success_criteria = [
-            permanova_after['p_value'] > 0.05,  # 校正後不顯著
-            permanova_after['r_squared'] < 0.15,  # R² < 15%
-            perm_test_permanova['p_value'] < 0.05  # 改善顯著
-        ]
-        
-        success_count = sum(success_criteria)
-        
+        success_criteria = []
+        if _perm_ok:
+            success_criteria.append(permanova_after['p_value'] > 0.05)  # 校正後不顯著
+            success_criteria.append(permanova_after['r_squared'] < 0.15)  # R² < 15%
+        if perm_test_permanova and not np.isnan(perm_test_permanova.get('p_value', np.nan)):
+            success_criteria.append(perm_test_permanova['p_value'] < 0.05)  # 改善顯著
+
+        # 如果沒有 PERMANOVA，用 Silhouette 和 Cohen's d 作為備用判斷
+        if not success_criteria:
+            if not np.isnan(silhouette_after) and not np.isnan(silhouette_before):
+                success_criteria.append(silhouette_after < silhouette_before)
+            success_criteria.append(cohens_d_after['overall_cohens_d'] < cohens_d_before['overall_cohens_d'])
+
+        success_count = sum(success_criteria) if success_criteria else 0
+
         if success_count >= 2:
             print("\n批次效應校正效果: ✅ 成功")
         elif success_count == 1:
             print("\n批次效應校正效果: ⚠️ 部分成功")
         else:
             print("\n批次效應校正效果: ❌ 效果不佳")
-        
+
         print("\n主要證據:")
-        print(f"  1. PERMANOVA: F={permanova_before['pseudo_f']:.3f} → {permanova_after['pseudo_f']:.3f}, " +
-              f"p={permanova_before['p_value']:.4f} → {permanova_after['p_value']:.4f}")
-        print(f"  2. 批次解釋變異: R²={permanova_before['r_squared']*100:.1f}% → {permanova_after['r_squared']*100:.1f}%")
-        print(f"  3. 配對檢定: p={perm_test_permanova['p_value']:.4f} {get_significance_mark(perm_test_permanova['p_value'])}")
-        
+        if _perm_ok:
+            print(f"  1. PERMANOVA: F={permanova_before['pseudo_f']:.3f} → {permanova_after['pseudo_f']:.3f}, " +
+                  f"p={permanova_before['p_value']:.4f} → {permanova_after['p_value']:.4f}")
+            print(f"  2. 批次解釋變異: R²={permanova_before['r_squared']*100:.1f}% → {permanova_after['r_squared']*100:.1f}%")
+        else:
+            print("  1. PERMANOVA: ⚠️ 跳過（scikit-bio 未安裝）")
+            print("  2. 批次解釋變異: ⚠️ 跳過")
+
+        if perm_test_permanova and not np.isnan(perm_test_permanova.get('p_value', np.nan)):
+            print(f"  3. 配對檢定: p={perm_test_permanova['p_value']:.4f} {get_significance_mark(perm_test_permanova['p_value'])}")
+        else:
+            print("  3. 配對檢定: ⚠️ 跳過")
+
         if not np.isnan(qc_cv_before['median_cv']) and not np.isnan(qc_cv_after['median_cv']):
             print(f"  4. QC CV%: {qc_cv_before['median_cv']:.2f}% → {qc_cv_after['median_cv']:.2f}%")
-        
+
         print(f"  5. Cohen's d: {cohens_d_before['overall_cohens_d']:.3f} → {cohens_d_after['overall_cohens_d']:.3f}")
         
         # 輸出檔案資訊
@@ -2704,13 +2804,13 @@ def main(input_file=None):
             samples=len(sample_columns),
             extra={
                 'batches': len(unique_batches),
-                'permanova_f_before': permanova_before['pseudo_f'],
-                'permanova_f_after': permanova_after['pseudo_f'],
-                'permanova_p_before': permanova_before['p_value'],
-                'permanova_p_after': permanova_after['p_value'],
-                'r2_before': permanova_before['r_squared'],
-                'r2_after': permanova_after['r_squared'],
-                'perm_test_pvalue': perm_test_permanova['p_value'],
+                'permanova_f_before': _safe_get(permanova_before, 'pseudo_f'),
+                'permanova_f_after': _safe_get(permanova_after, 'pseudo_f'),
+                'permanova_p_before': _safe_get(permanova_before, 'p_value'),
+                'permanova_p_after': _safe_get(permanova_after, 'p_value'),
+                'r2_before': _safe_get(permanova_before, 'r_squared'),
+                'r2_after': _safe_get(permanova_after, 'r_squared'),
+                'perm_test_pvalue': _safe_get(perm_test_permanova, 'p_value'),
                 'qc_cv_before': qc_cv_before['median_cv'],
                 'qc_cv_after': qc_cv_after['median_cv'],
                 'cohens_d_before': cohens_d_before['overall_cohens_d'],

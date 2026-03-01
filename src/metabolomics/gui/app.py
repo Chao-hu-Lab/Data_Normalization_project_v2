@@ -11,7 +11,10 @@ from datetime import datetime
 import subprocess
 import psutil
 import re
+import tempfile
 from metabolomics.utils.results import ProcessingResult
+from metabolomics.adapters.preprocessing_to_dnp import convert_preprocessing_to_dnp
+from metabolomics.adapters.dnp_to_metaboanalyst import convert_dnp_to_metaboanalyst
 
 
 # ========== Platform-Aware Font Settings ==========
@@ -109,10 +112,13 @@ class DataNormalizationApp:
         
         # 創建主框架
         self.create_main_layout()
-        
+
+        # 管線導航列
+        self.create_pipeline_nav()
+
         # 底部：執行進度區域 (先 pack 到底部，確保不被遮擋)
         self.create_progress_area()
-        
+
         # 創建頂部標題區
         self.create_title_section()
         
@@ -380,16 +386,47 @@ class DataNormalizationApp:
 
     def create_main_layout(self):
         """Create main layout - 使用 grid 佈局確保進度條不被遮擋"""
-        # 主容器使用 grid 佈局
-        self.master.grid_rowconfigure(0, weight=1)
+        # 主容器使用 grid 佈局: row 0 = pipeline nav, row 1 = main content
+        self.master.grid_rowconfigure(0, weight=0)
+        self.master.grid_rowconfigure(1, weight=1)
         self.master.grid_columnconfigure(0, weight=1)
 
         self.main_frame = ttk.Frame(self.master, style='Main.TFrame')
-        self.main_frame.grid(row=0, column=0, padx=20, pady=15, sticky='nsew')
+        self.main_frame.grid(row=1, column=0, padx=20, pady=(5, 15), sticky='nsew')
 
         # 主框架內部也使用 grid 佈局
         self.main_frame.grid_rowconfigure(4, weight=1)  # split_frame 行可擴展
         self.main_frame.grid_columnconfigure(0, weight=1)
+
+    def create_pipeline_nav(self):
+        """Create pipeline navigation bar showing overall workflow position."""
+        nav_bg = '#0d1b2a'
+        nav_frame = tk.Frame(self.master, bg=nav_bg, height=36)
+        nav_frame.grid(row=0, column=0, sticky='ew')
+        nav_frame.grid_propagate(False)
+
+        inner = tk.Frame(nav_frame, bg=nav_bg)
+        inner.place(relx=0.5, rely=0.5, anchor='center')
+
+        steps = [
+            ("Step 1: Preprocessing", False),
+            ("Step 2: Normalization", True),
+            ("Step 3: Statistical Analysis", False),
+        ]
+
+        for i, (label, is_current) in enumerate(steps):
+            if i > 0:
+                arrow = tk.Label(inner, text="  →  ", font=('Consolas', 12),
+                                 fg='#4a6fa5', bg=nav_bg)
+                arrow.pack(side=tk.LEFT)
+
+            fg = '#e0e0e0' if is_current else '#5a6a7a'
+            bg_color = self.color_scheme['primary'] if is_current else nav_bg
+            font_style = (FONTS['sans'], 11, 'bold') if is_current else (FONTS['sans'], 10)
+
+            lbl = tk.Label(inner, text=label, font=font_style,
+                           fg=fg, bg=bg_color, padx=10, pady=2)
+            lbl.pack(side=tk.LEFT)
 
     def create_title_section(self):
         """Create title section - 頂部標題區"""
@@ -489,6 +526,22 @@ class DataNormalizationApp:
         )
         select_btn.pack(side=tk.LEFT)
 
+        # 「從前處理匯入」按鈕
+        import_btn = tk.Button(
+            right_section,
+            text="🔗 Import from Preprocessing",
+            command=self.import_from_preprocessing,
+            font=(FONTS['sans'], 10),
+            bg='#e8f0fe',
+            fg=self.color_scheme['hero_bg'],
+            activebackground='#d2e3fc',
+            relief='flat',
+            padx=14,
+            pady=8,
+            cursor='hand2'
+        )
+        import_btn.pack(side=tk.LEFT, padx=(8, 0))
+
     def create_header(self):
         """Create header and control buttons"""
         # 使用 grid row 3
@@ -566,6 +619,22 @@ class DataNormalizationApp:
             pady=4
         )
         self.reset_btn.pack(side=tk.LEFT, padx=3)
+
+        # Export to Metaboanalyst button (disabled until Step 4 complete)
+        self.export_meta_btn = tk.Button(
+            control_frame,
+            text="Export → Metaboanalyst ⛔",
+            command=self.export_to_metaboanalyst,
+            font=(FONTS['sans'], 10),
+            bg='#6b7280',
+            fg='#ffffff',
+            activebackground='#4b5563',
+            relief='flat',
+            padx=12,
+            pady=4,
+            state='disabled',
+        )
+        self.export_meta_btn.pack(side=tk.LEFT, padx=(12, 3))
 
     def create_split_layout(self):
         """創建左右分欄佈局 - 使用 grid row 4"""
@@ -953,6 +1022,26 @@ class DataNormalizationApp:
             completed_count = len(self.completed_steps)
             self.stats_completed_label.config(text=f"{completed_count} / 4")
 
+        # 更新 Export to Metaboanalyst 按鈕狀態
+        if hasattr(self, 'export_meta_btn'):
+            all_done = len(self.completed_steps) == len(self.steps)
+            if all_done:
+                self.export_meta_btn.config(
+                    state='normal',
+                    text="Export → Metaboanalyst",
+                    bg='#34a853',
+                    fg='#ffffff',
+                    cursor='hand2',
+                )
+            else:
+                self.export_meta_btn.config(
+                    state='disabled',
+                    text="Export → Metaboanalyst ⛔",
+                    bg='#6b7280',
+                    fg='#ffffff',
+                    cursor='',
+                )
+
     def check_progress(self):
         """檢查進度隊列"""
         try:
@@ -1127,19 +1216,128 @@ class DataNormalizationApp:
             filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
         )
         if file_path:
-            self.selected_file_path = file_path
-            filename = os.path.basename(file_path)
-            self.input_file_label.config(
-                text=f"  {filename}  ",
-                fg=self.color_scheme['text_dark']
+            self._set_input_file(file_path)
+
+    def _set_input_file(self, file_path):
+        """Set the input file and update UI state."""
+        self.selected_file_path = file_path
+        filename = os.path.basename(file_path)
+        self.input_file_label.config(
+            text=f"  {filename}  ",
+            fg=self.color_scheme['text_dark']
+        )
+        self.logger.info(f"Selected initial file: {file_path}")
+        # Enable auto run
+        self.run_all_btn.config(state='normal')
+        # 更新輸入來源標籤
+        self.update_input_source_labels()
+        # 更新按鈕狀態
+        self.update_button_states()
+
+    def import_from_preprocessing(self):
+        """Import file from ms-preprocessing-toolkit and convert to DNP format."""
+        file_path = filedialog.askopenfilename(
+            title="Select ms-preprocessing output file",
+            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
+        )
+        if not file_path:
+            return
+
+        self.master.config(cursor='wait')
+        self.master.update()
+        try:
+            input_dir = os.path.dirname(file_path)
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+            output_path = os.path.join(input_dir, f"DNP_import_{base_name}.xlsx")
+
+            self.logger.info(f"Converting preprocessing output: {file_path}")
+            result_path = convert_preprocessing_to_dnp(file_path, output_path)
+            self.logger.info(f"Conversion complete: {result_path}")
+
+            self._set_input_file(result_path)
+            messagebox.showinfo(
+                "Import Successful",
+                f"File converted and loaded:\n{os.path.basename(result_path)}"
             )
-            self.logger.info(f"Selected initial file: {file_path}")
-            # Enable auto run
-            self.run_all_btn.config(state='normal')
-            # 更新輸入來源標籤
-            self.update_input_source_labels()
-            # 更新按鈕狀態
+        except Exception as e:
+            self.logger.error(f"Import from preprocessing failed: {e}")
+            messagebox.showerror("Import Failed", f"Conversion error:\n{e}")
+        finally:
+            self.master.config(cursor='')
+
+    def export_to_metaboanalyst(self):
+        """Export Step 4 result to Metaboanalyst-compatible format."""
+        # Find Step 4 output
+        step4_name = self.steps[3]['name']
+        if step4_name not in self.step_outputs:
+            messagebox.showwarning(
+                "No Output",
+                "Step 4 (Conc. Normalization) has not been completed yet."
+            )
+            return
+
+        step4_output = self._get_output_path(self.step_outputs[step4_name])
+        if not step4_output or not os.path.exists(step4_output):
+            messagebox.showwarning("File Not Found", "Step 4 output file not found.")
+            return
+
+        output_path = filedialog.asksaveasfilename(
+            title="Save Metaboanalyst-compatible file",
+            defaultextension=".xlsx",
+            initialfile=f"Metaboanalyst_import_{os.path.basename(step4_output)}",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+        )
+        if not output_path:
+            return
+
+        self.master.config(cursor='wait')
+        self.export_meta_btn.config(text="Exporting...", state='disabled')
+        self.master.update()
+        try:
+            self.logger.info(f"Exporting to Metaboanalyst format: {step4_output}")
+            result_path = convert_dnp_to_metaboanalyst(step4_output, output_path)
+            self.logger.info(f"Export complete: {result_path}")
+            if messagebox.askyesno(
+                "Export Successful",
+                f"File exported:\n{os.path.basename(result_path)}\n\n"
+                "Launch Metaboanalyst now?"
+            ):
+                self._launch_metaboanalyst()
+        except Exception as e:
+            self.logger.error(f"Export to Metaboanalyst failed: {e}")
+            messagebox.showerror("Export Failed", f"Conversion error:\n{e}")
+        finally:
+            self.master.config(cursor='')
             self.update_button_states()
+
+    def _launch_metaboanalyst(self):
+        """Launch Metaboanalyst_clone GUI as a separate process."""
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        candidates = [
+            os.path.join(desktop, "質譜數據工具箱", "Metaboanalyst_clone", "main.py"),
+            os.path.join(desktop, "Metaboanalyst_clone", "main.py"),
+        ]
+        for main_py in candidates:
+            if os.path.exists(main_py):
+                self.logger.info(f"Launching Metaboanalyst: {main_py}")
+                subprocess.Popen(
+                    [sys.executable, main_py],
+                    cwd=os.path.dirname(main_py),
+                )
+                return
+        messagebox.showwarning(
+            "Not Found",
+            "Could not find Metaboanalyst_clone project.\n"
+            "Please launch it manually."
+        )
+
+    def _offer_metaboanalyst_export(self):
+        """Prompt user to export to Metaboanalyst after all steps complete."""
+        if messagebox.askyesno(
+            "Export to Metaboanalyst",
+            "All steps completed!\nWould you like to export the result for Metaboanalyst?"
+        ):
+            self.export_to_metaboanalyst()
 
     def run_all_steps(self):
         """Run all steps automatically"""
@@ -1361,8 +1559,12 @@ class DataNormalizationApp:
             else:
                 self.auto_run_mode = False
                 messagebox.showinfo("Auto Run Complete", "All steps completed!")
+                self._offer_metaboanalyst_export()
         else:
             messagebox.showinfo("Complete", f"{step['name']} Successfully Executed!\nTime: {self.current_stats['execution_time']:.2f} s")
+            # Offer export after Step 4 completes
+            if index == len(self.steps) - 1:
+                self._offer_metaboanalyst_export()
         
         # Ensure progress bar shows completion
         self.set_progress(f"{step['name']} Completed", value=end_progress, running=False)

@@ -15,7 +15,6 @@ import scipy.stats as stats
 from scipy.spatial.distance import mahalanobis
 from scipy.stats import chi2, f as f_dist
 import warnings
-import copy
 
 warnings.filterwarnings('ignore')
 
@@ -23,32 +22,40 @@ warnings.filterwarnings('ignore')
 from metabolomics.utils.data_helpers import get_valid_values
 from metabolomics.utils.statistics import calculate_hotelling_t2_outliers, draw_hotelling_t2_ellipse
 from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
-from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL
+from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL, FEATURE_ID_COLUMN, VALIDATION_THRESHOLDS, CV_QUALITY_THRESHOLDS
 from metabolomics.utils.sample_classification import SampleClassifier, identify_sample_columns
 from metabolomics.utils.file_io import build_output_path, build_plots_dir, get_output_root
 from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.excel_format import copy_sheet_formatting_only
 from metabolomics.utils.console import safe_print as print
+
+import re as _re
 
 # 設定 matplotlib
 setup_matplotlib()
+
+
+def simplify_column_name(name):
+    """Remove redundant DNA/RNA_programN_ prefix from column names.
+
+    Example: 'DNA_program1_TumorBC2257_DNA' → 'TumorBC2257_DNA'
+    """
+    return _re.sub(r'^(?:DNA|RNA)_program\d+_', '', str(name))
 
 def load_and_process_data(file_path):
     try:
         # ===== 防呆1: 文件存在性检查 =====
         if not os.path.exists(file_path):
-            print(f"錯誤：找不到檔案 '{file_path}'")
-            return None, None, None
+            raise ValueError(f"錯誤：找不到檔案 '{file_path}'")
 
         # ===== 防呆2: 文件格式检查 =====
         if not (file_path.endswith('.xlsx') or file_path.endswith('.xls')):
-            print(f"錯誤：輸入檔案必須是Excel格式 (.xlsx 或 .xls)，但提供了 {file_path}")
-            return None, None, None
+            raise ValueError(f"錯誤：輸入檔案必須是Excel格式 (.xlsx 或 .xls)，但提供了 {file_path}")
 
         # ===== 防呆3: 文件大小检查 =====
         file_size = os.path.getsize(file_path)
         if file_size == 0:
-            print(f"錯誤：檔案大小為 0 bytes，可能是空檔案")
-            return None, None, None
+            raise ValueError("錯誤：檔案大小為 0 bytes，可能是空檔案")
         elif file_size < 1024:  # 小于 1KB
             print(f"警告：檔案大小僅 {file_size} bytes，可能不是有效的 Excel 檔案")
 
@@ -58,41 +65,34 @@ def load_and_process_data(file_path):
         try:
             excel_file = pd.ExcelFile(file_path)
         except Exception as e:
-            print(f"錯誤：無法讀取 Excel 檔案，可能已損壞或格式不正確")
-            print(f"詳細錯誤: {e}")
-            return None, None, None
+            raise ValueError(f"錯誤：無法讀取 Excel 檔案，可能已損壞或格式不正確。詳細錯誤: {e}") from e
         
         # 讀取所有工作表，儲存為字典 {sheet_name: df}
         all_sheets = {sheet: pd.read_excel(excel_file, sheet_name=sheet) for sheet in excel_file.sheet_names}
         print(f"讀取輸入檔案的所有工作表: {list(all_sheets.keys())}")
         
         # ===== 防呆5: 必要工作表检查 =====
-        required_sheets = ['RawIntensity', 'SampleInfo']
+        required_sheets = [SHEET_NAMES['raw_intensity'], SHEET_NAMES['sample_info']]
         missing_sheets = [sheet for sheet in required_sheets if sheet not in all_sheets]
         if missing_sheets:
-            print(f"錯誤：輸入檔案缺少必要的工作表: {', '.join(missing_sheets)}")
-            print(f"找到的工作表: {', '.join(all_sheets.keys())}")
-            return None, None, None
+            raise ValueError(f"錯誤：輸入檔案缺少必要的工作表: {', '.join(missing_sheets)}。找到的工作表: {', '.join(all_sheets.keys())}")
 
         # ===== 防呆6: SampleInfo 完整性检查 =====
-        sample_info_df = all_sheets['SampleInfo']
-        print(f"成功讀取 'SampleInfo' 工作表，包含 {len(sample_info_df)} 筆樣本資訊")
+        sample_info_df = all_sheets[SHEET_NAMES['sample_info']]
+        print(f"成功讀取 '{SHEET_NAMES['sample_info']}' 工作表，包含 {len(sample_info_df)} 筆樣本資訊")
 
         if sample_info_df.empty:
-            print(f"錯誤：'SampleInfo' 工作表為空")
-            return None, None, None
+            raise ValueError(f"錯誤：'{SHEET_NAMES['sample_info']}' 工作表為空")
 
         required_columns = ['Sample_Name', 'Sample_Type']
         missing_cols = [col for col in required_columns if col not in sample_info_df.columns]
         if missing_cols:
-            print(f"錯誤：'SampleInfo' 缺少必要欄位: {', '.join(missing_cols)}")
-            print(f"找到的欄位: {', '.join(sample_info_df.columns.tolist())}")
-            return None, None, None
+            raise ValueError(f"錯誤：'{SHEET_NAMES['sample_info']}' 缺少必要欄位: {', '.join(missing_cols)}。找到的欄位: {', '.join(sample_info_df.columns.tolist())}")
 
         # ===== 防呆7: 样本名称重复检查 =====
         duplicate_samples = sample_info_df[sample_info_df['Sample_Name'].duplicated()]
         if not duplicate_samples.empty:
-            print(f"警告：'SampleInfo' 中發現重複的樣本名稱:")
+            print(f"警告：'{SHEET_NAMES['sample_info']}' 中發現重複的樣本名稱:")
             for idx, row in duplicate_samples.iterrows():
                 print(f"  - {row['Sample_Name']}")
             print(f"  建議：請檢查樣本名稱是否正確")
@@ -109,7 +109,7 @@ def load_and_process_data(file_path):
             print(f"找到 {qc_count} 個 QC 樣本")
         
         workbook = load_workbook(file_path)
-        worksheet = workbook['RawIntensity']
+        worksheet = workbook[SHEET_NAMES['raw_intensity']]
         istd_feature_ids = []  # 收集紅色 FeatureID 的值
         red_colors = ['FFFF0000', 'FF0000']  # 只檢查紅色變體，全大寫
         for row in worksheet.iter_rows(min_row=2):  # 從第 2 行開始
@@ -121,22 +121,25 @@ def load_and_process_data(file_path):
                         istd_feature_ids.append(str(cell.value).strip())  # 轉 str 以匹配
         workbook.close()
         
-        raw_df = all_sheets['RawIntensity']
+        raw_df = all_sheets[SHEET_NAMES['raw_intensity']]
 
         # ===== 防呆9: RawIntensity 基本检查 =====
         if raw_df.empty:
-            print(f"錯誤：'RawIntensity' 工作表為空")
-            return None, None, None
+            raise ValueError(f"錯誤：'{SHEET_NAMES['raw_intensity']}' 工作表為空")
 
-        if 'FeatureID' not in raw_df.columns:
-            print(f"錯誤：'RawIntensity' 缺少 'FeatureID' 欄位")
-            print(f"找到的欄位: {', '.join(raw_df.columns.tolist())}")
-            return None, None, None
+        # 支援 'Mz/RT' 或 'FeatureID' 作為特徵ID欄位名稱
+        if FEATURE_ID_COLUMN in raw_df.columns and FEATURE_ID_COLUMN != 'FeatureID':
+            raw_df = raw_df.rename(columns={FEATURE_ID_COLUMN: 'FeatureID'})
+        elif 'FeatureID' not in raw_df.columns:
+            # 嘗試使用第一欄作為特徵ID
+            first_col = raw_df.columns[0]
+            print(f"⚠️ 未找到 '{FEATURE_ID_COLUMN}' 或 'FeatureID' 欄位，使用第一欄 '{first_col}' 作為特徵ID")
+            raw_df = raw_df.rename(columns={first_col: 'FeatureID'})
 
         # ===== 防呆10: FeatureID 重复检查 =====
         duplicate_features = raw_df[raw_df['FeatureID'].duplicated(keep=False)]
         if not duplicate_features.empty:
-            print(f"警告：'RawIntensity' 中發現重複的 FeatureID:")
+            print(f"警告：'{SHEET_NAMES['raw_intensity']}' 中發現重複的 FeatureID:")
             dup_ids = duplicate_features['FeatureID'].unique()
             for fid in dup_ids[:5]:  # 只显示前5个
                 print(f"  - {fid}")
@@ -147,8 +150,7 @@ def load_and_process_data(file_path):
         # ===== 防呆11: 样本列检查 =====
         sample_columns = [col for col in raw_df.columns if col != 'FeatureID']
         if len(sample_columns) == 0:
-            print(f"錯誤：'RawIntensity' 中沒有樣本欄位")
-            return None, None, None
+            raise ValueError(f"錯誤：'{SHEET_NAMES['raw_intensity']}' 中沒有樣本欄位")
 
         print(f"找到 {len(sample_columns)} 個樣本欄位")
 
@@ -156,26 +158,90 @@ def load_and_process_data(file_path):
         if not raw_df.empty and str(raw_df.iloc[0]['FeatureID']).strip().lower() == 'sample_type':
             print("偵測到 'Sample_Type' 資訊行，已保留作為元數據。")
 
-        # ===== 防呆12: 样本名称匹配检查 =====
+        # ===== 防呆12: 样本名称匹配检查（支援模糊匹配）=====
+        import re
+        from metabolomics.utils.sample_classification import normalize_sample_type, normalize_sample_name
+
+        def _extract_key_tokens(name):
+            """從樣本名稱中提取關鍵字和編號用於模糊匹配。
+            例如 'DNA_program1_TumorBC2257_DNA' 和 'Tumor tissue BC2257_DNA'
+            都會提取出類似的 token 集合。"""
+            s = str(name).strip()
+            # 移除常見前綴 (保留原始大小寫做 camelCase 拆分)
+            s = re.sub(r'^(?:DNA|RNA|dna|rna)_program\d+_', '', s)
+            # camelCase 拆分：'TumorBC2257' → 'Tumor BC 2257'
+            s = re.sub(r'([a-z])([A-Z])', r'\1 \2', s)
+            s = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', s)
+            s = s.lower()
+            # 用空白、底線、分隔符拆分
+            parts = re.split(r'[\s_\-/]+', s)
+            tokens = set()
+            for part in parts:
+                # 將合併字拆開：'bc2257' → 'bc', '2257'
+                sub_tokens = re.findall(r'[a-z]+|[0-9]+', part)
+                tokens.update(sub_tokens)
+                # 也保留「字母+數字」的組合 token（如 bc2257）
+                combo_tokens = re.findall(r'[a-z]+\d+', part)
+                tokens.update(combo_tokens)
+            # 過濾掉純通用詞
+            generic = {'tissue', 'cancer', 'breast', 'pooled', 'fat',
+                        'dna', 'rna', 'dnaandrna', 'program1', 'and'}
+            return tokens - generic
+
         sample_names_in_info = set(sample_info_df['Sample_Name'].str.strip().str.lower())
         sample_names_in_raw = set([col.strip().lower() for col in sample_columns])
 
+        # 先嘗試精確匹配
         missing_in_raw = sample_names_in_info - sample_names_in_raw
         missing_in_info = sample_names_in_raw - sample_names_in_info
 
-        if missing_in_raw:
-            print(f"警告：以下樣本在 SampleInfo 中有記錄，但在 RawIntensity 中找不到:")
-            for name in list(missing_in_raw)[:5]:
-                print(f"  - {name}")
-            if len(missing_in_raw) > 5:
-                print(f"  ... 還有 {len(missing_in_raw) - 5} 個樣本")
+        if missing_in_raw and missing_in_info:
+            # 嘗試模糊匹配：提取關鍵 token（類別+編號），若交集夠大則視為匹配
+            fuzzy_matched = 0
+            unmatched_info = []
+            unmatched_raw = list(missing_in_info)
+            raw_tokens_map = {name: _extract_key_tokens(name) for name in unmatched_raw}
 
-        if missing_in_info:
-            print(f"警告：以下樣本在 RawIntensity 中有數據，但在 SampleInfo 中找不到:")
-            for name in list(missing_in_info)[:5]:
-                print(f"  - {name}")
-            if len(missing_in_info) > 5:
-                print(f"  ... 還有 {len(missing_in_info) - 5} 個樣本")
+            for info_name in missing_in_raw:
+                info_tokens = _extract_key_tokens(info_name)
+                best_match = None
+                best_overlap = 0
+                for raw_name, raw_tokens in raw_tokens_map.items():
+                    overlap = len(info_tokens & raw_tokens)
+                    if overlap > best_overlap:
+                        best_overlap = overlap
+                        best_match = raw_name
+                # 至少有 2 個 token 匹配（類別+編號）才算成功
+                if best_overlap >= 2 and best_match:
+                    fuzzy_matched += 1
+                    raw_tokens_map.pop(best_match)
+                else:
+                    unmatched_info.append(info_name)
+
+            if fuzzy_matched > 0:
+                print(f"✓ 樣本名稱模糊匹配成功：{fuzzy_matched} 個樣本（SampleInfo 與 RawIntensity 名稱格式不同但關鍵字匹配）")
+
+            if unmatched_info:
+                print(f"⚠️ 警告：以下 {len(unmatched_info)} 個樣本在 SampleInfo 中有記錄，但無法匹配到 RawIntensity:")
+                for name in unmatched_info[:5]:
+                    print(f"  - {name}")
+            if raw_tokens_map:
+                print(f"⚠️ 警告：以下 {len(raw_tokens_map)} 個樣本在 RawIntensity 中有數據，但無法匹配到 SampleInfo:")
+                for name in list(raw_tokens_map.keys())[:5]:
+                    print(f"  - {name}")
+        else:
+            if missing_in_raw:
+                print(f"⚠️ 警告：以下樣本在 SampleInfo 中有記錄，但在 RawIntensity 中找不到:")
+                for name in list(missing_in_raw)[:5]:
+                    print(f"  - {name}")
+                if len(missing_in_raw) > 5:
+                    print(f"  ... 還有 {len(missing_in_raw) - 5} 個樣本")
+            if missing_in_info:
+                print(f"⚠️ 警告：以下樣本在 RawIntensity 中有數據，但在 SampleInfo 中找不到:")
+                for name in list(missing_in_info)[:5]:
+                    print(f"  - {name}")
+                if len(missing_in_info) > 5:
+                    print(f"  ... 還有 {len(missing_in_info) - 5} 個樣本")
 
         # 防呆：強制轉換 RawIntensity 的樣本欄位為數值 (向量化)
         raw_df[sample_columns] = raw_df[sample_columns].apply(pd.to_numeric, errors='coerce')
@@ -235,9 +301,7 @@ def load_and_process_data(file_path):
         print(f"識別到 {len(istd_feature_ids)} 個ISTD（紅色標記的 FeatureID）")
 
         if len(istd_feature_ids) == 0:
-            print(f"❌ 錯誤：未找到任何 ISTD（請在 RawIntensity 工作表的 FeatureID 欄位中，")
-            print(f"   將內標物質的 FeatureID 標記為紅色字體）")
-            return None, None, None
+            raise ValueError("錯誤：未找到任何 ISTD（請在 RawIntensity 工作表的 FeatureID 欄位中，將內標物質的 FeatureID 標記為紅色字體）")
         elif len(istd_feature_ids) < 3:
             print(f"⚠️ 警告：ISTD 數量較少（{len(istd_feature_ids)} 個），建議至少使用 3 個以上的 ISTD")
             print(f"   以確保校正效果的穩定性")
@@ -256,9 +320,7 @@ def load_and_process_data(file_path):
             values = get_valid_values(row, sample_columns)
 
             if len(values) == 0:
-                print(f"❌ 錯誤：ISTD '{fid}' 的所有樣本強度都是 0 或 NaN")
-                print(f"   無法進行校正，請檢查數據")
-                return None, None, None
+                raise ValueError(f"錯誤：ISTD '{fid}' 的所有樣本強度都是 0 或 NaN，無法進行校正，請檢查數據")
             elif len(values) < len(sample_columns) * 0.5:
                 print(f"⚠️ 警告：ISTD '{fid}' 有效值比例較低 ({len(values)}/{len(sample_columns)})")
 
@@ -268,7 +330,7 @@ def load_and_process_data(file_path):
                 std_val = np.std(values, ddof=1)
                 cv_percent = (std_val / mean_val) * 100 if mean_val != 0 else np.nan
 
-                if cv_percent > 30:
+                if cv_percent > CV_QUALITY_THRESHOLDS['acceptable']:
                     print(f"⚠️ 警告：ISTD '{fid}' 的 CV% 較高 ({cv_percent:.1f}%)，可能影響校正品質")
 
         print(f"ISTD 列表: {', '.join(istd_feature_ids[:5])}")
@@ -276,10 +338,79 @@ def load_and_process_data(file_path):
             print(f"           ... 還有 {len(istd_feature_ids) - 5} 個")
         print(f"{'='*70}\n")
 
-        return raw_df, sample_info_df, all_sheets
-    except Exception as e:
-        print(f"載入數據時發生錯誤: {e}")
-        return None, None, None
+        # ===== 建立 col_to_info 映射 =====
+        # 將 RawIntensity 欄位名 → SampleInfo 資訊行 (Sample_Type, Batch 等)
+        col_to_info = {}
+        info_rows = []
+        for _, row in sample_info_df.iterrows():
+            info_rows.append({
+                'Sample_Name': str(row['Sample_Name']).strip(),
+                'Sample_Type': str(row.get('Sample_Type', '')).strip(),
+                'Batch': str(row.get('Batch', '')) if pd.notna(row.get('Batch')) else '',
+                '_norm': normalize_sample_name(row['Sample_Name']),
+                '_tokens': _extract_key_tokens(str(row['Sample_Name'])),
+            })
+
+        # Pass 1: exact normalized match
+        unmatched_cols = []
+        for col in sample_columns:
+            col_norm = normalize_sample_name(col)
+            matched = False
+            for info in info_rows:
+                if col_norm == info['_norm']:
+                    col_to_info[col] = {
+                        'Sample_Name': info['Sample_Name'],
+                        'Sample_Type': info['Sample_Type'],
+                        'Batch': info['Batch'],
+                    }
+                    matched = True
+                    break
+            if not matched:
+                unmatched_cols.append(col)
+
+        # Pass 2: fuzzy token match (overlap >= 2)
+        still_unmatched = []
+        available_infos = [info for info in info_rows
+                           if info['Sample_Name'] not in {v['Sample_Name'] for v in col_to_info.values()}]
+        for col in unmatched_cols:
+            col_tokens = _extract_key_tokens(col)
+            best_match = None
+            best_overlap = 0
+            for info in available_infos:
+                overlap = len(col_tokens & info['_tokens'])
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_match = info
+            if best_overlap >= 2 and best_match is not None:
+                col_to_info[col] = {
+                    'Sample_Name': best_match['Sample_Name'],
+                    'Sample_Type': best_match['Sample_Type'],
+                    'Batch': best_match['Batch'],
+                }
+                available_infos.remove(best_match)
+            else:
+                still_unmatched.append(col)
+
+        # Pass 3: keyword fallback from column name
+        for col in still_unmatched:
+            col_upper = col.upper()
+            if 'QC' in col_upper or 'POOLED' in col_upper:
+                col_to_info[col] = {'Sample_Name': col, 'Sample_Type': 'QC', 'Batch': ''}
+            elif any(k in col_upper for k in ('CONTROL', 'CTL', 'CON', 'BENIGN')):
+                col_to_info[col] = {'Sample_Name': col, 'Sample_Type': 'Control', 'Batch': ''}
+            elif any(k in col_upper for k in ('EXPOSED', 'EXP', 'TREAT', 'TUMOR')):
+                col_to_info[col] = {'Sample_Name': col, 'Sample_Type': 'Exposure', 'Batch': ''}
+            elif any(k in col_upper for k in ('NORMAL', 'NOR')):
+                col_to_info[col] = {'Sample_Name': col, 'Sample_Type': 'Normal', 'Batch': ''}
+            else:
+                col_to_info[col] = {'Sample_Name': col, 'Sample_Type': 'Unknown', 'Batch': ''}
+
+        matched_count = len(sample_columns) - len(still_unmatched)
+        print(f"✓ col_to_info 映射建立完成：{matched_count}/{len(sample_columns)} 個欄位成功匹配到 SampleInfo")
+
+        return raw_df, sample_info_df, all_sheets, col_to_info
+    except Exception:
+        raise
 
 def identify_istd_signals(df):
     return df[df['is_ISTD']], df[~df['is_ISTD']]
@@ -506,51 +637,56 @@ def calculate_corrected_ratios(df, sample_info_df):
     """
     # ===== 防呆19: 基本输入验证 =====
     if df is None or df.empty:
-        print("❌ 錯誤：輸入數據為空")
-        return None, None
+        raise ValueError("錯誤：輸入數據為空")
 
     if sample_info_df is None or sample_info_df.empty:
-        print("❌ 錯誤：樣本資訊為空")
-        return None, None
+        raise ValueError("錯誤：樣本資訊為空")
 
     istd_signals, analyte_signals = identify_istd_signals(df)
 
     # ===== 防呆20: ISTD 信号检查 =====
     if len(istd_signals) == 0:
-        print("❌ 錯誤：未找到 ISTD 信號")
-        return None, None
+        raise ValueError("錯誤：未找到 ISTD 信號")
 
     if len(analyte_signals) == 0:
-        print("❌ 錯誤：未找到代謝物信號（所有 FeatureID 都被標記為 ISTD）")
-        return None, None
+        raise ValueError("錯誤：未找到代謝物信號（所有 FeatureID 都被標記為 ISTD）")
 
     print(f"\n校正統計:")
     print(f"  - ISTD 數量: {len(istd_signals)}")
     print(f"  - 代謝物數量: {len(analyte_signals)}")
 
     if 'Sample_Name' not in sample_info_df.columns:
-        print("❌ 錯誤：'SampleInfo' 缺少 'Sample_Name' 欄位")
-        return None, None
+        raise ValueError(f"錯誤：'{SHEET_NAMES['sample_info']}' 缺少 'Sample_Name' 欄位")
     
     sample_names = sample_info_df['Sample_Name'].tolist()
-    
+
+    from metabolomics.utils.constants import NON_SAMPLE_COLUMNS
     all_columns = df.columns.tolist()
-    sample_columns = all_columns[2:] if len(all_columns) >= 2 and all_columns[1].lower() == 'sample_type' else all_columns[1:]
-    
+    # 排除已知的非樣本欄位（FeatureID, mz, rt, is_ISTD 等）
+    non_sample = NON_SAMPLE_COLUMNS | {'is_ISTD', 'Sample_Type', 'sample_type'}
+    raw_sample_columns = [col for col in all_columns
+                          if col not in non_sample and col != 'FeatureID']
+
     # 修改：標準化名稱（轉小寫、去除空格）以避免不匹配
     normalized_sample_names = [name.strip().lower() for name in sample_names]
-    normalized_columns = {col: col.strip().lower() for col in sample_columns}
-    
+    normalized_columns = {col: col.strip().lower() for col in raw_sample_columns}
+
     sample_columns = []
     name_mapping = {}  # 記錄映射
     for col, norm_col in normalized_columns.items():
         if norm_col in normalized_sample_names:
             sample_columns.append(col)  # 保留原始欄位名
             name_mapping[col] = sample_names[normalized_sample_names.index(norm_col)]
-    
-    missing_columns = [name for name in sample_names if name.strip().lower() not in normalized_columns.values()]
-    if missing_columns:
-        print(f"警告：以下樣本名稱在 'RawIntensity' 中缺少 (即使大小寫不同): {', '.join(missing_columns)}")
+
+    # 如果精確匹配結果太少（名稱格式不同），回退使用 RawIntensity 中的所有數據欄位
+    if len(sample_columns) < len(raw_sample_columns) * 0.5:
+        print(f"⚠️ 精確名稱匹配僅找到 {len(sample_columns)}/{len(raw_sample_columns)} 個樣本")
+        print(f"  → 回退使用 {SHEET_NAMES['raw_intensity']} 中的所有數據欄位進行校正")
+        sample_columns = raw_sample_columns
+    else:
+        missing_columns = [name for name in sample_names if name.strip().lower() not in normalized_columns.values()]
+        if missing_columns:
+            print(f"警告：以下樣本名稱在 '{SHEET_NAMES['raw_intensity']}' 中缺少 (即使大小寫不同): {', '.join(missing_columns)}")
     
     istd_cv = calculate_istd_cv(istd_signals, sample_columns)
     istd_medians = calculate_istd_medians(istd_signals, sample_columns)
@@ -624,7 +760,8 @@ def calculate_corrected_ratios(df, sample_info_df):
 
 from scipy.stats import wilcoxon, levene
 
-def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_info_df, original_df):
+def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_info_df, original_df,
+                                           col_to_info=None):
     """
     計算 QC 樣本的 CV%，並進行正確的統計檢定
 
@@ -637,9 +774,19 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
     - Pre-extracts numeric matrices for QC columns
     """
     from metabolomics.utils.safe_math import safe_divide
+    from metabolomics.utils.sample_classification import normalize_sample_type
 
-    qc_samples = sample_info_df[sample_info_df['Sample_Type'].str.upper().str.contains('QC')]['Sample_Name'].tolist()
-    qc_columns = [col for col in sample_columns if col in qc_samples]
+    # Use col_to_info for QC identification (primary), fallback to direct name match
+    if col_to_info:
+        qc_columns = [col for col in sample_columns
+                       if normalize_sample_type(col_to_info.get(col, {}).get('Sample_Type', '')) == 'QC']
+    else:
+        qc_samples = sample_info_df[sample_info_df['Sample_Type'].str.upper().str.contains('QC')]['Sample_Name'].tolist()
+        qc_columns = [col for col in sample_columns if col in qc_samples]
+        # Keyword fallback if no match
+        if not qc_columns:
+            qc_columns = [col for col in sample_columns
+                          if 'QC' in col.upper() or 'POOLED' in col.upper()]
 
     print(f"\n{'='*70}")
     print(f"🔬 開始統計檢定（Wilcoxon 配對符號等級檢定 + Levene's test）")
@@ -1064,7 +1211,8 @@ def draw_hotelling_t2_ellipse(ax, scores, alpha=0.05, label=None, edgecolor='bla
 
 
 # ========== 修改：2D PCA 分析（Hotelling T² 異常值檢測 + 橢圓）==========
-def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sample_info_df, plots_dir):
+def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sample_info_df, plots_dir,
+                            col_to_info=None):
     """
     執行 2D PCA 分析
     - 🔧 使用 Hotelling T² 檢測異常值
@@ -1084,71 +1232,56 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
 
-    # 🔧 修正：樣本名稱用 strip+lower 做穩健匹配，避免因空白/大小寫差異導致 QC 誤判不足
-    sample_info_norm = sample_info_df.copy()
-    sample_info_norm['Sample_Name_norm'] = (
-        sample_info_norm['Sample_Name'].astype(str).str.strip().str.lower()
-    )
-    sample_meta = sample_info_norm.set_index('Sample_Name_norm')
+    from metabolomics.utils.sample_classification import normalize_sample_type
+    from metabolomics.utils.constants import SAMPLE_TYPE_COLORS, SAMPLE_TYPE_MARKERS
 
-    # 識別 QC 樣本和樣本類型
+    # 使用 col_to_info 識別樣本類型（精確映射，不再靠名稱比對）
     qc_columns = []
     control_columns = []
     exposed_columns = []
     sample_type_map = {}
-    
+
     for col in sample_columns:
-        col_norm = str(col).strip().lower()
-        if col_norm in sample_meta.index:
-            sample_type = sample_meta.loc[col_norm].get('Sample_Type', 'Unknown')
-            sample_type_map[col] = sample_type
-            
-            sample_type_upper = str(sample_type).upper()
-            
-            if 'QC' in sample_type_upper:
-                qc_columns.append(col)
-            elif 'CONTROL' in sample_type_upper or 'CTL' in sample_type_upper or 'CON' in sample_type_upper:
-                control_columns.append(col)
-            elif 'EXPOSED' in sample_type_upper or 'EXP' in sample_type_upper or 'TREAT' in sample_type_upper:
-                exposed_columns.append(col)
-            else:
-                col_upper = col.upper()
-                if 'QC' in col_upper:
-                    qc_columns.append(col)
-                elif any(x in col_upper for x in ['CONTROL', 'CTL', 'CON']):
-                    control_columns.append(col)
-                elif any(x in col_upper for x in ['EXPOSED', 'EXP', 'TREAT']):
-                    exposed_columns.append(col)
-                else:
-                    control_columns.append(col)
+        if col_to_info and col in col_to_info:
+            raw_type = col_to_info[col].get('Sample_Type', 'Unknown')
         else:
-            sample_type_map[col] = 'Unknown'
+            # Fallback: try direct match against sample_info_df
+            col_norm = str(col).strip().lower()
+            sample_info_norm = sample_info_df.copy()
+            sample_info_norm['_norm'] = sample_info_norm['Sample_Name'].astype(str).str.strip().str.lower()
+            match = sample_info_norm[sample_info_norm['_norm'] == col_norm]
+            raw_type = match.iloc[0]['Sample_Type'] if not match.empty else 'Unknown'
+
+        norm_type = normalize_sample_type(raw_type)
+        sample_type_map[col] = norm_type
+
+        if norm_type == 'QC':
+            qc_columns.append(col)
+        elif norm_type == 'Exposure':
+            exposed_columns.append(col)
+        elif norm_type in ('Control', 'Normal'):
             control_columns.append(col)
 
     if len(qc_columns) < 3:
         print("警告：QC 樣本不足 (<3)，跳過 PCA 分析")
         return
 
+    type_counts = {}
+    for v in sample_type_map.values():
+        type_counts[v] = type_counts.get(v, 0) + 1
     print(f"識別到樣本分組:")
-    print(f"  - QC: {len(qc_columns)} 個")
-    print(f"  - 控制組: {len(control_columns)} 個")
-    print(f"  - 暴露組: {len(exposed_columns)} 個")
+    for t, c in sorted(type_counts.items()):
+        print(f"  - {t}: {c} 個")
     print(f"  - 總計: {len(sample_columns)} 個")
 
-    # 🎨 顏色和形狀映射
+    # 🎨 顏色和形狀映射（使用共用常數）
     color_map = {}
     marker_map = {}
-    
+
     for col in sample_columns:
-        if col in qc_columns:
-            color_map[col] = '#9370DB'  # 紫色
-            marker_map[col] = 'o'        # 圓形
-        elif col in exposed_columns:
-            color_map[col] = '#DC143C'  # 紅色
-            marker_map[col] = '^'        # 三角形
-        else:  # control
-            color_map[col] = '#4169E1'  # 藍色
-            marker_map[col] = 's'        # 方形
+        s_type = sample_type_map.get(col, 'Unknown')
+        color_map[col] = SAMPLE_TYPE_COLORS.get(s_type, SAMPLE_TYPE_COLORS.get('Unknown', '#808080'))
+        marker_map[col] = SAMPLE_TYPE_MARKERS.get(s_type, SAMPLE_TYPE_MARKERS.get('Unknown', 'x'))
 
     def prepare_matrix(df, cols, feature_col='FeatureID'):
         try:
@@ -1217,15 +1350,8 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         print(f"   - T² 閾值: {t2_threshold_right:.2f}")
         print(f"   - 異常值數量: {np.sum(outliers_right)}/{len(qc_columns)}")
 
-        # 統一 PCA 圖樣式（以 QC 子程式風格為主）
-        sample_types = []
-        for col in sample_columns:
-            if col in qc_columns:
-                sample_types.append('QC')
-            elif col in exposed_columns:
-                sample_types.append('Exposure')
-            else:
-                sample_types.append('Control')
+        # 統一 PCA 圖樣式（使用 sample_type_map 保留所有類型）
+        sample_types = [sample_type_map.get(col, 'Unknown') for col in sample_columns]
 
         qc_outliers_left = {qc_columns[i] for i in range(len(qc_columns)) if outliers_left[i]}
         qc_outliers_right = {qc_columns[i] for i in range(len(qc_columns)) if outliers_right[i]}
@@ -1333,7 +1459,8 @@ def apply_fdr_correction(pvalues):
 
 # ========== 🔧 修改：save_results_to_excel==========
 def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
-                          all_sheets, sample_columns, original_workbook, plots_dir=None):
+                          all_sheets, sample_columns, original_workbook, plots_dir=None,
+                          col_to_info=None):
     """
     儲存結果到 Excel，使用 Wilcoxon 配對符號等級檢定 + Levene's test
     """
@@ -1362,7 +1489,8 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
     
     # ✅ 使用新的統計檢定函數
     cv_results_df = calculate_qc_cv_with_statistical_test(
-        results_df, sample_columns, sample_info_df, original_df
+        results_df, sample_columns, sample_info_df, original_df,
+        col_to_info=col_to_info
     )
     
     # 合併結果
@@ -1409,29 +1537,78 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
     other_cols = [col for col in results_with_cv.columns if col not in cols_order]
     results_with_cv = results_with_cv[other_cols + cols_order]
     
-    # 寫入 Excel
+    # 寫入 Excel（將內部欄名 'FeatureID' 還原為 FEATURE_ID_COLUMN）
+    def _rename_feature_col(df):
+        if 'FeatureID' in df.columns and FEATURE_ID_COLUMN != 'FeatureID':
+            return df.rename(columns={'FeatureID': FEATURE_ID_COLUMN})
+        return df
+
+    # ===== Fix 3: 簡化欄位名稱 (移除 DNA/RNA_programN_ prefix) =====
+    rename_map = {}
+    for col in sample_columns:
+        simplified = simplify_column_name(col)
+        if simplified != col:
+            rename_map[col] = simplified
+
+    if rename_map:
+        print(f"✓ 簡化 {len(rename_map)} 個欄位名稱（移除 DNA/RNA_programN_ 前綴）")
+        # Rename in results
+        results_with_cv = results_with_cv.rename(columns=rename_map)
+        # Rename in all_sheets
+        for sheet_name in all_sheets:
+            all_sheets[sheet_name] = all_sheets[sheet_name].rename(columns=rename_map)
+
+        # Update SampleInfo Sample_Name to match simplified column names
+        # so downstream processors can match columns to SampleInfo directly
+        if SHEET_NAMES['sample_info'] in all_sheets and col_to_info:
+            si = all_sheets[SHEET_NAMES['sample_info']]
+            if 'Sample_Name' in si.columns:
+                # Build reverse mapping: original SampleInfo name → simplified column name
+                info_name_to_col = {}
+                for orig_col, info in col_to_info.items():
+                    simplified = rename_map.get(orig_col, orig_col)
+                    info_name_to_col[info['Sample_Name'].strip()] = simplified
+
+                def _update_sample_name(name):
+                    name_stripped = str(name).strip()
+                    return info_name_to_col.get(name_stripped, name_stripped)
+
+                si['Sample_Name'] = si['Sample_Name'].apply(_update_sample_name)
+
+    # ===== 在 ISTD_Correction 中插入 Sample_Type 資訊行 =====
+    # 讓下游步驟可直接從資料 sheet 讀取分組資訊，無需另查 SampleInfo
+    if col_to_info:
+        from metabolomics.utils.sample_classification import normalize_sample_type
+        sample_type_row = {'FeatureID': 'Sample_Type'}
+        for col in results_with_cv.columns:
+            if col in sample_type_row:
+                continue
+            # 先查原始欄名（rename 前），再查 rename 後的名稱
+            orig_col = col
+            if rename_map:
+                # rename_map: original -> simplified，需要反查
+                reverse_map = {v: k for k, v in rename_map.items()}
+                orig_col = reverse_map.get(col, col)
+            info = col_to_info.get(orig_col, col_to_info.get(col))
+            if info and 'Sample_Type' in info:
+                sample_type_row[col] = normalize_sample_type(info['Sample_Type'])
+            else:
+                sample_type_row[col] = ''
+        type_row_df = pd.DataFrame([sample_type_row], columns=results_with_cv.columns)
+        results_with_cv = pd.concat([type_row_df, results_with_cv], ignore_index=True)
+
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         for sheet_name, df in all_sheets.items():
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
-        results_with_cv.to_excel(writer, sheet_name='ISTD_Correction', index=False)
+            _rename_feature_col(df).to_excel(writer, sheet_name=sheet_name, index=False)
+        _rename_feature_col(results_with_cv).to_excel(writer, sheet_name=SHEET_NAMES['istd_correction'], index=False)
     
     # 格式設定
     workbook = load_workbook(original_workbook)
     new_workbook = load_workbook(output_file)
     
-    # 複製 RawIntensity 格式
-    if 'RawIntensity' in workbook.sheetnames and 'RawIntensity' in new_workbook.sheetnames:
-        original_sheet = workbook['RawIntensity']
-        new_sheet = new_workbook['RawIntensity']
-        
-        for row in range(1, original_sheet.max_row + 1):
-            for col in range(1, original_sheet.max_column + 1):
-                original_cell = original_sheet.cell(row=row, column=col)
-                new_cell = new_sheet.cell(row=row, column=col)
-                if original_cell.font:
-                    new_cell.font = copy.copy(original_cell.font)
-                if original_cell.fill:
-                    new_cell.fill = copy.copy(original_cell.fill)
+    # 複製 RawIntensity 格式（font, border, fill, number_format, protection, alignment）
+    if SHEET_NAMES['raw_intensity'] in workbook.sheetnames and SHEET_NAMES['raw_intensity'] in new_workbook.sheetnames:
+        copy_sheet_formatting_only(workbook[SHEET_NAMES['raw_intensity']], new_workbook[SHEET_NAMES['raw_intensity']])
     
     # ISTD_Correction 格式
     scientific_format = '0.00E+00'
@@ -1441,8 +1618,8 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
     light_blue_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')
     light_pink_fill = PatternFill(start_color='FFB6C1', end_color='FFB6C1', fill_type='solid')
     
-    if 'ISTD_Correction' in new_workbook.sheetnames:
-        worksheet = new_workbook['ISTD_Correction']
+    if SHEET_NAMES['istd_correction'] in new_workbook.sheetnames:
+        worksheet = new_workbook[SHEET_NAMES['istd_correction']]
         header = [cell.value for cell in worksheet[1]]
         
         # CV% 欄位塗橙色
@@ -1544,17 +1721,11 @@ def main(input_file=None):
     print(f"📁 輸入檔案: {os.path.basename(input_file)}")
     print("="*70 + "\n")
     
-    # 載入數據
-    original_df, sample_info_df, all_sheets = load_and_process_data(input_file)
-    if original_df is None or sample_info_df is None:
-        print("❌ 錯誤：數據載入失敗")
-        raise Exception("數據載入失敗")
-    
-    # 計算校正結果
+    # 載入數據 (raises ValueError on failure)
+    original_df, sample_info_df, all_sheets, col_to_info = load_and_process_data(input_file)
+
+    # 計算校正結果 (raises ValueError on failure)
     results_df, sample_columns = calculate_corrected_ratios(original_df, sample_info_df)
-    if results_df is None:
-        print("❌ 錯誤：校正計算失敗")
-        raise Exception("校正計算失敗")
     
     # 🔧 修改：儲存結果到 output 資料夾
     run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
@@ -1586,7 +1757,7 @@ def main(input_file=None):
     save_results_to_excel(
         original_df, results_df, sample_info_df,
         output_file, all_sheets, sample_columns, input_file,
-        plots_dir=plots_session_dir
+        plots_dir=plots_session_dir, col_to_info=col_to_info
     )
     
     # ✅ 執行 2D PCA 分析（傳入 output_dir）
@@ -1595,7 +1766,8 @@ def main(input_file=None):
     print("="*70 + "\n")
     perform_pca_analysis_2d(
         original_df, results_df, None,
-        sample_columns, sample_info_df, plots_session_dir
+        sample_columns, sample_info_df, plots_session_dir,
+        col_to_info=col_to_info
     )
     
     print("\n" + "="*70)
