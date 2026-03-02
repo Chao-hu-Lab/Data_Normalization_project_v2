@@ -20,17 +20,17 @@ from scipy.stats import chi2, f as f_dist
 warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
-from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
-from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL, NON_SAMPLE_COLUMNS, STAT_COLUMN_KEYWORDS, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS
-from metabolomics.utils.sample_classification import SampleClassifier, identify_sample_columns, normalize_sample_type
-from metabolomics.utils.file_io import (
+from ms_core.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
+from ms_core.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL, NON_SAMPLE_COLUMNS, STAT_COLUMN_KEYWORDS, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS
+from ms_core.utils.sample_classification import SampleClassifier, identify_sample_columns, normalize_sample_type
+from ms_core.utils.file_io import (
     build_output_path,
     build_plots_dir,
     get_output_root,
     generate_output_filename,
 )
-from metabolomics.utils.results import ProcessingResult
-from metabolomics.utils.console import safe_print as print
+from ms_core.utils.results import ProcessingResult
+from ms_core.utils.console import safe_print as print
 
 # 設定 matplotlib
 setup_matplotlib()
@@ -181,7 +181,7 @@ def read_excel_data(file_path):
         raise ValueError(f"讀取 '{data_sheet}' 失敗: {e}")
 
     # ===== 提取 Sample_Type 資訊行（不參與數值計算，保存時回插）=====
-    from metabolomics.utils.data_helpers import extract_sample_type_row
+    from ms_core.utils.data_helpers import extract_sample_type_row
     feature_col = data.columns[0]  # 通常是 FeatureID 或 Mz/RT
     data, sample_type_row = extract_sample_type_row(data, feature_col)
     if sample_type_row is not None:
@@ -1817,7 +1817,7 @@ def plot_permutation_null_distribution(perm_test_result, metric_name='PERMANOVA 
     
     return fig
 
-from metabolomics.utils.excel_format import copy_sheet_with_style  # noqa: E302
+from ms_core.utils.excel_format import copy_sheet_with_style  # noqa: E302
 
 def color_result_cells(ws):
     """
@@ -2188,7 +2188,7 @@ def save_results_to_excel(input_file, output_file, data, sample_info,
 
     # 回插 Sample_Type 資訊行（若有）
     if sample_type_row is not None:
-        from metabolomics.utils.data_helpers import insert_sample_type_row
+        from ms_core.utils.data_helpers import insert_sample_type_row
         corrected_df = insert_sample_type_row(corrected_df, sample_type_row)
 
     # 首先創建基本結構

@@ -199,7 +199,7 @@ def validate_result_dict():
         Returns:
             dict with validation results
         """
-        from metabolomics.utils.results import ProcessingResult
+        from ms_core.utils.results import ProcessingResult
 
         data = None
         is_processing_result = isinstance(result, ProcessingResult)

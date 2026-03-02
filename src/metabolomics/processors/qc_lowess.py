@@ -18,24 +18,24 @@ from collections import Counter
 warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
-from metabolomics.utils.data_helpers import get_valid_values
-from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
-from metabolomics.utils.constants import (
+from ms_core.utils.data_helpers import get_valid_values
+from ms_core.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
+from ms_core.utils.constants import (
     NON_SAMPLE_COLUMNS,
     SHEET_NAMES,
     DATETIME_FORMAT_FULL,
     FEATURE_ID_COLUMN,
     CV_QUALITY_THRESHOLDS,
 )
-from metabolomics.utils.sample_classification import (
+from ms_core.utils.sample_classification import (
     normalize_sample_name,
     normalize_sample_type,
     identify_sample_columns,
 )
-from metabolomics.utils.file_io import build_output_path, build_plots_dir, get_output_root
-from metabolomics.utils.results import ProcessingResult
-from metabolomics.utils.excel_format import copy_sheet_formatting_only
-from metabolomics.utils.console import safe_print as print
+from ms_core.utils.file_io import build_output_path, build_plots_dir, get_output_root
+from ms_core.utils.results import ProcessingResult
+from ms_core.utils.excel_format import copy_sheet_formatting_only
+from ms_core.utils.console import safe_print as print
 
 # 設定 matplotlib
 setup_matplotlib()
@@ -361,7 +361,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
 
         print("\n🔍 計算 QC CV% 以選擇調試特徵...")
         # Vectorized CV% calculation - much faster than iterrows()
-        from metabolomics.utils.safe_math import safe_cv_percent_vectorized
+        from ms_core.utils.safe_math import safe_cv_percent_vectorized
 
         valid_qc_cols = [c for c in qc_samples if c in istd_df.columns]
         if valid_qc_cols:
@@ -797,7 +797,7 @@ def load_and_process_data(file_path):
             istd_df = istd_df.rename(columns={first_col: 'FeatureID'})
 
         # ===== 提取 Sample_Type 資訊行（不參與數值計算，保存時回插）=====
-        from metabolomics.utils.data_helpers import extract_sample_type_row
+        from ms_core.utils.data_helpers import extract_sample_type_row
         istd_df, sample_type_row = extract_sample_type_row(istd_df, 'FeatureID')
         if sample_type_row is not None:
             print(f"✓ 偵測到 Sample_Type 資訊行，已提取保存（不參與計算）")
@@ -1417,7 +1417,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
 
         # ===== 回插 Sample_Type 資訊行（若有）=====
         if sample_type_row is not None:
-            from metabolomics.utils.data_helpers import insert_sample_type_row
+            from ms_core.utils.data_helpers import insert_sample_type_row
             istd_export = insert_sample_type_row(istd_export, sample_type_row)
             lowess_export = insert_sample_type_row(lowess_export, sample_type_row)
 

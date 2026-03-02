@@ -15,14 +15,14 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
-from metabolomics.utils.data_helpers import get_valid_values
-from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
-from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL, FEATURE_ID_COLUMN, VALIDATION_THRESHOLDS, CV_QUALITY_THRESHOLDS
-from metabolomics.utils.sample_classification import SampleClassifier, identify_sample_columns
-from metabolomics.utils.file_io import build_output_path, build_plots_dir, get_output_root
-from metabolomics.utils.results import ProcessingResult
-from metabolomics.utils.excel_format import copy_sheet_formatting_only
-from metabolomics.utils.console import safe_print as print
+from ms_core.utils.data_helpers import get_valid_values
+from ms_core.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
+from ms_core.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL, FEATURE_ID_COLUMN, VALIDATION_THRESHOLDS, CV_QUALITY_THRESHOLDS
+from ms_core.utils.sample_classification import SampleClassifier, identify_sample_columns
+from ms_core.utils.file_io import build_output_path, build_plots_dir, get_output_root
+from ms_core.utils.results import ProcessingResult
+from ms_core.utils.excel_format import copy_sheet_formatting_only
+from ms_core.utils.console import safe_print as print
 
 import re as _re
 
@@ -155,7 +155,7 @@ def load_and_process_data(file_path):
 
         # ===== 防呆12: 样本名称匹配检查（支援模糊匹配）=====
         import re
-        from metabolomics.utils.sample_classification import normalize_sample_type, normalize_sample_name
+        from ms_core.utils.sample_classification import normalize_sample_type, normalize_sample_name
 
         def _extract_key_tokens(name):
             """從樣本名稱中提取關鍵字和編號用於模糊匹配。
@@ -416,7 +416,7 @@ def calculate_istd_cv(istd_signals, sample_columns):
 
     Vectorized implementation - much faster than iterrows().
     """
-    from metabolomics.utils.safe_math import safe_cv_percent_vectorized
+    from ms_core.utils.safe_math import safe_cv_percent_vectorized
 
     # Extract numeric matrix for sample columns
     valid_cols = [c for c in sample_columns if c in istd_signals.columns]
@@ -655,7 +655,7 @@ def calculate_corrected_ratios(df, sample_info_df):
     
     sample_names = sample_info_df['Sample_Name'].tolist()
 
-    from metabolomics.utils.constants import NON_SAMPLE_COLUMNS
+    from ms_core.utils.constants import NON_SAMPLE_COLUMNS
     all_columns = df.columns.tolist()
     # 排除已知的非樣本欄位（FeatureID, mz, rt, is_ISTD 等）
     non_sample = NON_SAMPLE_COLUMNS | {'is_ISTD', 'Sample_Type', 'sample_type'}
@@ -768,8 +768,8 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
     - Uses indexed lookup instead of O(N) search per row (was O(N^2), now O(N))
     - Pre-extracts numeric matrices for QC columns
     """
-    from metabolomics.utils.safe_math import safe_divide
-    from metabolomics.utils.sample_classification import normalize_sample_type
+    from ms_core.utils.safe_math import safe_divide
+    from ms_core.utils.sample_classification import normalize_sample_type
 
     # Use col_to_info for QC identification (primary), fallback to direct name match
     if col_to_info:
@@ -1227,8 +1227,8 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
 
-    from metabolomics.utils.sample_classification import normalize_sample_type
-    from metabolomics.utils.constants import SAMPLE_TYPE_COLORS, SAMPLE_TYPE_MARKERS
+    from ms_core.utils.sample_classification import normalize_sample_type
+    from ms_core.utils.constants import SAMPLE_TYPE_COLORS, SAMPLE_TYPE_MARKERS
 
     # 使用 col_to_info 識別樣本類型（精確映射，不再靠名稱比對）
     qc_columns = []
@@ -1573,7 +1573,7 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
     # ===== 在 ISTD_Correction 中插入 Sample_Type 資訊行 =====
     # 讓下游步驟可直接從資料 sheet 讀取分組資訊，無需另查 SampleInfo
     if col_to_info:
-        from metabolomics.utils.sample_classification import normalize_sample_type
+        from ms_core.utils.sample_classification import normalize_sample_type
         sample_type_row = {'FeatureID': 'Sample_Type'}
         for col in results_with_cv.columns:
             if col in sample_type_row:

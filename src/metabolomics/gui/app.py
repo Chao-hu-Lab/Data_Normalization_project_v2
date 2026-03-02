@@ -12,9 +12,10 @@ import subprocess
 import psutil
 import re
 import tempfile
-from metabolomics.utils.results import ProcessingResult
-from metabolomics.adapters.preprocessing_to_dnp import convert_preprocessing_to_dnp
-from metabolomics.adapters.dnp_to_metaboanalyst import convert_dnp_to_metaboanalyst
+from ms_core.utils.results import ProcessingResult
+# TODO: adapters removed, use ms_core pipeline
+# from metabolomics.adapters.preprocessing_to_dnp import convert_preprocessing_to_dnp
+# from metabolomics.adapters.dnp_to_metaboanalyst import convert_dnp_to_metaboanalyst
 
 
 # ========== Platform-Aware Font Settings ==========

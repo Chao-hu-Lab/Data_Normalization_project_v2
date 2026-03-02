@@ -16,7 +16,7 @@ import pandas as pd
 import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
 
-from metabolomics.utils.constants import (
+from ms_core.utils.constants import (
     FEATURE_ID_COLUMN,
     NON_SAMPLE_COLUMNS,
     STAT_COLUMN_KEYWORDS,

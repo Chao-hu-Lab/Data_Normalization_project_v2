@@ -1,4 +1,4 @@
-import pandas as pd
+﻿import pandas as pd
 import numpy as np
 from pathlib import Path
 import warnings
@@ -2332,10 +2332,15 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     for i, col in enumerate(sample_columns):
         normalized_df[col] = normalized_data[:, i]
     
-    # 只添加CV%欄位
-    normalized_df['Original_CV%'] = calculate_cv_per_feature(original_data)
-    normalized_df['Normalized_CV%'] = calculate_cv_per_feature(normalized_data)
-    normalized_df['CV_Improvement%'] = normalized_df['Original_CV%'] - normalized_df['Normalized_CV%']
+    # Step 8 output rule: keep only QC-based CV% (no Original/Improvement columns)
+    qc_indices_for_cv = [
+        i for i, s in enumerate(sample_columns)
+        if _lookup_sample_type(s, sample_info_df, col_to_info_row) == 'QC'
+    ]
+    if len(qc_indices_for_cv) > 0:
+        normalized_df['QC_CV%'] = calculate_cv_per_feature(normalized_data[:, qc_indices_for_cv])
+    else:
+        normalized_df['QC_CV%'] = np.nan
     
     # ========== 生成摘要報告 ==========
     summary_report = create_normalization_summary_report(
