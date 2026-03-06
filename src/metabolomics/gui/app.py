@@ -12,7 +12,14 @@ import subprocess
 import psutil
 import re
 import tempfile
+from pathlib import Path
+from metabolomics.bootstrap_paths import ensure_ms_core_src_on_path
+
+ensure_ms_core_src_on_path(Path(__file__).resolve())
+
+from ms_core.utils import build_bridge_path, create_session, update_manifest
 from ms_core.utils.results import ProcessingResult
+from metabolomics.startup_bridge import apply_startup_bridge, parse_startup_args
 # TODO: adapters removed, use ms_core pipeline
 # from metabolomics.adapters.preprocessing_to_dnp import convert_preprocessing_to_dnp
 # from metabolomics.adapters.dnp_to_metaboanalyst import convert_dnp_to_metaboanalyst
@@ -33,6 +40,12 @@ def get_system_fonts():
         }
 
 FONTS = get_system_fonts()
+
+
+def _load_dnp_to_ma_adapter():
+    from metabolomics.adapters.dnp_to_metaboanalyst import convert_dnp_to_metaboanalyst
+
+    return convert_dnp_to_metaboanalyst
 
 
 class DataNormalizationApp:
@@ -89,6 +102,7 @@ class DataNormalizationApp:
         # 檔案選擇相關
         self.file_selected = threading.Event()
         self.selected_file_path = None
+        self._ms_session_dir = None
         
         self.last_output_file = None  # 記錄最後一個輸出檔案
         self.step_outputs = {}
@@ -1282,28 +1296,53 @@ class DataNormalizationApp:
             messagebox.showwarning("File Not Found", "Step 4 output file not found.")
             return
 
-        output_path = filedialog.asksaveasfilename(
-            title="Save Metaboanalyst-compatible file",
-            defaultextension=".xlsx",
-            initialfile=f"Metaboanalyst_import_{os.path.basename(step4_output)}",
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+        if self._ms_session_dir:
+            session_dir = Path(self._ms_session_dir)
+            manifest_path = session_dir / "manifest.json"
+        else:
+            session = create_session(source_file=step4_output)
+            session_dir = session.session_dir
+            manifest_path = session.manifest_path
+            self._ms_session_dir = session_dir
+
+        output_path = build_bridge_path(
+            session_dir,
+            stage="dnp",
+            bucket="bridge_to_ma",
+            filename=f"Metaboanalyst_import_{Path(step4_output).name}",
         )
-        if not output_path:
-            return
 
         self.master.config(cursor='wait')
         self.export_meta_btn.config(text="Exporting...", state='disabled')
         self.master.update()
         try:
+            convert_dnp_to_metaboanalyst = _load_dnp_to_ma_adapter()
             self.logger.info(f"Exporting to Metaboanalyst format: {step4_output}")
-            result_path = convert_dnp_to_metaboanalyst(step4_output, output_path)
+            result_path = Path(convert_dnp_to_metaboanalyst(step4_output, str(output_path)))
+            bridge_ref = str(result_path)
+            try:
+                bridge_ref = str(result_path.relative_to(session_dir))
+            except ValueError:
+                pass
+            update_manifest(
+                manifest_path,
+                stage="dnp",
+                data={
+                    "bridge_to_ma": bridge_ref,
+                    "status": "bridge_exported",
+                    "bridge_exported_at": datetime.now().isoformat(),
+                },
+            )
             self.logger.info(f"Export complete: {result_path}")
             if messagebox.askyesno(
                 "Export Successful",
                 f"File exported:\n{os.path.basename(result_path)}\n\n"
                 "Launch Metaboanalyst now?"
             ):
-                self._launch_metaboanalyst()
+                self._launch_metaboanalyst(
+                    bridge_file=str(result_path),
+                    session_dir=str(session_dir),
+                )
         except Exception as e:
             self.logger.error(f"Export to Metaboanalyst failed: {e}")
             messagebox.showerror("Export Failed", f"Conversion error:\n{e}")
@@ -1311,7 +1350,7 @@ class DataNormalizationApp:
             self.master.config(cursor='')
             self.update_button_states()
 
-    def _launch_metaboanalyst(self):
+    def _launch_metaboanalyst(self, bridge_file=None, session_dir=None):
         """Launch Metaboanalyst_clone GUI as a separate process."""
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
         candidates = [
@@ -1321,8 +1360,13 @@ class DataNormalizationApp:
         for main_py in candidates:
             if os.path.exists(main_py):
                 self.logger.info(f"Launching Metaboanalyst: {main_py}")
+                argv = [sys.executable, main_py]
+                if session_dir:
+                    argv.extend(["--ms-session-dir", session_dir])
+                if bridge_file:
+                    argv.extend(["--ms-bridge-file", bridge_file])
                 subprocess.Popen(
-                    [sys.executable, main_py],
+                    argv,
                     cwd=os.path.dirname(main_py),
                 )
                 return
@@ -1721,9 +1765,12 @@ class StreamToLogger:
         pass
 
 
-def main():
+def main(argv=None):
+    args = parse_startup_args(argv or sys.argv[1:])
     root = tk.Tk()
     app = DataNormalizationApp(root)
+    app._ms_session_dir = args.ms_session_dir
+    root.after(0, lambda: apply_startup_bridge(app, args.ms_bridge_file))
     
     def on_closing():
         if app.is_executing:

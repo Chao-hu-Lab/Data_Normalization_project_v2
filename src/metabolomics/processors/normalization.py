@@ -2332,7 +2332,16 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     for i, col in enumerate(sample_columns):
         normalized_df[col] = normalized_data[:, i]
     
-    # Step 8 output rule: keep only QC-based CV% (no Original/Improvement columns)
+    # Step 8 output rule: keep CV metrics with unified Original/Normalized naming.
+    # Keep unified CV naming for sample-level metrics; keep single QC_CV% only.
+    original_cv_full = calculate_cv_per_feature(original_data)
+    normalized_cv_full = calculate_cv_per_feature(normalized_data)
+
+    normalized_df['Original_CV%'] = original_cv_full
+    normalized_df['Normalized_CV%'] = normalized_cv_full
+    normalized_df['CV_Improvement%'] = original_cv_full - normalized_cv_full
+
+
     qc_indices_for_cv = [
         i for i, s in enumerate(sample_columns)
         if _lookup_sample_type(s, sample_info_df, col_to_info_row) == 'QC'

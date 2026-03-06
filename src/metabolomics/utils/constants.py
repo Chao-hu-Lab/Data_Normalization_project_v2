@@ -1,4 +1,4 @@
-"""
+﻿"""
 Centralized constants for the Data Normalization project.
 
 This module contains all shared constants to avoid duplication across modules.
@@ -89,7 +89,7 @@ CV_QUALITY_THRESHOLDS = {
 # Columns that should never be treated as sample intensity columns
 NON_SAMPLE_COLUMNS = {
     'Mz/RT', 'FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference', 'ISTD_Median',
-    'QC_CV%', 'Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%',
+    'CV%', 'QC_CV%', 'Original_CV%', 'Normalized_CV%', 'CV_Improvement%', 'Original_QC_CV%', 'Corrected_QC_CV%',
     'Variance_Test_pvalue', 'Wilcoxon_pvalue', 'Wilcoxon_qvalue',
     'Shapiro_pvalue', 'MK_Trend_pvalue', 'Kendall_Tau',
     'LOWESS_R2', 'LOWESS_RMSE', 'Significant_Improvement',
