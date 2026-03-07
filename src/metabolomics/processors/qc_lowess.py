@@ -13,7 +13,6 @@ import scipy.stats as stats
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 import warnings
-import copy
 from collections import Counter
 
 warnings.filterwarnings('ignore')
@@ -25,13 +24,17 @@ from metabolomics.utils.constants import (
     NON_SAMPLE_COLUMNS,
     SHEET_NAMES,
     DATETIME_FORMAT_FULL,
+    FEATURE_ID_COLUMN,
+    CV_QUALITY_THRESHOLDS,
 )
 from metabolomics.utils.sample_classification import (
     normalize_sample_name,
+    normalize_sample_type,
     identify_sample_columns,
 )
 from metabolomics.utils.file_io import build_output_path, build_plots_dir, get_output_root
 from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.excel_format import copy_sheet_formatting_only
 from metabolomics.utils.console import safe_print as print
 
 # 設定 matplotlib
@@ -109,10 +112,10 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
     qc_cv_for_frac = compute_qc_cv(valid_y)
     qc_cv_for_frac = 100.0 if not np.isfinite(qc_cv_for_frac) else qc_cv_for_frac
 
-    if qc_cv_for_frac > 30:
+    if qc_cv_for_frac > CV_QUALITY_THRESHOLDS['acceptable']:
         frac = 0.8
         frac_strategy = 'high_variation'
-    elif qc_cv_for_frac > 20:
+    elif qc_cv_for_frac > CV_QUALITY_THRESHOLDS['excellent']:
         frac = 0.7
         frac_strategy = 'medium_variation'
     else:
@@ -246,20 +249,21 @@ def perform_lowess_normalization(istd_df, sample_info_df):
     """執行分批次的 QC-LOWESS 正規化流程。"""
     try:
         if istd_df is None or istd_df.empty:
-            print("❌ 錯誤：ISTD_Correction 數據為空")
-            return None, None, None, None, None
+            raise ValueError("ISTD_Correction 數據為空")
 
         if sample_info_df is None or sample_info_df.empty:
-            print("❌ 錯誤：SampleInfo 數據為空")
-            return None, None, None, None, None
+            raise ValueError("SampleInfo 數據為空")
 
-        if 'FeatureID' not in istd_df.columns:
-            print("❌ 錯誤：ISTD_Correction 缺少 'FeatureID' 欄位")
-            return None, None, None, None, None
+        # 支援 'Mz/RT' 或 'FeatureID' 作為特徵ID欄位
+        if FEATURE_ID_COLUMN in istd_df.columns and FEATURE_ID_COLUMN != 'FeatureID':
+            istd_df = istd_df.rename(columns={FEATURE_ID_COLUMN: 'FeatureID'})
+        elif 'FeatureID' not in istd_df.columns:
+            first_col = istd_df.columns[0]
+            print(f"⚠️ 未找到 'FeatureID' 欄位，使用第一欄 '{first_col}' 作為特徵ID")
+            istd_df = istd_df.rename(columns={first_col: 'FeatureID'})
 
         if 'Sample_Name' not in sample_info_df.columns or 'Sample_Type' not in sample_info_df.columns:
-            print("❌ 錯誤：SampleInfo 缺少必要欄位 (Sample_Name, Sample_Type)")
-            return None, None, None, None, None
+            raise ValueError("SampleInfo 缺少必要欄位 (Sample_Name, Sample_Type)")
 
         sample_columns = istd_df.attrs.get('sample_columns')
         if not sample_columns:
@@ -267,36 +271,52 @@ def perform_lowess_normalization(istd_df, sample_info_df):
 
         sample_columns = [col for col in sample_columns if col in istd_df.columns]
         if not sample_columns:
-            print("❌ 錯誤：找不到有效的樣本欄位")
-            return None, None, None, None, None
+            raise ValueError("找不到有效的樣本欄位")
 
-        sample_meta = sample_info_df.set_index('Sample_Name')
-        missing_meta = [col for col in sample_columns if col not in sample_meta.index]
-        if missing_meta:
+        sample_info_norm = sample_info_df.copy()
+        sample_info_norm['_norm_name'] = sample_info_norm['Sample_Name'].map(normalize_sample_name)
+        sample_info_norm = sample_info_norm[sample_info_norm['_norm_name'].astype(bool)]
+        sample_meta = sample_info_norm.drop_duplicates('_norm_name').set_index('_norm_name')
+        col_to_meta = {
+            col: normalize_sample_name(col)
+            for col in sample_columns
+            if normalize_sample_name(col) in sample_meta.index
+        }
+        missing_meta = [col for col in sample_columns if col not in col_to_meta]
+
+        if missing_meta and len(missing_meta) == len(sample_columns):
+            print("⚠️  SampleInfo 與 ISTD_Correction 的樣本名稱格式不同，改用欄位名稱推斷樣本類型")
+        elif missing_meta:
             print("⚠️  警告：以下樣本在 SampleInfo 中找不到對應資訊，將被排除：")
             for name in missing_meta[:5]:
                 print(f"     - {name}")
             if len(missing_meta) > 5:
                 print(f"     ... 還有 {len(missing_meta) - 5} 個樣本")
-        sample_columns = [col for col in sample_columns if col in sample_meta.index]
+            sample_columns = [col for col in sample_columns if col in col_to_meta]
 
         if not sample_columns:
-            print("❌ 錯誤：無法匹配 SampleInfo 與 ISTD_Correction 的樣本欄位")
-            return None, None, None, None, None
+            raise ValueError("無法匹配 SampleInfo 與 ISTD_Correction 的樣本欄位")
 
-        qc_samples = [
-            sample for sample in sample_columns
-            if 'QC' in str(sample_meta.loc[sample].get('Sample_Type', '')).upper()
-        ]
+        # 判斷 QC 樣本：優先從 SampleInfo 查找，如找不到則從欄位名稱關鍵字判斷
+        qc_samples = []
+        for sample in sample_columns:
+            meta_key = col_to_meta.get(sample)
+            if meta_key in sample_meta.index:
+                if 'QC' in str(sample_meta.loc[meta_key].get('Sample_Type', '')).upper():
+                    qc_samples.append(sample)
+            elif 'QC' in sample.upper() or 'POOLED' in sample.upper():
+                qc_samples.append(sample)
 
         if len(qc_samples) < 5:
-            print(f"❌ 錯誤：QC 樣本不足 ({len(qc_samples)} < 5)，無法進行校正")
-            return None, None, None, None, None
+            raise ValueError(f"QC 樣本不足 ({len(qc_samples)} < 5)，無法進行校正")
 
         batch_groups = {}
         missing_order_samples = []
         for sample in sample_columns:
-            meta_row = sample_meta.loc[sample]
+            meta_name = col_to_meta.get(sample, sample)
+            if meta_name not in sample_meta.index:
+                continue
+            meta_row = sample_meta.loc[meta_name]
             batch_name = str(meta_row.get('Batch', 'Batch1'))
             batch_entry = batch_groups.setdefault(
                 batch_name,
@@ -316,8 +336,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
 
         active_batches = {k: v for k, v in batch_groups.items() if v['samples']}
         if not active_batches:
-            print("❌ 錯誤：找不到可供處理的批次樣本")
-            return None, None, None, None, None
+            raise ValueError("找不到可供處理的批次樣本")
 
         print("\n📊 數據概覽：")
         print(f"  - 特徵數: {len(istd_df)}")
@@ -616,7 +635,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         print(f"❌ LOWESS 校正失敗: {e}")
         import traceback
         traceback.print_exc()
-        return None, None, None, None, None
+        raise
 
 
     # ========== 數據載入 ==========
@@ -639,19 +658,16 @@ def load_and_process_data(file_path):
     try:
         # ===== 防呆1: 文件存在性檢查 =====
         if not os.path.exists(file_path):
-            print(f"❌ 錯誤：找不到檔案 '{file_path}'")
-            return None, None, None
+            raise ValueError(f"找不到檔案 '{file_path}'")
 
         # ===== 防呆2: 文件格式檢查 =====
         if not (file_path.endswith('.xlsx') or file_path.endswith('.xls')):
-            print(f"❌ 錯誤：輸入檔案必須是 Excel 格式 (.xlsx 或 .xls)，但提供了 {file_path}")
-            return None, None, None
+            raise ValueError(f"輸入檔案必須是 Excel 格式 (.xlsx 或 .xls)，但提供了 {file_path}")
 
         # ===== 防呆3: 文件大小檢查 =====
         file_size = os.path.getsize(file_path)
         if file_size == 0:
-            print(f"❌ 錯誤：檔案大小為 0 bytes，可能是空檔案")
-            return None, None, None
+            raise ValueError("檔案大小為 0 bytes，可能是空檔案")
         elif file_size < 1024:  # 小於 1KB
             print(f"⚠️  警告：檔案大小僅 {file_size} bytes，可能不是有效的 Excel 檔案")
 
@@ -661,42 +677,41 @@ def load_and_process_data(file_path):
         try:
             excel_file = pd.ExcelFile(file_path)
         except Exception as e:
-            print(f"❌ 錯誤：無法讀取 Excel 檔案，可能已損壞或格式不正確")
-            print(f"   詳細錯誤: {e}")
-            return None, None, None
+            raise ValueError(f"無法讀取 Excel 檔案，可能已損壞或格式不正確: {e}") from e
 
         # ===== 防呆5: 必要工作表檢查 =====
         print(f"📋 找到的工作表: {', '.join(excel_file.sheet_names)}")
 
-        required_sheets = ['ISTD_Correction', 'SampleInfo']
+        required_sheets = [SHEET_NAMES['istd_correction'], SHEET_NAMES['sample_info']]
         missing_sheets = [sheet for sheet in required_sheets if sheet not in excel_file.sheet_names]
 
         if missing_sheets:
-            print(f"❌ 錯誤：輸入檔案缺少必要的工作表: {', '.join(missing_sheets)}")
-            print(f"   找到的工作表: {', '.join(excel_file.sheet_names)}")
-            print(f"   提示：QC-LOWESS 校正需要先執行 ISTD_Correction")
-            return None, None, None
+            raise ValueError(
+                f"輸入檔案缺少必要的工作表: {', '.join(missing_sheets)}。"
+                f" 找到的工作表: {', '.join(excel_file.sheet_names)}。"
+                f" QC-LOWESS 校正需要先執行 ISTD_Correction"
+            )
 
         # ===== 防呆6: SampleInfo 完整性檢查 =====
-        sample_info_df = pd.read_excel(excel_file, sheet_name='SampleInfo')
-        print(f"✓ 成功讀取 'SampleInfo' 工作表，包含 {len(sample_info_df)} 筆樣本資訊")
+        sample_info_df = pd.read_excel(excel_file, sheet_name=SHEET_NAMES['sample_info'])
+        print(f"✓ 成功讀取 '{SHEET_NAMES['sample_info']}' 工作表，包含 {len(sample_info_df)} 筆樣本資訊")
 
         if sample_info_df.empty:
-            print(f"❌ 錯誤：'SampleInfo' 工作表為空")
-            return None, None, None
+            raise ValueError(f"'{SHEET_NAMES['sample_info']}' 工作表為空")
 
         required_columns = ['Sample_Name', 'Sample_Type', 'Injection_Order']
         missing_cols = [col for col in required_columns if col not in sample_info_df.columns]
 
         if missing_cols:
-            print(f"❌ 錯誤：'SampleInfo' 缺少必要欄位: {', '.join(missing_cols)}")
-            print(f"   找到的欄位: {', '.join(sample_info_df.columns.tolist())}")
-            return None, None, None
+            raise ValueError(
+                f"'{SHEET_NAMES['sample_info']}' 缺少必要欄位: {', '.join(missing_cols)}。"
+                f" 找到的欄位: {', '.join(sample_info_df.columns.tolist())}"
+            )
 
         # ===== 防呆6-1: Batch 欄位處理 =====
         if 'Batch' not in sample_info_df.columns:
             sample_info_df['Batch'] = 'Batch1'
-            print("⚠️  警告：'SampleInfo' 缺少 'Batch' 欄位，已建立預設 Batch1")
+            print(f"⚠️  警告：'{SHEET_NAMES['sample_info']}' 缺少 'Batch' 欄位，已建立預設 Batch1")
         else:
             batch_na_mask = sample_info_df['Batch'].isna()
             if batch_na_mask.any():
@@ -709,7 +724,7 @@ def load_and_process_data(file_path):
         # ===== 防呆7: 樣本名稱重複檢查 =====
         duplicate_samples = sample_info_df[sample_info_df['Sample_Name'].duplicated()]
         if not duplicate_samples.empty:
-            print(f"⚠️  警告：'SampleInfo' 中發現重複的樣本名稱:")
+            print(f"⚠️  警告：'{SHEET_NAMES['sample_info']}' 中發現重複的樣本名稱:")
             for idx, row in duplicate_samples.iterrows():
                 print(f"     - {row['Sample_Name']}")
             print(f"   建議：請檢查樣本名稱是否正確")
@@ -720,9 +735,7 @@ def load_and_process_data(file_path):
 
         qc_count = sample_info_df[sample_info_df['Sample_Type'].str.upper().str.contains('QC', na=False)].shape[0]
         if qc_count == 0:
-            print(f"❌ 錯誤：未找到 QC 樣本（Sample_Type 中無 'QC' 字樣）")
-            print(f"   提示：QC-LOWESS 校正需要至少 5 個 QC 樣本")
-            return None, None, None
+            raise ValueError("未找到 QC 樣本（Sample_Type 中無 'QC' 字樣）。QC-LOWESS 校正需要至少 5 個 QC 樣本")
         elif qc_count < 5:
             print(f"⚠️  警告：QC 樣本數量不足 ({qc_count} < 5)")
             print(f"   提示：建議至少有 5 個 QC 樣本以確保校正準確性")
@@ -759,22 +772,30 @@ def load_and_process_data(file_path):
                 print(f"⚠️  警告：已為缺少 Injection_Order 的樣本指派遞增序號，請於 SampleInfo 中確認")
 
         # ===== 防呆10: ISTD_Correction 基本檢查 =====
-        istd_df = pd.read_excel(excel_file, sheet_name='ISTD_Correction')
-        print(f"✓ 成功讀取 'ISTD_Correction' 工作表，包含 {len(istd_df)} 個特徵")
+        istd_df = pd.read_excel(excel_file, sheet_name=SHEET_NAMES['istd_correction'])
+        print(f"✓ 成功讀取 '{SHEET_NAMES['istd_correction']}' 工作表，包含 {len(istd_df)} 個特徵")
 
         if istd_df.empty:
-            print(f"❌ 錯誤：'ISTD_Correction' 工作表為空")
-            return None, None, None
+            raise ValueError(f"'{SHEET_NAMES['istd_correction']}' 工作表為空")
 
-        if 'FeatureID' not in istd_df.columns:
-            print(f"❌ 錯誤：'ISTD_Correction' 缺少 'FeatureID' 欄位")
-            print(f"   找到的欄位: {', '.join(istd_df.columns.tolist())}")
-            return None, None, None
+        # 支援 'Mz/RT' 或 'FeatureID' 作為特徵ID欄位
+        if FEATURE_ID_COLUMN in istd_df.columns and FEATURE_ID_COLUMN != 'FeatureID':
+            istd_df = istd_df.rename(columns={FEATURE_ID_COLUMN: 'FeatureID'})
+        elif 'FeatureID' not in istd_df.columns:
+            first_col = istd_df.columns[0]
+            print(f"⚠️ 未找到 'FeatureID' 欄位，使用第一欄 '{first_col}' 作為特徵ID")
+            istd_df = istd_df.rename(columns={first_col: 'FeatureID'})
+
+        # ===== 提取 Sample_Type 資訊行（不參與數值計算，保存時回插）=====
+        from metabolomics.utils.data_helpers import extract_sample_type_row
+        istd_df, sample_type_row = extract_sample_type_row(istd_df, 'FeatureID')
+        if sample_type_row is not None:
+            print(f"✓ 偵測到 Sample_Type 資訊行，已提取保存（不參與計算）")
 
         # ===== 防呆11: FeatureID 重複檢查 =====
         duplicate_features = istd_df[istd_df['FeatureID'].duplicated(keep=False)]
         if not duplicate_features.empty:
-            print(f"⚠️  警告：'ISTD_Correction' 中發現重複的 FeatureID:")
+            print(f"⚠️  警告：'{SHEET_NAMES['istd_correction']}' 中發現重複的 FeatureID:")
             dup_ids = duplicate_features['FeatureID'].unique()
             for fid in dup_ids[:5]:
                 print(f"     - {fid}")
@@ -786,8 +807,7 @@ def load_and_process_data(file_path):
         sample_columns, dropped_columns = identify_sample_columns(istd_df, sample_info_df)
 
         if len(sample_columns) == 0:
-            print(f"❌ 錯誤：'ISTD_Correction' 中沒有匹配 SampleInfo 的樣本欄位")
-            return None, None, None
+            raise ValueError(f"'{SHEET_NAMES['istd_correction']}' 中沒有匹配 {SHEET_NAMES['sample_info']} 的樣本欄位")
 
         print(f"✓ 找到 {len(sample_columns)} 個樣本欄位（來自 SampleInfo）")
 
@@ -799,7 +819,7 @@ def load_and_process_data(file_path):
                 print(f"     ... 還有 {len(dropped_columns) - 5} 個欄位")
 
         # ===== 防呆13: 樣本名稱匹配檢查 =====
-        sample_names_in_info = set(sample_info_df['Sample_Name'].astype(str).str.strip().str.lower())
+        sample_names_in_info = set(sample_info_df['Sample_Name'].map(normalize_sample_name))
         sample_names_in_istd = {normalize_sample_name(col) for col in sample_columns}
 
         missing_in_istd = sample_names_in_info - sample_names_in_istd
@@ -864,12 +884,12 @@ def load_and_process_data(file_path):
 
         # 載入 RawIntensity（可選）
         raw_df = None
-        if 'RawIntensity' in excel_file.sheet_names:
+        if SHEET_NAMES['raw_intensity'] in excel_file.sheet_names:
             try:
-                raw_df = pd.read_excel(excel_file, sheet_name='RawIntensity')
-                print(f"✓ 已載入 'RawIntensity' 工作表（可選）")
+                raw_df = pd.read_excel(excel_file, sheet_name=SHEET_NAMES['raw_intensity'])
+                print(f"✓ 已載入 '{SHEET_NAMES['raw_intensity']}' 工作表（可選）")
             except Exception as e:
-                print(f"⚠️  警告：無法載入 'RawIntensity' 工作表: {e}")
+                print(f"⚠️  警告：無法載入 '{SHEET_NAMES['raw_intensity']}' 工作表: {e}")
 
         print(f"\n{'='*70}")
         print(f"✓ 數據載入完成")
@@ -884,13 +904,13 @@ def load_and_process_data(file_path):
         istd_df.attrs['sample_columns'] = sample_columns
         istd_df.attrs['excluded_non_sample_columns'] = dropped_columns
 
-        return raw_df, istd_df, sample_info_df
+        return raw_df, istd_df, sample_info_df, sample_type_row
 
     except Exception as e:
         print(f"❌ 載入數據失敗（未預期的錯誤）: {e}")
         import traceback
         traceback.print_exc()
-        return None, None, None
+        raise
 
 
 # ========== ✅ 修正：統計檢定（Levene's test + 整體 Wilcoxon test）==========
@@ -908,15 +928,18 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
     print(f"🔬 統計檢定")
     print(f"{'='*70}")
     
-    # 識別 QC 樣本
+    # 識別 QC 樣本（優先從 SampleInfo 查找，若名稱不匹配則從欄位名稱判斷）
     if 'Sample_Type' in sample_info_df.columns:
-        qc_samples = sample_info_df[
+        qc_names_from_info = sample_info_df[
             sample_info_df['Sample_Type'].str.upper().str.contains('QC', na=False)
         ]['Sample_Name'].tolist()
+        qc_columns = [col for col in qc_names_from_info if col in sample_columns]
     else:
-        qc_samples = [col for col in sample_columns if 'QC' in col.upper()]
-    
-    qc_columns = [col for col in qc_samples if col in sample_columns]
+        qc_columns = []
+
+    # 如果 SampleInfo 名稱匹配不上，回退到從欄位名稱關鍵字判斷
+    if not qc_columns:
+        qc_columns = [col for col in sample_columns if 'QC' in col.upper() or 'POOLED' in col.upper()]
     print(f"  - QC 樣本數: {len(qc_columns)}")
     
     if len(qc_columns) == 0:
@@ -1299,42 +1322,14 @@ def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_pag
         traceback.print_exc()
 
 
-# ========== 完整複製工作表格式 ==========
-def copy_sheet_with_full_format(source_sheet, target_sheet):
-    """完整複製工作表（包含所有格式、合併儲存格、列寬行高）"""
-    try:
-        for row in source_sheet.iter_rows():
-            for cell in row:
-                target_cell = target_sheet.cell(row=cell.row, column=cell.column, value=cell.value)
-                
-                if cell.has_style:
-                    target_cell.font = copy.copy(cell.font)
-                    target_cell.border = copy.copy(cell.border)
-                    target_cell.fill = copy.copy(cell.fill)
-                    target_cell.number_format = copy.copy(cell.number_format)
-                    target_cell.protection = copy.copy(cell.protection)
-                    target_cell.alignment = copy.copy(cell.alignment)
-        
-        for col_letter, col_dim in source_sheet.column_dimensions.items():
-            target_sheet.column_dimensions[col_letter].width = col_dim.width
-        
-        for row_num, row_dim in source_sheet.row_dimensions.items():
-            target_sheet.row_dimensions[row_num].height = row_dim.height
-        
-        for merged_cell_range in source_sheet.merged_cells.ranges:
-            target_sheet.merge_cells(str(merged_cell_range))
-        
-        return True
-        
-    except Exception as e:
-        print(f"  ⚠ 複製格式時發生錯誤: {e}")
-        return False
+# copy_sheet_with_full_format 已移至 utils/excel_format.py (copy_sheet_with_style)
 
 
 # ========== ✅ 修正：保存結果到 Excel（移除 Wilcoxon_pvalue）==========
 def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_columns,
                           output_file, input_file, qc_corrected_values,
-                          trend_stats_df, decision_stats, plots_dir=None, trend_plot_data=None):
+                          trend_stats_df, decision_stats, plots_dir=None, trend_plot_data=None,
+                          sample_type_row=None):
     """保存結果到 Excel（含完整防呆檢查）"""
     try:
         # ===== 防呆1: 輸入數據有效性檢查 =====
@@ -1410,25 +1405,44 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         advanced_export = sanitize_excel_df(advanced_stats_df)
         sample_info_export = sanitize_excel_df(sample_info_df)
 
+        # ===== 回插 Sample_Type 資訊行（若有）=====
+        if sample_type_row is not None:
+            from metabolomics.utils.data_helpers import insert_sample_type_row
+            istd_export = insert_sample_type_row(istd_export, sample_type_row)
+            lowess_export = insert_sample_type_row(lowess_export, sample_type_row)
+
         sheets_to_write = []
         if raw_export is not None and not raw_export.empty:
-            sheets_to_write.append(('RawIntensity', raw_export))
+            sheets_to_write.append((SHEET_NAMES['raw_intensity'], raw_export))
         sheets_to_write.extend([
-            ('ISTD_Correction', istd_export),
-            ('QC LOWESS result', lowess_export),
+            (SHEET_NAMES['istd_correction'], istd_export),
+            (SHEET_NAMES['qc_lowess'], lowess_export),
             (QC_LOWESS_ADVANCED_SHEET, advanced_export),
-            ('SampleInfo', sample_info_export),
+            (SHEET_NAMES['sample_info'], sample_info_export),
         ])
+
+        # 輸出時將內部欄名 'FeatureID' 還原為 FEATURE_ID_COLUMN
+        def _rename_feature_col(df):
+            if 'FeatureID' in df.columns and FEATURE_ID_COLUMN != 'FeatureID':
+                return df.rename(columns={'FeatureID': FEATURE_ID_COLUMN})
+            return df
 
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
             for sheet_name, df in sheets_to_write:
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
+                _rename_feature_col(df).to_excel(writer, sheet_name=sheet_name, index=False)
 
         workbook = load_workbook(output_file)
 
+        # 複製輸入檔的原始格式（保留 ISTD 紅色標記等）
+        original_wb = load_workbook(input_file)
+        for sheet_name in [SHEET_NAMES['raw_intensity'], SHEET_NAMES['istd_correction']]:
+            if sheet_name in original_wb.sheetnames and sheet_name in workbook.sheetnames:
+                copy_sheet_formatting_only(original_wb[sheet_name], workbook[sheet_name])
+        original_wb.close()
+
         scientific_format = '0.00E+00'
         
-        for sheet_name in ['ISTD_Correction', 'QC LOWESS result', QC_LOWESS_ADVANCED_SHEET, 'SampleInfo']:
+        for sheet_name in [SHEET_NAMES['istd_correction'], SHEET_NAMES['qc_lowess'], QC_LOWESS_ADVANCED_SHEET, SHEET_NAMES['sample_info']]:
             if sheet_name in workbook.sheetnames:
                 worksheet = workbook[sheet_name]
                 for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=1, max_col=worksheet.max_column):
@@ -1443,8 +1457,8 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         light_green_fill = PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')
 
         # 主表顏色標記
-        if 'QC LOWESS result' in workbook.sheetnames:
-            worksheet = workbook['QC LOWESS result']
+        if SHEET_NAMES['qc_lowess'] in workbook.sheetnames:
+            worksheet = workbook[SHEET_NAMES['qc_lowess']]
             header = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1))]
             
             # CV% 相關欄位 - 橘色
@@ -1787,7 +1801,10 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
             return
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-        sample_meta = sample_info_df.set_index('Sample_Name')
+        sample_info_norm = sample_info_df.copy()
+        sample_info_norm['_norm_name'] = sample_info_norm['Sample_Name'].map(normalize_sample_name)
+        sample_info_norm = sample_info_norm[sample_info_norm['_norm_name'].astype(bool)]
+        sample_meta = sample_info_norm.drop_duplicates('_norm_name').set_index('_norm_name')
 
         sample_columns_attr = istd_df.attrs.get('sample_columns')
         if not sample_columns_attr:
@@ -1803,45 +1820,32 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
             print("❌ 錯誤：可用樣本數不足 (<3)，無法進行 PCA 分析")
             return
 
-        # 識別樣本類型與批次
+        # 識別樣本類型與批次（使用 normalize_sample_type 統一分類）
         qc_columns = []
         control_columns = []
         exposed_columns = []
         sample_batches = {}
-        
-        for col in sample_columns_clean:
-            col_upper = str(col).upper()
-            if col in sample_meta.index:
-                sample_type = sample_meta.loc[col].get('Sample_Type', 'Unknown')
-                sample_type_upper = str(sample_type).upper()
-                batch_value = str(sample_meta.loc[col].get('Batch', 'Unknown'))
-                sample_batches[col] = batch_value
+        sample_type_map = {}
 
-                if 'QC' in sample_type_upper:
-                    qc_columns.append(col)
-                elif any(keyword in sample_type_upper for keyword in ['CONTROL', 'CTL', 'CON']):
-                    control_columns.append(col)
-                elif any(keyword in sample_type_upper for keyword in ['EXPOSED', 'EXP', 'TREAT']):
-                    exposed_columns.append(col)
-                else:
-                    if 'QC' in col_upper:
-                        qc_columns.append(col)
-                    elif any(keyword in col_upper for keyword in ['CONTROL', 'CTL', 'CON']):
-                        control_columns.append(col)
-                    elif any(keyword in col_upper for keyword in ['EXPOSED', 'EXP', 'TREAT']):
-                        exposed_columns.append(col)
-                    else:
-                        control_columns.append(col)
+        for col in sample_columns_clean:
+            meta_key = normalize_sample_name(col)
+            if meta_key in sample_meta.index:
+                raw_type = str(sample_meta.loc[meta_key].get('Sample_Type', 'Unknown'))
+                batch_value = str(sample_meta.loc[meta_key].get('Batch', 'Unknown'))
             else:
-                sample_batches[col] = 'Unknown'
-                if 'QC' in col_upper:
-                    qc_columns.append(col)
-                elif any(keyword in col_upper for keyword in ['CONTROL', 'CTL', 'CON']):
-                    control_columns.append(col)
-                elif any(keyword in col_upper for keyword in ['EXPOSED', 'EXP', 'TREAT']):
-                    exposed_columns.append(col)
-                else:
-                    control_columns.append(col)
+                raw_type = 'Unknown'
+                batch_value = 'Unknown'
+
+            norm_type = normalize_sample_type(raw_type)
+            sample_type_map[col] = norm_type
+            sample_batches[col] = batch_value
+
+            if norm_type == 'QC':
+                qc_columns.append(col)
+            elif norm_type == 'Exposure':
+                exposed_columns.append(col)
+            elif norm_type in ('Control', 'Normal'):
+                control_columns.append(col)
         
 
         
@@ -1918,16 +1922,8 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
             else '2D PCA Comparison: ISTD vs QC-LOWESS (Grouped by Sample Type)'
         )
 
-        sample_types = []
-        batch_labels = []
-        for col in sample_columns_clean:
-            if col in qc_columns:
-                sample_types.append('QC')
-            elif col in exposed_columns:
-                sample_types.append('Exposure')
-            else:
-                sample_types.append('Control')
-            batch_labels.append(sample_batches.get(col, 'Unknown'))
+        sample_types = [sample_type_map.get(col, 'Unknown') for col in sample_columns_clean]
+        batch_labels = [sample_batches.get(col, 'Unknown') for col in sample_columns_clean]
 
         qc_outliers_left = {name for name, is_out in qc_outlier_map_istd.items() if is_out}
         qc_outliers_right = {name for name, is_out in qc_outlier_map_lowess.items() if is_out}
@@ -2024,23 +2020,15 @@ def main(input_file=None):
     print(f"📥 載入數據...")
     print(f"{'='*70}")
     
-    raw_df, istd_df, sample_info_df = load_and_process_data(file_path)
-    
-    if istd_df is None or sample_info_df is None:
-        print("❌ 數據載入失敗，程式結束")
-        return
-    
+    raw_df, istd_df, sample_info_df, sample_type_row = load_and_process_data(file_path)
+
     print(f"\n{'='*70}")
     print(f"🔧 執行 QC-LOWESS 校正...")
     print(f"{'='*70}")
-    
-    result = perform_lowess_normalization(istd_df, sample_info_df)
-    
-    if result[0] is None:
-        print("❌ LOWESS 校正失敗,程式結束")
-        return
-    
-    lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats, trend_plot_data = result
+
+    lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats, trend_plot_data = (
+        perform_lowess_normalization(istd_df, sample_info_df)
+    )
 
     print(f"\n{'='*70}")
     print(f"💾 保存結果...")
@@ -2058,7 +2046,8 @@ def main(input_file=None):
         raw_df, istd_df, lowess_df, sample_info_df,
         sample_columns, output_file, file_path,
         qc_corrected_values, trend_stats_df, decision_stats,
-        plots_dir=plots_session_dir, trend_plot_data=trend_plot_data
+        plots_dir=plots_session_dir, trend_plot_data=trend_plot_data,
+        sample_type_row=sample_type_row
     )
     
     if not success:

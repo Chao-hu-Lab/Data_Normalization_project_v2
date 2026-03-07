@@ -8,6 +8,7 @@ These tests verify:
 4. Return value format
 """
 import pytest
+import pandas as pd
 
 
 class TestQCLOWESSInput:
@@ -92,6 +93,31 @@ class TestQCLOWESSOutput:
         # Should have CV-related columns
         cv_columns = [col for col in output_df.columns if 'CV' in col.upper()]
         assert len(cv_columns) > 0, "Output should have CV-related columns"
+        assert {'Original_QC_CV%', 'Corrected_QC_CV%'}.issubset(output_df.columns)
+
+        numeric = output_df[['Original_QC_CV%', 'Corrected_QC_CV%']].apply(
+            pd.to_numeric, errors='coerce'
+        )
+        cv_diff = (numeric['Original_QC_CV%'] - numeric['Corrected_QC_CV%']).dropna()
+        assert not cv_diff.empty, "CV comparison should contain numeric values"
+        assert (cv_diff.abs() > 1e-9).any(), "QC correction should change at least one feature CV"
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_plots_are_generated(self, istd_module, qc_lowess_module, sample_input_file):
+        """Test that QC-LOWESS produces plot artifacts."""
+        step1_result = istd_module.main(input_file=sample_input_file)
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
+
+        step2_result = qc_lowess_module.main(input_file=step1_output)
+
+        plots_dir = step2_result.plots_dir if hasattr(step2_result, "plots_dir") else step2_result.get('plots_dir')
+        assert plots_dir, "QC-LOWESS should report a plots directory"
+
+        from pathlib import Path
+
+        plot_files = sorted(Path(plots_dir).glob("*.png"))
+        assert plot_files, "QC-LOWESS should generate PNG plots"
 
 
 class TestQCLOWESSHelpers:

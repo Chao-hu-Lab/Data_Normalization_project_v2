@@ -19,7 +19,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Import shared constants
-from .constants import COLORBLIND_COLORS
+from .constants import FONT_SIZES, COLORBLIND_COLORS, SAMPLE_TYPE_COLORS, SAMPLE_TYPE_MARKERS
+from .sample_classification import normalize_sample_type
 
 
 def plot_pca_comparison_qc_style(
@@ -93,24 +94,11 @@ def plot_pca_comparison_qc_style(
     qc_outlier_names_left = set(qc_outlier_names_left or [])
     qc_outlier_names_right = set(qc_outlier_names_right or [])
 
-    def normalize_type(t):
-        t_upper = str(t).strip().upper()
-        if t_upper == 'QC':
-            return 'QC'
-        if t_upper in ('EXPOSED', 'EXPOSURE', 'EXP', 'TREAT', 'TREATED'):
-            return 'Exposure'
-        if t_upper in ('CONTROL', 'CTL', 'CON'):
-            return 'Control'
-        return 'Control'
+    sample_types_norm = [normalize_sample_type(t) for t in sample_types]
 
-    sample_types_norm = [normalize_type(t) for t in sample_types]
-
-    color_map = {
-        'QC': '#9370DB',
-        'Control': '#4169E1',
-        'Exposure': '#DC143C',
-    }
-    markers = {'QC': 'o', 'Control': 's', 'Exposure': '^'}
+    # Dynamic color/marker maps based on actual types present
+    color_map = dict(SAMPLE_TYPE_COLORS)  # copy defaults
+    markers = dict(SAMPLE_TYPE_MARKERS)
 
     fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(20, 8))
     if suptitle:
@@ -127,8 +115,8 @@ def plot_pca_comparison_qc_style(
     def scatter_panel(ax, scores, var, title_text, threshold_text, qc_outliers):
         for i, sample in enumerate(sample_names):
             s_type = sample_types_norm[i]
-            color = color_map[s_type]
-            marker = markers[s_type]
+            color = color_map.get(s_type, SAMPLE_TYPE_COLORS.get('Unknown', '#808080'))
+            marker = markers.get(s_type, SAMPLE_TYPE_MARKERS.get('Unknown', 'x'))
             is_outlier = (s_type == 'QC') and (sample in qc_outliers)
 
             if is_outlier:
@@ -233,16 +221,23 @@ def plot_pca_comparison_qc_style(
         qc_outlier_names_right,
     )
 
-    sample_legend_elements = [
-        plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='#4169E1',
-                   markersize=10, label='Control', markeredgecolor='black', markeredgewidth=1),
-        plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='#DC143C',
-                   markersize=10, label='Exposure', markeredgecolor='black', markeredgewidth=1),
-        plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
-                   markersize=10, label='QC', markeredgecolor='black', markeredgewidth=1),
-        plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
-                   markersize=10, label='QC Outlier', markeredgecolor='red', markeredgewidth=3),
-    ]
+    # Build legend dynamically from the sample types actually present
+    unique_types = sorted(set(sample_types_norm), key=lambda t: (t != 'QC', t != 'Control', t != 'Exposure', t))
+    sample_legend_elements = []
+    for stype in unique_types:
+        sample_legend_elements.append(
+            plt.Line2D([0], [0],
+                       marker=markers.get(stype, 'x'), color='w',
+                       markerfacecolor=color_map.get(stype, '#808080'),
+                       markersize=10, label=stype,
+                       markeredgecolor='black', markeredgewidth=1)
+        )
+    # Always add QC Outlier entry if QC is present
+    if 'QC' in unique_types:
+        sample_legend_elements.append(
+            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#9370DB',
+                       markersize=10, label='QC Outlier', markeredgecolor='red', markeredgewidth=3),
+        )
 
     if grouping == 'batch':
         ellipse_legend_elements = [

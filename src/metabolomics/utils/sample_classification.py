@@ -5,6 +5,7 @@ This module consolidates the 26+ instances of sample type detection
 logic that were scattered across the processing modules.
 """
 import pandas as pd
+import re
 from typing import Dict, List, Tuple, Optional
 
 from .constants import NON_SAMPLE_COLUMNS, STAT_COLUMN_KEYWORDS, SAMPLE_TYPE_ALIASES
@@ -22,7 +23,24 @@ def normalize_sample_name(name) -> str:
     """
     if pd.isna(name):
         return ''
-    return str(name).strip().lower()
+
+    value = str(name).strip()
+    if not value:
+        return ''
+
+    # Normalize common cross-tool naming differences:
+    # - DNA_program1_TumorBC2257_DNA vs Tumor tissue BC2257_DNA
+    # - Breast Cancer Tissue_ pooled_QC_1 vs Breast_Cancer_Tissue_pooled_QC_1
+    value = re.sub(r'^(?:dna|rna)_program\d+_', '', value, flags=re.IGNORECASE)
+    value = re.sub(r'([a-z])([A-Z])', r'\1 \2', value)
+    value = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', value)
+    value = re.sub(r'([A-Za-z])(\d)', r'\1 \2', value)
+    value = re.sub(r'(\d)([A-Za-z])', r'\1 \2', value)
+    value = value.lower()
+
+    parts = re.split(r'[\s_\-/]+', value)
+    filtered_parts = [part for part in parts if part and part not in {'tissue'}]
+    return ''.join(filtered_parts)
 
 
 def normalize_sample_type(sample_type: str) -> str:
@@ -47,10 +65,12 @@ def normalize_sample_type(sample_type: str) -> str:
     # Partial match for keywords
     if 'QC' in type_upper or 'POOL' in type_upper:
         return 'QC'
-    if any(k in type_upper for k in ('CONTROL', 'CTL', 'CON')):
+    if any(k in type_upper for k in ('CONTROL', 'CTL', 'CON', 'BENIGN')):
         return 'Control'
     if any(k in type_upper for k in ('EXPOSURE', 'EXPOSED', 'EXP', 'TREAT')):
         return 'Exposure'
+    if any(k in type_upper for k in ('NORMAL', 'NOR')):
+        return 'Normal'
     if any(k in type_upper for k in ('BLANK', 'BLK')):
         return 'Blank'
 
@@ -148,6 +168,7 @@ class SampleClassifier:
     ) -> Tuple[List[str], List[str], List[str], List[str]]:
         """
         Classify columns into QC, Control, Exposure, and Other.
+        Note: Normal samples are classified as separate from Control.
 
         Args:
             columns: List of column names to classify
@@ -161,7 +182,7 @@ class SampleClassifier:
             sample_type = self.get_sample_type(col)
             if sample_type == 'QC':
                 qc.append(col)
-            elif sample_type == 'Control':
+            elif sample_type in ('Control', 'Normal'):
                 control.append(col)
             elif sample_type == 'Exposure':
                 exposure.append(col)
@@ -221,6 +242,10 @@ class SampleClassifier:
     def get_exposure_samples(self, columns: List[str]) -> List[str]:
         """Convenience method to get Exposure sample columns."""
         return self.get_samples_by_type(columns, 'Exposure')
+
+    def get_normal_samples(self, columns: List[str]) -> List[str]:
+        """Convenience method to get Normal sample columns."""
+        return self.get_samples_by_type(columns, 'Normal')
 
     def get_type_counts(self, columns: List[str]) -> Dict[str, int]:
         """
