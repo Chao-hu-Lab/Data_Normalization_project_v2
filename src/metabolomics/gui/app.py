@@ -17,9 +17,21 @@ from metabolomics.bootstrap_paths import ensure_ms_core_src_on_path
 
 ensure_ms_core_src_on_path(Path(__file__).resolve())
 
-from ms_core.utils import build_bridge_path, create_session, update_manifest
-from ms_core.utils.results import ProcessingResult
+from metabolomics.utils.results import ProcessingResult
 from metabolomics.startup_bridge import apply_startup_bridge, parse_startup_args
+
+try:
+    from ms_core.utils import build_bridge_path, create_session, update_manifest
+except ModuleNotFoundError:
+    def _missing_ms_core(*_args, **_kwargs):
+        raise ModuleNotFoundError(
+            "ms_core is required for session bridge operations. "
+            "Ensure ms-core is available on PYTHONPATH before launching the GUI."
+        )
+
+    build_bridge_path = _missing_ms_core
+    create_session = _missing_ms_core
+    update_manifest = _missing_ms_core
 # TODO: adapters removed, use ms_core pipeline
 # from metabolomics.adapters.preprocessing_to_dnp import convert_preprocessing_to_dnp
 # from metabolomics.adapters.dnp_to_metaboanalyst import convert_dnp_to_metaboanalyst
