@@ -24,11 +24,36 @@ def get_project_root() -> Path:
     return Path.cwd()
 
 
-def get_output_root() -> Path:
+def infer_output_root_from_input(input_file: Optional[str] = None) -> Optional[Path]:
+    """
+    Infer the output root from an input file path.
+
+    If the input file is already inside an ``output`` tree, reuse that output
+    directory so downstream steps stay in the same session workspace.
+    """
+    if not input_file:
+        return None
+
+    input_path = Path(input_file).resolve()
+    if not input_path.exists():
+        return None
+
+    search_start = input_path if input_path.is_dir() else input_path.parent
+    for parent in (search_start, *search_start.parents):
+        if parent.name == "output":
+            parent.mkdir(parents=True, exist_ok=True)
+            return parent
+
+    return None
+
+
+def get_output_root(input_file: Optional[str] = None) -> Path:
     """
     Return the project-level output directory and ensure it exists.
     """
-    output_root = get_project_root() / "output"
+    output_root = infer_output_root_from_input(input_file)
+    if output_root is None:
+        output_root = get_project_root() / "output"
     output_root.mkdir(parents=True, exist_ok=True)
     return output_root
 
@@ -102,7 +127,7 @@ def get_output_directory(
     Returns:
         Path object for the output directory
     """
-    output_dir = get_output_root()
+    output_dir = get_output_root(input_file=input_file)
     if subdir:
         output_dir = output_dir / subdir
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -111,26 +136,28 @@ def get_output_directory(
 
 def build_output_path(
     prefix: str,
+    input_file: str = None,
     timestamp: str = None,
     extension: str = ".xlsx"
 ) -> Path:
     """
     Build a full output file path under the project output directory.
     """
-    output_dir = get_output_root()
+    output_dir = get_output_root(input_file=input_file)
     filename = generate_output_filename(prefix, timestamp=timestamp, extension=extension)
     return output_dir / filename
 
 
 def build_plots_dir(
     subdir: str,
+    input_file: str = None,
     timestamp: str = None,
     session_prefix: str = None
 ) -> Path:
     """
     Build a plots directory under the project output directory.
     """
-    output_dir = get_output_root()
+    output_dir = get_output_root(input_file=input_file)
     plots_root = output_dir / subdir
     if session_prefix:
         session_name = f"{session_prefix}_{timestamp}" if timestamp else session_prefix

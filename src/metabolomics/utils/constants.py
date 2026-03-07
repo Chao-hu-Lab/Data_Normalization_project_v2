@@ -97,7 +97,7 @@ NON_SAMPLE_COLUMNS = {
     'median_correction_factor', 'correction_factor_cv',
     'correction_factor_std', 'correction_factor_range_low',
     'correction_factor_range_high', 'Frac_Used', 'QC_CV_for_Frac',
-    'Frac_Strategy',
+    'Frac_Strategy', 'exposure_ratio', 'normal_ratio', 'control_ratio', 'QC_ratio',
     # Additional metadata columns
     'mz', 'rt', 'm/z', 'Mass', 'Retention_Time',
 }

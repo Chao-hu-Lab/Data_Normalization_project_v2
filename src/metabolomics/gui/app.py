@@ -266,6 +266,54 @@ class DataNormalizationApp:
             return result.get('plots_dir')
         return None
 
+    def _refresh_last_output_file(self):
+        self.last_output_file = None
+        for step in self.steps:
+            step_name = step['name']
+            if step_name not in self.completed_steps:
+                continue
+            output_path = self._get_output_path(self.step_outputs.get(step_name))
+            if output_path:
+                self.last_output_file = output_path
+
+    def _invalidate_step_and_downstream(self, step_name):
+        start_index = next(
+            (index for index, step in enumerate(self.steps) if step['name'] == step_name),
+            None,
+        )
+        if start_index is None:
+            return
+
+        for index in range(start_index, len(self.steps)):
+            current_step_name = self.steps[index]['name']
+            self.completed_steps.discard(current_step_name)
+            self.step_outputs.pop(current_step_name, None)
+
+            if hasattr(self, 'step_excel_buttons') and index < len(self.step_excel_buttons):
+                self.step_excel_buttons[index].config(state='disabled')
+            if hasattr(self, 'step_plot_buttons') and index < len(self.step_plot_buttons):
+                self.step_plot_buttons[index].config(state='disabled')
+
+        self._refresh_last_output_file()
+        if hasattr(self, 'update_input_source_labels'):
+            self.update_input_source_labels()
+
+    def _resolve_step_input(self, step):
+        if step['name'] == 'Step 1: ISTD Correction':
+            if not self.selected_file_path:
+                raise ValueError("Please select an input file first")
+            return self.selected_file_path
+
+        step_index = self.steps.index(step)
+        prev_step_name = self.steps[step_index - 1]['name']
+        prev_output = self._get_output_path(self.step_outputs.get(prev_step_name))
+        if not prev_output:
+            raise ValueError(
+                f"Previous output not found for {prev_step_name}. "
+                "Please ensure the previous step succeeded."
+            )
+        return prev_output
+
     def setup_logging(self):
         """設置日誌系統"""
         log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
@@ -1437,6 +1485,10 @@ class DataNormalizationApp:
         # Update current step name
         self.current_stats['step_name'] = step['name']
         self.current_stats['execution_time'] = 0
+
+        self._invalidate_step_and_downstream(step['name'])
+        self.update_input_source_labels()
+        self.update_button_states()
         
         # Run in new thread
         self.current_thread = threading.Thread(
@@ -1452,22 +1504,15 @@ class DataNormalizationApp:
     def run_step(self, step):
         """Run step in background thread"""
         try:
-            current_input = None
-            
-            if step['name'] == 'Step 1: ISTD Correction':
-                if not self.selected_file_path:
-                    error_msg = "Please select an input file first"
-                    self.master.after(0, lambda s=step, err=error_msg: self.on_step_cancelled(s, err))
-                    return
-                current_input = self.selected_file_path
-            else:
-                if self.last_output_file:
-                    current_input = self.last_output_file
-                    self.logger.info(f"🔄 Auto-selected previous output: {os.path.basename(current_input)}")
-                else:
-                    error_msg = "Previous output not found. Please ensure previous step succeeded."
-                    self.master.after(0, lambda s=step, err=error_msg: self.on_step_cancelled(s, err))
-                    return
+            try:
+                current_input = self._resolve_step_input(step)
+            except ValueError as exc:
+                error_msg = str(exc)
+                self.master.after(0, lambda s=step, err=error_msg: self.on_step_cancelled(s, err))
+                return
+
+            if step['name'] != 'Step 1: ISTD Correction':
+                self.logger.info(f"🔄 Auto-selected previous output: {os.path.basename(current_input)}")
             
             self.logger.info(f"Using input file: {os.path.basename(current_input)}")
             
@@ -1620,6 +1665,7 @@ class DataNormalizationApp:
         
         self.is_executing = False
         self.auto_run_mode = False # Stop auto run
+        self._invalidate_step_and_downstream(step['name'])
         
         self.step_status_labels[index].config(
             text="❌", 
@@ -1651,6 +1697,7 @@ class DataNormalizationApp:
         
         self.is_executing = False
         self.auto_run_mode = False # Stop auto run
+        self._invalidate_step_and_downstream(step['name'])
         
         self.step_status_labels[index].config(
             text="⚠️", 

@@ -5,6 +5,7 @@ This module consolidates the 26+ instances of sample type detection
 logic that were scattered across the processing modules.
 """
 import pandas as pd
+import re
 from typing import Dict, List, Tuple, Optional
 
 from .constants import NON_SAMPLE_COLUMNS, STAT_COLUMN_KEYWORDS, SAMPLE_TYPE_ALIASES
@@ -22,7 +23,24 @@ def normalize_sample_name(name) -> str:
     """
     if pd.isna(name):
         return ''
-    return str(name).strip().lower()
+
+    value = str(name).strip()
+    if not value:
+        return ''
+
+    # Normalize common cross-tool naming differences:
+    # - DNA_program1_TumorBC2257_DNA vs Tumor tissue BC2257_DNA
+    # - Breast Cancer Tissue_ pooled_QC_1 vs Breast_Cancer_Tissue_pooled_QC_1
+    value = re.sub(r'^(?:dna|rna)_program\d+_', '', value, flags=re.IGNORECASE)
+    value = re.sub(r'([a-z])([A-Z])', r'\1 \2', value)
+    value = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', value)
+    value = re.sub(r'([A-Za-z])(\d)', r'\1 \2', value)
+    value = re.sub(r'(\d)([A-Za-z])', r'\1 \2', value)
+    value = value.lower()
+
+    parts = re.split(r'[\s_\-/]+', value)
+    filtered_parts = [part for part in parts if part and part not in {'tissue'}]
+    return ''.join(filtered_parts)
 
 
 def normalize_sample_type(sample_type: str) -> str:

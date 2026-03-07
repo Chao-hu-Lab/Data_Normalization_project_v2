@@ -2183,11 +2183,12 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     print(f"✓ 標準化完成")
     
     # 統一輸出目錄與圖表路徑
-    output_dir = get_output_root()
+    output_dir = get_output_root(input_file=file_path)
     run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
     method_slug = method_name.replace(' ', '_')
     figures_dir = build_plots_dir(
         "Normalization_Figures",
+        input_file=file_path,
         timestamp=run_timestamp,
         session_prefix=method_slug
     )
@@ -2206,15 +2207,6 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
         ),
         "pca": figures_dir / generate_output_filename(
             f"Fig4_PCA_{method_slug}", timestamp=run_timestamp, extension=".png"
-        ),
-        "qc_variability": figures_dir / generate_output_filename(
-            f"Fig5_QC_Variability_{method_slug}", timestamp=run_timestamp, extension=".png"
-        ),
-        "qc_reproducibility": figures_dir / generate_output_filename(
-            f"Fig6_QC_Reproducibility_{method_slug}", timestamp=run_timestamp, extension=".png"
-        ),
-        "correlation": figures_dir / generate_output_filename(
-            f"Fig7_Correlation_{method_slug}", timestamp=run_timestamp, extension=".png"
         ),
     }
     # 分離有效樣本用於評估
@@ -2284,46 +2276,6 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     
     
 
-    # 6. 相關性熱圖
-    try:
-        plot_correlation_heatmap(
-            original_data_valid, normalized_data_valid, sample_columns_valid,
-            figure_paths["correlation"],
-            method_name
-        )
-    except Exception as e:
-        print(f"  ⚠ 相關性熱圖生成失敗: {e}")
-
-    # ========== QC 質量評估圖 ==========
-    if pqn_info['qc_count'] > 0:
-        try:
-            # 提取 QC 樣本索引
-            qc_indices = []
-            qc_names = []
-            for i, sample in enumerate(sample_columns_valid):
-                sample_type = _lookup_sample_type(sample, sample_info_df, col_to_info_row)
-                if sample_type == 'QC':
-                    qc_indices.append(i)
-                    qc_names.append(sample)
-            
-            if len(qc_indices) > 0:
-                original_qc = original_data_valid[:, qc_indices]
-                normalized_qc = normalized_data_valid[:, qc_indices]
-
-                # Fig4 - QC Variability
-                plot_qc_variability(
-                    original_qc, normalized_qc, qc_names,
-                    output_path=figure_paths["qc_variability"]
-                )
-
-                # Fig5 - QC Reproducibility
-                plot_qc_reproducibility(
-                    original_qc, normalized_qc, qc_names,
-                    output_path=figure_paths["qc_reproducibility"]
-                )
-        except Exception as e:
-            print(f"  ⚠ QC 質量評估圖生成失敗: {e}")
-    
     # 創建結果DataFrame（只包含樣本數據和CV%）
     normalized_df = pd.DataFrame()
     normalized_df[data_df.columns[0]] = feature_ids
@@ -2580,7 +2532,7 @@ def main(input_file=None):
     
     print("\n📊 生成的視覺化圖表:")
     print(f"  - 儲存路徑: {figures_dir}")
-    print("  - 圖檔: Fig1_Boxplot_*.png, Fig2_CV_*.png, Fig3_PCA_*.png, fig4~6 QC 與相關性評估")
+    print("  - 圖檔: Fig1_Boxplot_*.png, Fig2_CV_*.png, Fig3_RLE_*.png, Fig4_PCA_*.png")
     
     print("\n" + "=" * 80)
     print("📈 標準化質量評估摘要:")

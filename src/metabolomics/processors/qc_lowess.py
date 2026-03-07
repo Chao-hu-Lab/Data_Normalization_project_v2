@@ -20,14 +20,14 @@ warnings.filterwarnings('ignore')
 # ========== 匯入共用模組 ==========
 from ms_core.utils.data_helpers import get_valid_values
 from ms_core.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
-from ms_core.utils.constants import (
+from metabolomics.utils.constants import (
     NON_SAMPLE_COLUMNS,
     SHEET_NAMES,
     DATETIME_FORMAT_FULL,
     FEATURE_ID_COLUMN,
     CV_QUALITY_THRESHOLDS,
 )
-from ms_core.utils.sample_classification import (
+from metabolomics.utils.sample_classification import (
     normalize_sample_name,
     normalize_sample_type,
     identify_sample_columns,
@@ -273,20 +273,26 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         if not sample_columns:
             raise ValueError("找不到有效的樣本欄位")
 
-        sample_meta = sample_info_df.set_index('Sample_Name')
-        missing_meta = [col for col in sample_columns if col not in sample_meta.index]
+        sample_info_norm = sample_info_df.copy()
+        sample_info_norm['_norm_name'] = sample_info_norm['Sample_Name'].map(normalize_sample_name)
+        sample_info_norm = sample_info_norm[sample_info_norm['_norm_name'].astype(bool)]
+        sample_meta = sample_info_norm.drop_duplicates('_norm_name').set_index('_norm_name')
+        col_to_meta = {
+            col: normalize_sample_name(col)
+            for col in sample_columns
+            if normalize_sample_name(col) in sample_meta.index
+        }
+        missing_meta = [col for col in sample_columns if col not in col_to_meta]
 
         if missing_meta and len(missing_meta) == len(sample_columns):
-            # 所有欄位都匹配不上 — 名稱格式不同，使用欄位名稱中的關鍵字判斷 QC
-            print(f"⚠️  SampleInfo 與 ISTD_Correction 的樣本名稱格式不同，改用欄位名稱推斷樣本類型")
-            # 不過濾 sample_columns，直接使用所有數據欄位
+            print("⚠️  SampleInfo 與 ISTD_Correction 的樣本名稱格式不同，改用欄位名稱推斷樣本類型")
         elif missing_meta:
             print("⚠️  警告：以下樣本在 SampleInfo 中找不到對應資訊，將被排除：")
             for name in missing_meta[:5]:
                 print(f"     - {name}")
             if len(missing_meta) > 5:
                 print(f"     ... 還有 {len(missing_meta) - 5} 個樣本")
-            sample_columns = [col for col in sample_columns if col in sample_meta.index]
+            sample_columns = [col for col in sample_columns if col in col_to_meta]
 
         if not sample_columns:
             raise ValueError("無法匹配 SampleInfo 與 ISTD_Correction 的樣本欄位")
@@ -294,31 +300,15 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         # 判斷 QC 樣本：優先從 SampleInfo 查找，如找不到則從欄位名稱關鍵字判斷
         qc_samples = []
         for sample in sample_columns:
-            if sample in sample_meta.index:
-                if 'QC' in str(sample_meta.loc[sample].get('Sample_Type', '')).upper():
+            meta_key = col_to_meta.get(sample)
+            if meta_key in sample_meta.index:
+                if 'QC' in str(sample_meta.loc[meta_key].get('Sample_Type', '')).upper():
                     qc_samples.append(sample)
             elif 'QC' in sample.upper() or 'POOLED' in sample.upper():
                 qc_samples.append(sample)
 
         if len(qc_samples) < 5:
             raise ValueError(f"QC 樣本不足 ({len(qc_samples)} < 5)，無法進行校正")
-
-        # 建立欄位名稱到 SampleInfo 的映射（支援名稱不完全匹配的情況）
-        col_to_meta = {}
-        if all(s in sample_meta.index for s in sample_columns):
-            col_to_meta = {s: s for s in sample_columns}
-        else:
-            # 名稱不匹配 — 按順序對齊（SampleInfo 和 ISTD_Correction 的樣本順序一致）
-            info_names = sample_info_df['Sample_Name'].tolist()
-            if len(info_names) == len(sample_columns):
-                col_to_meta = dict(zip(sample_columns, info_names))
-            else:
-                # 按位置對齊失敗，嘗試用 QC 關鍵字匹配
-                for col in sample_columns:
-                    for name in info_names:
-                        if name in sample_meta.index:
-                            col_to_meta[col] = name
-                            break
 
         batch_groups = {}
         missing_order_samples = []
@@ -829,7 +819,7 @@ def load_and_process_data(file_path):
                 print(f"     ... 還有 {len(dropped_columns) - 5} 個欄位")
 
         # ===== 防呆13: 樣本名稱匹配檢查 =====
-        sample_names_in_info = set(sample_info_df['Sample_Name'].astype(str).str.strip().str.lower())
+        sample_names_in_info = set(sample_info_df['Sample_Name'].map(normalize_sample_name))
         sample_names_in_istd = {normalize_sample_name(col) for col in sample_columns}
 
         missing_in_istd = sample_names_in_info - sample_names_in_istd
@@ -1811,7 +1801,10 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
             return
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-        sample_meta = sample_info_df.set_index('Sample_Name')
+        sample_info_norm = sample_info_df.copy()
+        sample_info_norm['_norm_name'] = sample_info_norm['Sample_Name'].map(normalize_sample_name)
+        sample_info_norm = sample_info_norm[sample_info_norm['_norm_name'].astype(bool)]
+        sample_meta = sample_info_norm.drop_duplicates('_norm_name').set_index('_norm_name')
 
         sample_columns_attr = istd_df.attrs.get('sample_columns')
         if not sample_columns_attr:
@@ -1835,9 +1828,10 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
         sample_type_map = {}
 
         for col in sample_columns_clean:
-            if col in sample_meta.index:
-                raw_type = str(sample_meta.loc[col].get('Sample_Type', 'Unknown'))
-                batch_value = str(sample_meta.loc[col].get('Batch', 'Unknown'))
+            meta_key = normalize_sample_name(col)
+            if meta_key in sample_meta.index:
+                raw_type = str(sample_meta.loc[meta_key].get('Sample_Type', 'Unknown'))
+                batch_value = str(sample_meta.loc[meta_key].get('Batch', 'Unknown'))
             else:
                 raw_type = 'Unknown'
                 batch_value = 'Unknown'

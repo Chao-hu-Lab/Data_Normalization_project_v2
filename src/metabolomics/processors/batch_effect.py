@@ -21,8 +21,13 @@ warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
 from ms_core.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
-from ms_core.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL, NON_SAMPLE_COLUMNS, STAT_COLUMN_KEYWORDS, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS
-from ms_core.utils.sample_classification import SampleClassifier, identify_sample_columns, normalize_sample_type
+from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL, NON_SAMPLE_COLUMNS, STAT_COLUMN_KEYWORDS, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS
+from metabolomics.utils.sample_classification import (
+    SampleClassifier,
+    identify_sample_columns,
+    normalize_sample_name,
+    normalize_sample_type,
+)
 from ms_core.utils.file_io import (
     build_output_path,
     build_plots_dir,
@@ -260,9 +265,13 @@ def prepare_data_for_combat(data, sample_info):
 
     # Build sample_to_batch dictionary using vectorized operations
     valid_batch_mask = sample_info['Batch'].notna()
-    sample_names = sample_info.loc[valid_batch_mask, 'Sample_Name'].astype(str).str.strip()
+    sample_names = sample_info.loc[valid_batch_mask, 'Sample_Name'].map(normalize_sample_name)
     batch_values = sample_info.loc[valid_batch_mask, 'Batch']
-    sample_to_batch = dict(zip(sample_names, batch_values))
+    sample_to_batch = {
+        sample_name: batch
+        for sample_name, batch in zip(sample_names, batch_values)
+        if sample_name
+    }
 
     if batch_na_count > 0:
         print(f"⚠️ 警告：{batch_na_count} 個樣本的 Batch 資訊為空")
@@ -276,7 +285,7 @@ def prepare_data_for_combat(data, sample_info):
     valid_batches = []
 
     for col in sample_columns:
-        col_str = str(col).strip()
+        col_str = normalize_sample_name(col)
         if col_str in sample_to_batch:
             valid_samples.append(col)
             valid_batches.append(sample_to_batch[col_str])
@@ -289,7 +298,7 @@ def prepare_data_for_combat(data, sample_info):
         sample_to_batch_lower = {k.lower(): (k, v) for k, v in sample_to_batch.items()}
 
         for col in sample_columns:
-            col_lower = str(col).strip().lower()
+            col_lower = normalize_sample_name(col).lower()
             if col_lower in sample_to_batch_lower and col not in valid_samples:
                 original_name, batch = sample_to_batch_lower[col_lower]
                 valid_samples.append(col)
