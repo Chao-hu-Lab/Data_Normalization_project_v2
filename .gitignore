@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
+.pytest_tmp*/
 
 # PyInstaller 輸出 (但保留 .spec 設定檔)
 /build/
