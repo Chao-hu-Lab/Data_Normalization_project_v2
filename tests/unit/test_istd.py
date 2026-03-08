@@ -8,6 +8,7 @@ These tests verify:
 4. Return value format
 """
 import pytest
+import pandas as pd
 
 
 class TestISTDCorrectionInput:
@@ -21,11 +22,12 @@ class TestISTDCorrectionInput:
 
     def test_load_valid_file(self, istd_module, sample_input_file):
         """Test loading a valid input file."""
-        raw_df, sample_info_df, all_sheets = istd_module.load_and_process_data(sample_input_file)
+        raw_df, sample_info_df, all_sheets, col_to_info = istd_module.load_and_process_data(sample_input_file)
 
         assert raw_df is not None, "raw_df should not be None"
         assert sample_info_df is not None, "sample_info_df should not be None"
         assert all_sheets is not None, "all_sheets should not be None"
+        assert col_to_info is not None, "col_to_info should not be None"
 
         # Check required columns
         assert 'FeatureID' in raw_df.columns
@@ -34,12 +36,12 @@ class TestISTDCorrectionInput:
 
     def test_load_nonexistent_file(self, istd_module):
         """Test handling of non-existent file."""
-        result = istd_module.load_and_process_data("nonexistent_file.xlsx")
-        assert result == (None, None, None)
+        with pytest.raises(ValueError, match="找不到檔案"):
+            istd_module.load_and_process_data("nonexistent_file.xlsx")
 
     def test_istd_detection(self, istd_module, sample_input_file):
         """Test ISTD (red font) detection."""
-        raw_df, _, _ = istd_module.load_and_process_data(sample_input_file)
+        raw_df, _, _, _ = istd_module.load_and_process_data(sample_input_file)
 
         if raw_df is not None:
             assert 'is_ISTD' in raw_df.columns, "is_ISTD column should exist"
@@ -50,6 +52,25 @@ class TestISTDCorrectionInput:
 
 class TestISTDCorrectionOutput:
     """Tests for output validation."""
+
+    @pytest.mark.slow
+    def test_skips_when_fewer_than_five_istds_have_qc_cv_below_20(
+        self,
+        istd_module,
+        sample_input_file,
+        workbook_sheet_names,
+    ):
+        """Step 1 should skip when too few ISTDs meet the QC CV gate."""
+        result = istd_module.main(input_file=sample_input_file)
+
+        assert getattr(result, "extra", {}).get("skipped") is True
+        assert getattr(result, "extra", {}).get("skip_reason") == "insufficient_good_istd"
+
+        output_path = result.output_path if hasattr(result, "output_path") else result.get("output_path")
+        assert set(workbook_sheet_names(output_path)) == {
+            "RawIntensity",
+            "SampleInfo",
+        }
 
     @pytest.mark.slow
     def test_main_returns_processing_result(self, istd_module, sample_input_file, validate_result_dict):
@@ -73,9 +94,13 @@ class TestISTDCorrectionOutput:
         output_path = result.output_path if hasattr(result, "output_path") else result.get('output_path')
         assert output_path, "Result should contain output_path"
 
+        required_sheets = ['RawIntensity', 'SampleInfo']
+        if not getattr(result, "extra", {}).get("skipped"):
+            required_sheets.append('ISTD_Correction')
+
         validation = validate_excel_output(
             output_path,
-            required_sheets=['ISTD_Correction', 'RawIntensity', 'SampleInfo'],
+            required_sheets=required_sheets,
             min_rows=1
         )
 
@@ -87,11 +112,17 @@ class TestISTDCorrectionOutput:
     def test_data_integrity(self, istd_module, sample_input_file):
         """Test that data integrity is maintained."""
         # Load original data
-        raw_df, sample_info_df, _ = istd_module.load_and_process_data(sample_input_file)
+        raw_df, sample_info_df, _, _ = istd_module.load_and_process_data(sample_input_file)
         original_feature_count = len(raw_df[~raw_df['is_ISTD']])  # Non-ISTD features
 
         # Run correction
         result = istd_module.main(input_file=sample_input_file)
+
+        if getattr(result, "extra", {}).get("skipped"):
+            output_path = result.output_path if hasattr(result, "output_path") else result.get('output_path')
+            workbook = pd.ExcelFile(output_path)
+            assert set(workbook.sheet_names) == {'RawIntensity', 'SampleInfo'}
+            return
 
         # Load output
         output_path = result.output_path if hasattr(result, "output_path") else result.get('output_path')
@@ -100,6 +131,26 @@ class TestISTDCorrectionOutput:
         # Feature count should be approximately same (non-ISTD features)
         assert len(output_df) > 0, "Output should have rows"
         assert 'FeatureID' in output_df.columns, "Output should have FeatureID column"
+
+    @pytest.mark.slow
+    def test_output_workbook_only_keeps_required_sheets(
+        self,
+        istd_module,
+        sample_input_file,
+        copy_workbook_with_extra_sheet,
+        workbook_sheet_names,
+    ):
+        """Step 1 output should not copy unrelated input worksheets."""
+        input_with_extra_sheet = copy_workbook_with_extra_sheet(sample_input_file)
+
+        result = istd_module.main(input_file=input_with_extra_sheet)
+        output_path = result.output_path if hasattr(result, "output_path") else result.get('output_path')
+
+        expected_sheets = {'RawIntensity', 'SampleInfo'}
+        if not getattr(result, "extra", {}).get("skipped"):
+            expected_sheets.add('ISTD_Correction')
+
+        assert set(workbook_sheet_names(output_path)) == expected_sheets
 
 
 class TestISTDCorrectionHelpers:
@@ -124,7 +175,7 @@ class TestISTDCorrectionHelpers:
 
     def test_calculate_istd_cv(self, istd_module, sample_input_file):
         """Test ISTD CV calculation."""
-        raw_df, _, _ = istd_module.load_and_process_data(sample_input_file)
+        raw_df, _, _, _ = istd_module.load_and_process_data(sample_input_file)
 
         if raw_df is not None:
             istd_signals = raw_df[raw_df['is_ISTD']]
@@ -139,3 +190,48 @@ class TestISTDCorrectionHelpers:
                 for feature_id, cv in cv_dict.items():
                     if not pd.isna(cv):
                         assert cv >= 0, f"CV should be non-negative: {cv}"
+
+    def test_calculate_corrected_ratios_excludes_ratio_pseudo_sample_columns(self, istd_module):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Sample A1", "Sample B1"],
+                "Sample_Type": ["Exposure", "Control"],
+                "Batch": ["A", "B"],
+            }
+        )
+        raw_df = pd.DataFrame(
+            {
+                "FeatureID": ["ISTD_1", "Analyte_1"],
+                "mz": [100.0, 150.0],
+                "rt": [5.0, 5.2],
+                "is_ISTD": [True, False],
+                "Sample_A1": [10.0, 50.0],
+                "Sample_B1": [20.0, 100.0],
+                "exposure_ratio": [1.0, 1.0],
+            }
+        )
+
+        _, sample_columns = istd_module.calculate_corrected_ratios(raw_df, sample_info_df)
+
+        assert sample_columns == ["Sample_A1", "Sample_B1"]
+        assert "exposure_ratio" not in sample_columns
+
+    def test_get_qc_sample_columns_excludes_ratio_pseudo_samples(self, istd_module):
+        raw_df = pd.DataFrame(
+            {
+                "FeatureID": ["ISTD_1"],
+                "Sample_A1": [10.0],
+                "Sample_B1": [20.0],
+                "exposure_ratio": [1.0],
+            }
+        )
+        col_to_info = {
+            "Sample_A1": {"Sample_Type": "Exposure"},
+            "Sample_B1": {"Sample_Type": "Control"},
+            "exposure_ratio": {"Sample_Type": "Unknown"},
+        }
+
+        sample_columns, qc_columns = istd_module.get_qc_sample_columns(raw_df, col_to_info)
+
+        assert sample_columns == ["Sample_A1", "Sample_B1"]
+        assert qc_columns == []
