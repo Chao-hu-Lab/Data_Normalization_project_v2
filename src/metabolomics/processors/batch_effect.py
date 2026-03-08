@@ -2226,6 +2226,10 @@ def save_results_to_excel(input_file, output_file, data, sample_info,
     # 複製原始文件的其他工作表
     try:
         input_wb = load_workbook(input_file, data_only=True)
+        if data_sheet_name in input_wb.sheetnames:
+            input_wb._sheets = [input_wb[data_sheet_name]]
+        else:
+            input_wb._sheets = []
         
         for sheet_name in input_wb.sheetnames:
             # 跳過已經存在的工作表

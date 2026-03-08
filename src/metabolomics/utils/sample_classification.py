@@ -32,13 +32,14 @@ def normalize_sample_name(name) -> str:
     # - DNA_program1_TumorBC2257_DNA vs Tumor tissue BC2257_DNA
     # - Breast Cancer Tissue_ pooled_QC_1 vs Breast_Cancer_Tissue_pooled_QC_1
     value = re.sub(r'^(?:dna|rna)_program\d+_', '', value, flags=re.IGNORECASE)
+    value = re.sub(r'(?i)\bdna\s*(?:\+|and)\s*rna\b', 'dna and rna', value)
     value = re.sub(r'([a-z])([A-Z])', r'\1 \2', value)
     value = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', value)
     value = re.sub(r'([A-Za-z])(\d)', r'\1 \2', value)
     value = re.sub(r'(\d)([A-Za-z])', r'\1 \2', value)
     value = value.lower()
 
-    parts = re.split(r'[\s_\-/]+', value)
+    parts = re.split(r'[\s_\-/*+()]+', value)
     filtered_parts = [part for part in parts if part and part not in {'tissue'}]
     return ''.join(filtered_parts)
 

@@ -103,6 +103,34 @@ class TestBatchEffectOutput:
             # At minimum should have success indicator
             assert step3_result.output_path
 
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_output_workbook_only_keeps_required_sheets(
+        self,
+        istd_module,
+        qc_lowess_module,
+        batch_effect_module,
+        sample_input_file,
+        copy_workbook_with_extra_sheet,
+        workbook_sheet_names,
+    ):
+        """Step 3 output should only keep the Step 2 data sheet, SampleInfo, and Step 3 outputs."""
+        step1_result = istd_module.main(input_file=sample_input_file)
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
+        step2_result = qc_lowess_module.main(input_file=step1_output)
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
+        step2_with_extra_sheet = copy_workbook_with_extra_sheet(step2_output)
+
+        step3_result = batch_effect_module.main(input_file=step2_with_extra_sheet)
+        step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
+
+        assert set(workbook_sheet_names(step3_output)) == {
+            'QC LOWESS result',
+            'SampleInfo',
+            'Batch_effect_result',
+            'Batch_Effect_summary',
+        }
+
 
 class TestBatchEffectHelpers:
     """Tests for helper functions."""

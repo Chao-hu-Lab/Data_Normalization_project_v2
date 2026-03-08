@@ -744,7 +744,7 @@ class DataNormalizationApp:
              'color': self.color_scheme['step1'], 'accent': self.color_scheme['step1_accent']},
             {'name': 'Step 2: QC Correction', 'module': 'metabolomics.processors.qc_lowess', 'enabled': False,
              'color': self.color_scheme['step2'], 'accent': self.color_scheme['step2_accent']},
-            {'name': 'Step 3: Batch Correction', 'module': 'metabolomics.processors.batch_effect', 'enabled': False,
+            {'name': 'Step 3: Batch Correction', 'module': 'metabolomics.processors.qc_batch_scaling', 'enabled': False,
              'color': self.color_scheme['step3'], 'accent': self.color_scheme['step3_accent']},
             {'name': 'Step 4: Conc. Normalization', 'module': 'metabolomics.processors.normalization', 'enabled': False,
              'color': self.color_scheme['step4'], 'accent': self.color_scheme['step4_accent']}

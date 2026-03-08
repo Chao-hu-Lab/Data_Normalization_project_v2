@@ -17,8 +17,23 @@ warnings.filterwarnings('ignore')
 # ========== 匯入共用模組 ==========
 from metabolomics.utils.data_helpers import get_valid_values
 from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
-from metabolomics.utils.constants import FONT_SIZES, COLORBLIND_COLORS, SHEET_NAMES, DATETIME_FORMAT_FULL, FEATURE_ID_COLUMN, VALIDATION_THRESHOLDS, CV_QUALITY_THRESHOLDS
-from metabolomics.utils.sample_classification import SampleClassifier, identify_sample_columns
+from metabolomics.utils.constants import (
+    FONT_SIZES,
+    COLORBLIND_COLORS,
+    SHEET_NAMES,
+    DATETIME_FORMAT_FULL,
+    FEATURE_ID_COLUMN,
+    NON_SAMPLE_COLUMNS,
+    STAT_COLUMN_KEYWORDS,
+    VALIDATION_THRESHOLDS,
+    CV_QUALITY_THRESHOLDS,
+)
+from metabolomics.utils.sample_classification import (
+    SampleClassifier,
+    identify_sample_columns,
+    normalize_sample_name,
+    normalize_sample_type,
+)
 from metabolomics.utils.file_io import build_output_path, build_plots_dir, get_output_root
 from metabolomics.utils.results import ProcessingResult
 from metabolomics.utils.excel_format import copy_sheet_formatting_only
@@ -143,7 +158,11 @@ def load_and_process_data(file_path):
             print(f"  建議：請檢查數據是否正確，腳本將保留第一次出現的記錄")
 
         # ===== 防呆11: 样本列检查 =====
-        sample_columns = [col for col in raw_df.columns if col != 'FeatureID']
+        sample_columns, _ = identify_sample_columns(raw_df, sample_info_df)
+        sample_columns = [
+            col for col in sample_columns
+            if col in raw_df.columns and col not in {'is_ISTD', 'Sample_Type', 'sample_type'}
+        ]
         if len(sample_columns) == 0:
             raise ValueError(f"錯誤：'{SHEET_NAMES['raw_intensity']}' 中沒有樣本欄位")
 
@@ -431,6 +450,57 @@ def calculate_istd_cv(istd_signals, sample_columns):
 
     # Build result dictionary
     return dict(zip(istd_signals['FeatureID'], cv_values))
+
+def get_qc_sample_columns(raw_df, col_to_info, sample_info_df=None):
+    """Return sample columns and the QC subset for the Step 1 gate."""
+    if sample_info_df is not None:
+        sample_columns, _ = identify_sample_columns(raw_df, sample_info_df)
+        sample_columns = [
+            col for col in sample_columns
+            if col in raw_df.columns and col not in {'is_ISTD', 'Sample_Type', 'sample_type'}
+        ]
+    else:
+        non_sample_lower = {normalize_sample_name(col) for col in NON_SAMPLE_COLUMNS}
+        sample_columns = []
+        for col in raw_df.columns:
+            col_norm = normalize_sample_name(col)
+            if col_norm in non_sample_lower:
+                continue
+            if any(keyword in col_norm for keyword in STAT_COLUMN_KEYWORDS):
+                continue
+            if col in col_to_info:
+                sample_columns.append(col)
+    qc_columns = []
+
+    for col in sample_columns:
+        sample_type = normalize_sample_type(col_to_info.get(col, {}).get('Sample_Type', ''))
+        if sample_type == 'QC' or 'QC' in str(col).upper() or 'POOLED' in str(col).upper():
+            qc_columns.append(col)
+
+    return sample_columns, qc_columns
+
+
+def evaluate_istd_gate(raw_df, col_to_info, sample_info_df=None):
+    """Evaluate whether there are enough good ISTDs to run Step 1."""
+    sample_columns, qc_columns = get_qc_sample_columns(raw_df, col_to_info, sample_info_df=sample_info_df)
+    istd_signals, _ = identify_istd_signals(raw_df)
+    istd_qc_cv = calculate_istd_cv(istd_signals, qc_columns)
+    good_istd_ids = [
+        feature_id
+        for feature_id, cv in istd_qc_cv.items()
+        if pd.notna(cv) and cv < CV_QUALITY_THRESHOLDS['excellent']
+    ]
+
+    return {
+        'sample_columns': sample_columns,
+        'qc_columns': qc_columns,
+        'istd_qc_cv': istd_qc_cv,
+        'good_istd_ids': good_istd_ids,
+        'total_istd': len(istd_qc_cv),
+        'good_istd_count': len(good_istd_ids),
+        'should_skip': len(good_istd_ids) < 5,
+    }
+
 
 def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv, 
                                 sample_columns,  # ✅ 新增參數
@@ -1545,18 +1615,23 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
         if simplified != col:
             rename_map[col] = simplified
 
+    retained_sheets = {
+        SHEET_NAMES['raw_intensity']: all_sheets[SHEET_NAMES['raw_intensity']],
+        SHEET_NAMES['sample_info']: all_sheets[SHEET_NAMES['sample_info']],
+    }
+
     if rename_map:
         print(f"✓ 簡化 {len(rename_map)} 個欄位名稱（移除 DNA/RNA_programN_ 前綴）")
         # Rename in results
         results_with_cv = results_with_cv.rename(columns=rename_map)
-        # Rename in all_sheets
-        for sheet_name in all_sheets:
-            all_sheets[sheet_name] = all_sheets[sheet_name].rename(columns=rename_map)
+        # Rename in retained upstream sheets only
+        for sheet_name in retained_sheets:
+            retained_sheets[sheet_name] = retained_sheets[sheet_name].rename(columns=rename_map)
 
         # Update SampleInfo Sample_Name to match simplified column names
         # so downstream processors can match columns to SampleInfo directly
-        if SHEET_NAMES['sample_info'] in all_sheets and col_to_info:
-            si = all_sheets[SHEET_NAMES['sample_info']]
+        if SHEET_NAMES['sample_info'] in retained_sheets and col_to_info:
+            si = retained_sheets[SHEET_NAMES['sample_info']]
             if 'Sample_Name' in si.columns:
                 # Build reverse mapping: original SampleInfo name → simplified column name
                 info_name_to_col = {}
@@ -1569,6 +1644,7 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
                     return info_name_to_col.get(name_stripped, name_stripped)
 
                 si['Sample_Name'] = si['Sample_Name'].apply(_update_sample_name)
+                retained_sheets[SHEET_NAMES['sample_info']] = si
 
     # ===== 在 ISTD_Correction 中插入 Sample_Type 資訊行 =====
     # 讓下游步驟可直接從資料 sheet 讀取分組資訊，無需另查 SampleInfo
@@ -1593,7 +1669,7 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
         results_with_cv = pd.concat([type_row_df, results_with_cv], ignore_index=True)
 
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-        for sheet_name, df in all_sheets.items():
+        for sheet_name, df in retained_sheets.items():
             _rename_feature_col(df).to_excel(writer, sheet_name=sheet_name, index=False)
         _rename_feature_col(results_with_cv).to_excel(writer, sheet_name=SHEET_NAMES['istd_correction'], index=False)
     
@@ -1662,7 +1738,34 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
     # plot_pvalue_distribution(cv_results_df, plot_output_dir, timestamp)
 
-# ========== main 函數 ==========
+def save_skipped_istd_results_to_excel(output_file, all_sheets, original_workbook):
+    """Save a minimal Step 1 workbook when ISTD correction is skipped."""
+    retained_sheets = {
+        SHEET_NAMES['raw_intensity']: all_sheets[SHEET_NAMES['raw_intensity']],
+        SHEET_NAMES['sample_info']: all_sheets[SHEET_NAMES['sample_info']],
+    }
+
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        for sheet_name, df in retained_sheets.items():
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    workbook = load_workbook(original_workbook)
+    new_workbook = load_workbook(output_file)
+    try:
+        if (
+            SHEET_NAMES['raw_intensity'] in workbook.sheetnames
+            and SHEET_NAMES['raw_intensity'] in new_workbook.sheetnames
+        ):
+            copy_sheet_formatting_only(
+                workbook[SHEET_NAMES['raw_intensity']],
+                new_workbook[SHEET_NAMES['raw_intensity']],
+            )
+        new_workbook.save(output_file)
+    finally:
+        workbook.close()
+        new_workbook.close()
+
+
 def main(input_file=None):
     """
     主函數 - 修改為與 GUI 配合
@@ -1720,7 +1823,7 @@ def main(input_file=None):
     original_df, sample_info_df, all_sheets, col_to_info = load_and_process_data(input_file)
 
     # 計算校正結果 (raises ValueError on failure)
-    results_df, sample_columns = calculate_corrected_ratios(original_df, sample_info_df)
+    sample_columns = None
     
     # 🔧 修改：儲存結果到 output 資料夾
     run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
@@ -1748,6 +1851,35 @@ def main(input_file=None):
     if os.path.exists(output_file):
         print(f"⚠️ 警告：輸出檔案已存在，將被覆蓋")
         print(f"   {output_file}")
+
+    gate_eval = evaluate_istd_gate(original_df, col_to_info, sample_info_df=sample_info_df)
+    print("\n" + "="*70)
+    print("🔎 ISTD 前置品質檢查")
+    print("="*70)
+    print(f"  - QC 樣本數: {len(gate_eval['qc_columns'])}")
+    print(f"  - ISTD 總數: {gate_eval['total_istd']}")
+    print(f"  - QC_CV% < {CV_QUALITY_THRESHOLDS['excellent']:.0f}% 的 ISTD: {gate_eval['good_istd_count']}")
+    if gate_eval['should_skip']:
+        print("  - 決策: 跳過 Step 1 ISTD Correction")
+        print("  - 原因: 合格 ISTD 數量不足，後續 Step 2 應直接使用 RawIntensity")
+    print("="*70 + "\n")
+
+    if gate_eval['should_skip']:
+        save_skipped_istd_results_to_excel(output_file, all_sheets, input_file)
+        return ProcessingResult(
+            file_path=input_file,
+            output_path=str(output_file),
+            metabolites=len(original_df),
+            samples=len(gate_eval['sample_columns']),
+            extra={
+                'skipped': True,
+                'skip_reason': 'insufficient_good_istd',
+                'total_istd': gate_eval['total_istd'],
+                'good_istd': gate_eval['good_istd_count'],
+            }
+        )
+
+    results_df, sample_columns = calculate_corrected_ratios(original_df, sample_info_df)
 
     save_results_to_excel(
         original_df, results_df, sample_info_df,

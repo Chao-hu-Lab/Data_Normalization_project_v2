@@ -19,13 +19,14 @@ def test_imports_succeed_without_ms_core_checkout(tmp_path):
 
         code = """
 from metabolomics import utils
-from metabolomics.processors import istd, qc_lowess, batch_effect, normalization
+from metabolomics.processors import istd, qc_lowess, batch_effect, qc_batch_scaling, normalization
 from metabolomics.gui.app import DataNormalizationApp
 
 print("utils", bool(utils))
 print("istd", bool(istd))
 print("qc_lowess", bool(qc_lowess))
 print("batch_effect", bool(batch_effect))
+print("qc_batch_scaling", bool(qc_batch_scaling))
 print("normalization", bool(normalization))
 print("app", bool(DataNormalizationApp))
 """
