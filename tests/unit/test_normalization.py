@@ -9,6 +9,8 @@ These tests verify:
 """
 import pytest
 import os
+from importlib import import_module
+import pandas as pd
 
 
 class TestConcentrationNormInput:
@@ -22,6 +24,157 @@ class TestConcentrationNormInput:
     def test_has_required_functions(self, conc_norm_module):
         """Test that module has expected functions."""
         assert hasattr(conc_norm_module, 'main'), "Should have main function"
+
+
+class TestConcentrationNormHelpers:
+    def test_get_all_sample_columns_excludes_ratio_and_stat_columns(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Normal_A", "Benign_A", "Exposure_A", "QC_1"],
+                "Sample_Type": ["Normal", "Benign", "Exposure", "QC"],
+            }
+        )
+        data_df = pd.DataFrame(
+            {
+                "FeatureID": ["100.1/1.0"],
+                "Normal_A": [10.0],
+                "Benign_A": [20.0],
+                "Exposure_A": [30.0],
+                "QC_1": [40.0],
+                "exposure_ratio": [0.5],
+                "normal_ratio": [0.6],
+                "control_ratio": [0.7],
+                "QC_ratio": [0.8],
+                "Original_CV%": [12.0],
+                "Normalized_CV%": [8.0],
+            }
+        )
+
+        sample_columns = conc_norm_module.get_all_sample_columns(data_df, sample_info_df)
+
+        assert sample_columns == ["Normal_A", "Benign_A", "Exposure_A", "QC_1"]
+
+    def test_get_all_sample_columns_avoids_unknown_ratio_pseudo_samples(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Normal_A", "Benign_A", "Exposure_A", "QC_1"],
+                "Sample_Type": ["Normal", "Benign", "Exposure", "QC"],
+            }
+        )
+        data_df = pd.DataFrame(
+            {
+                "FeatureID": ["100.1/1.0"],
+                "Normal_A": [10.0],
+                "Benign_A": [20.0],
+                "Exposure_A": [30.0],
+                "QC_1": [40.0],
+                "exposure_ratio": [0.5],
+                "normal_ratio": [0.6],
+                "control_ratio": [0.7],
+                "QC_ratio": [0.8],
+            }
+        )
+
+        sample_columns = conc_norm_module.get_all_sample_columns(data_df, sample_info_df)
+        col_to_info_row = conc_norm_module.build_sample_info_mapping(sample_columns, sample_info_df)
+        sample_types = [
+            conc_norm_module._lookup_sample_type(sample, sample_info_df, col_to_info_row, default="Unknown")
+            for sample in sample_columns
+        ]
+
+        assert "UNKNOWN" not in sample_types
+
+    def test_build_sample_info_mapping_prefers_normalized_name_matches(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": [
+                    "Tumor tissue BC2257_DNA",
+                    "Normal tissue BC2257_DNA",
+                    "Breast Cancer Tissue_ pooled_QC_1",
+                ],
+                "Sample_Type": ["Exposure", "Normal", "QC"],
+                "Batch": ["A", "A", "A"],
+                "Col4": [1, 2, 3],
+                "Col5": [1, 2, 3],
+                "Ref": [10.0, 11.0, 12.0],
+            }
+        )
+
+        mapping = conc_norm_module.build_sample_info_mapping(
+            [
+                "TumorBC2257_DNA",
+                "NormalBC2257_DNA",
+                "Breast_Cancer_Tissue_pooled_QC_1",
+            ],
+            sample_info_df,
+        )
+
+        assert mapping["TumorBC2257_DNA"]["Sample_Type"] == "Exposure"
+        assert mapping["NormalBC2257_DNA"]["Sample_Type"] == "Normal"
+        assert mapping["Breast_Cancer_Tissue_pooled_QC_1"]["Sample_Type"] == "QC"
+
+    def test_plot_pca_with_confidence_ellipse_excludes_qc_and_uses_dynamic_groups(
+        self,
+        conc_norm_module,
+        tmp_path,
+        monkeypatch,
+    ):
+        captured = {}
+
+        def fake_plotter(*args, **kwargs):
+            captured["sample_names"] = args[4]
+            captured["sample_types"] = args[5]
+            output_path = kwargs.get("output_path")
+            if output_path:
+                with open(output_path, "wb") as handle:
+                    handle.write(b"png")
+            return None, (None, None)
+
+        monkeypatch.setattr(conc_norm_module, "plot_pca_comparison_real_sample_style", fake_plotter)
+
+        original_data = pd.DataFrame(
+            {
+                "QC_1": [10.0, 11.0, 12.0],
+                "Normal_A": [20.0, 21.0, 22.0],
+                "Benign_A": [30.0, 31.0, 32.0],
+                "Exposure_A": [40.0, 41.0, 42.0],
+            }
+        ).to_numpy()
+        normalized_data = original_data * 1.1
+        sample_names = ["QC_1", "Normal_A", "Benign_A", "Exposure_A"]
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "Normal_A", "Benign_A", "Exposure_A"],
+                "Sample_Type": ["QC", "Normal", "Benign", "Exposure"],
+            }
+        )
+        col_to_info_row = {
+            name: sample_info_df.iloc[index]
+            for index, name in enumerate(sample_names)
+        }
+
+        conc_norm_module.plot_pca_with_confidence_ellipse(
+            original_data,
+            normalized_data,
+            sample_names,
+            sample_info_df,
+            tmp_path / "step4_pca.png",
+            "PQN_SampleSpecific",
+            exclude_qc=True,
+            col_to_info_row=col_to_info_row,
+        )
+
+        assert captured["sample_names"] == ["Normal_A", "Benign_A", "Exposure_A"]
+        assert captured["sample_types"] == ["Normal", "Control", "Exposure"]
 
 
 class TestConcentrationNormOutput:
@@ -110,6 +263,94 @@ class TestConcentrationNormOutput:
         assert not any(name.startswith("Fig5_") for name in plot_files)
         assert not any(name.startswith("Fig6_") for name in plot_files)
         assert not any(name.startswith("Fig7_") for name in plot_files)
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_output_workbook_keeps_batch_effect_sheet_when_present(
+        self,
+        istd_module,
+        qc_lowess_module,
+        batch_effect_module,
+        conc_norm_module,
+        sample_input_file,
+        copy_workbook_with_extra_sheet,
+        workbook_sheet_names,
+    ):
+        """Step 4 should preserve the actual Step 3 data sheet when Batch Effect ran."""
+        step1_result = istd_module.main(input_file=sample_input_file)
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
+        step2_result = qc_lowess_module.main(input_file=step1_output)
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
+        step3_result = batch_effect_module.main(input_file=step2_output)
+        step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
+        step3_with_extra_sheet = copy_workbook_with_extra_sheet(step3_output)
+
+        step4_result = conc_norm_module.main(input_file=step3_with_extra_sheet)
+        step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get('output_path')
+
+        assert set(workbook_sheet_names(step4_output)) == {
+            'Batch_effect_result',
+            'SampleInfo',
+            'PQN_SampleSpecific_Result',
+            'ConcNormalization_Summary',
+        }
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_output_workbook_keeps_qc_lowess_sheet_when_batch_effect_is_skipped(
+        self,
+        istd_module,
+        qc_lowess_module,
+        conc_norm_module,
+        sample_input_file,
+        copy_workbook_with_extra_sheet,
+        workbook_sheet_names,
+    ):
+        """Step 4 should fall back to the Step 2 data sheet when Batch Effect was skipped."""
+        step1_result = istd_module.main(input_file=sample_input_file)
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
+        step2_result = qc_lowess_module.main(input_file=step1_output)
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
+        step2_with_extra_sheet = copy_workbook_with_extra_sheet(step2_output)
+
+        step4_result = conc_norm_module.main(input_file=step2_with_extra_sheet)
+        step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get('output_path')
+
+        assert set(workbook_sheet_names(step4_output)) == {
+            'QC LOWESS result',
+            'SampleInfo',
+            'PQN_SampleSpecific_Result',
+            'ConcNormalization_Summary',
+        }
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_output_workbook_keeps_qc_batch_scaling_sheet_when_present(
+        self,
+        qc_lowess_module,
+        conc_norm_module,
+        sample_input_file,
+        copy_workbook_with_extra_sheet,
+        workbook_sheet_names,
+    ):
+        """Step 4 should prefer the new QC batch scaling result sheet."""
+        qc_batch_scaling_module = import_module("metabolomics.processors.qc_batch_scaling")
+
+        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
+        step3_result = qc_batch_scaling_module.main(input_file=step2_output)
+        step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
+        step3_with_extra_sheet = copy_workbook_with_extra_sheet(step3_output)
+
+        step4_result = conc_norm_module.main(input_file=step3_with_extra_sheet)
+        step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get('output_path')
+
+        assert set(workbook_sheet_names(step4_output)) == {
+            'QC_Batch_Scaling_result',
+            'SampleInfo',
+            'PQN_SampleSpecific_Result',
+            'ConcNormalization_Summary',
+        }
 
 
 class TestFullPipeline:

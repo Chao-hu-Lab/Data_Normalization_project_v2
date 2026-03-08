@@ -13,9 +13,14 @@ from copy import copy
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-from metabolomics.utils.plotting import plot_pca_comparison_qc_style, setup_matplotlib
+from metabolomics.utils.plotting import plot_pca_comparison_real_sample_style, setup_matplotlib
 from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS
-from metabolomics.utils.sample_classification import SampleClassifier, normalize_sample_type
+from metabolomics.utils.sample_classification import (
+    SampleClassifier,
+    identify_sample_columns,
+    normalize_sample_name,
+    normalize_sample_type,
+)
 from metabolomics.utils.file_io import (
     build_plots_dir,
     get_output_root,
@@ -42,11 +47,100 @@ def _lookup_sample_type(sample, sample_info_df, col_to_info_row=None, default='U
     rows = sample_info_df[sample_info_df.iloc[:, 0] == sample]
     if not rows.empty:
         return str(rows.iloc[0].get('Sample_Type', default)).upper()
+    # Normalized-name fallback for common cross-tool naming differences
+    norm_sample = normalize_sample_name(sample)
+    if norm_sample:
+        norm_rows = sample_info_df[
+            sample_info_df.iloc[:, 0].map(normalize_sample_name) == norm_sample
+        ]
+        if not norm_rows.empty:
+            return str(norm_rows.iloc[0].get('Sample_Type', default)).upper()
     # Column-name keyword fallback
     s_upper = str(sample).upper()
     if any(kw in s_upper for kw in ['QC', 'POOLED']):
         return 'QC'
     return default.upper()
+
+
+def build_sample_info_mapping(sample_columns, sample_info_df):
+    """Map data columns to SampleInfo rows, preferring normalized-name exact matches."""
+    info_name_col = sample_info_df.columns[0]
+    info_names = sample_info_df[info_name_col].astype(str).tolist()
+
+    mapping = {}
+    exact_lookup = {}
+    normalized_lookup = {}
+
+    for idx, row in sample_info_df.iterrows():
+        exact_lookup.setdefault(str(row.get(info_name_col, '')), row)
+
+        norm_name = normalize_sample_name(row.get(info_name_col, ''))
+        if norm_name and norm_name not in normalized_lookup:
+            normalized_lookup[norm_name] = row
+
+    for sample in sample_columns:
+        if sample in exact_lookup:
+            mapping[sample] = exact_lookup[sample]
+
+    for sample in sample_columns:
+        if sample in mapping:
+            continue
+        norm_sample = normalize_sample_name(sample)
+        if norm_sample in normalized_lookup:
+            mapping[sample] = normalized_lookup[norm_sample]
+
+    unmatched_samples = [sample for sample in sample_columns if sample not in mapping]
+    if not unmatched_samples:
+        return mapping
+
+    if len(info_names) == len(sample_columns):
+        for index, sample in enumerate(sample_columns):
+            mapping.setdefault(sample, sample_info_df.iloc[index])
+        return mapping
+
+    import re
+
+    def _extract_tokens(name):
+        s = str(name).strip().lower()
+        s = re.sub(r'^(dna|rna)_program\d+_', '', s)
+        parts = re.split(r'[\s_\-/]+', s)
+        tokens = set()
+        numbers = set()
+        for part in parts:
+            sub = re.findall(r'[a-z]+|[0-9]+', part)
+            tokens.update(sub)
+            combo = re.findall(r'[a-z]+\d+', part)
+            tokens.update(combo)
+            nums = re.findall(r'\d{3,}', part)
+            numbers.update(nums)
+        generic = {'tissue', 'cancer', 'breast', 'pooled', 'fat', 'dna', 'rna', 'and', 'program1'}
+        return tokens - generic, numbers
+
+    for sample in unmatched_samples:
+        sample_tokens, sample_nums = _extract_tokens(sample)
+        best_match = None
+        best_score = 0
+
+        for idx, info_name in enumerate(info_names):
+            info_tokens, info_nums = _extract_tokens(info_name)
+            num_overlap = len(sample_nums & info_nums)
+            token_overlap = len(sample_tokens & info_tokens)
+
+            if num_overlap > 0:
+                score = 0.8 + 0.2 * (token_overlap / max(len(sample_tokens), len(info_tokens), 1))
+            elif sample_tokens and info_tokens:
+                score = token_overlap / max(len(sample_tokens), len(info_tokens))
+            else:
+                score = 0
+
+            if score > best_score:
+                best_score = score
+                best_match = idx
+
+        if best_match is not None and best_score >= 0.5:
+            mapping[sample] = sample_info_df.iloc[best_match]
+
+    return mapping
 
 # ==================== 標準化方法 ====================
 
@@ -224,26 +318,8 @@ def get_all_sample_columns(df, sample_info_df):
     """
     獲取所有樣本欄位（包含 QC，但排除統計欄位）
     """
-    # 排除的統計欄位關鍵字
-    exclude_keywords = [
-        'CV', 'Silhouette', 'Permutation', 'Correlation', 
-        'R_squared', 'Improvement', 'Before', 'After', 
-        'Original', 'Corrected', 'pvalue', 'p_value'
-    ]
-    
-    sample_columns = []
-    
-    for col in df.columns:
-        if col == df.columns[0]:  # 跳過第一欄（特徵ID）
-            continue
-        
-        # 檢查是否包含排除關鍵字
-        is_stat_column = any(keyword.lower() in str(col).lower() for keyword in exclude_keywords)
-        
-        if not is_stat_column:
-            sample_columns.append(col)  # ← 不排除 QC
-    
-    return sample_columns
+    sample_columns, _ = identify_sample_columns(df, sample_info_df)
+    return [col for col in sample_columns if col in df.columns]
 
 def calculate_cohens_d(group1, group2):
     """
@@ -1477,15 +1553,13 @@ def plot_pca_with_confidence_ellipse(
     # ========== 繪圖（統一為 QC 子程式 PCA 風格）==========
     sample_types = [normalize_sample_type(group) for group in sample_groups]
 
-    plot_pca_comparison_qc_style(
+    plot_pca_comparison_real_sample_style(
         pc_original,
         pc_normalized,
         var_original,
         var_normalized,
         sample_names_clean,
         sample_types,
-        batch_labels=None,
-        grouping='sample_type',
         suptitle=f'2D PCA Comparison: Before vs After Normalization ({method_name})',
         left_title='Before Normalization',
         right_title=f'After Normalization ({method_name})',
@@ -1955,6 +2029,7 @@ def load_excel_sheets(file_path):
 def determine_correction_sheet(sheets):
     """按指定順序確定要標準化的資料工作表"""
     priority_sheets = [
+        SHEET_NAMES['qc_batch_scaling'],
         SHEET_NAMES['batch_effect'],
         SHEET_NAMES['qc_lowess'],
         SHEET_NAMES['istd_correction'],
@@ -2078,66 +2153,8 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     original_data = data_matrix.copy()
     
     # 獲取參考值（肌酐/DNA 濃度）
-    # 先嘗試精確匹配，若失敗則用位置對齊
-    info_names = sample_info_df.iloc[:, 0].tolist()
-    exact_match_count = sum(1 for s in sample_columns if s in info_names)
-
-    if exact_match_count >= len(sample_columns) * 0.5:
-        # 精確匹配
-        col_to_info_row = {}
-        for s in sample_columns:
-            rows = sample_info_df[sample_info_df.iloc[:, 0] == s]
-            if not rows.empty:
-                col_to_info_row[s] = rows.iloc[0]
-        print(f"  名稱匹配: 精確匹配 {len(col_to_info_row)}/{len(sample_columns)}")
-    else:
-        # 位置對齊 fallback
-        col_to_info_row = {}
-        if len(info_names) == len(sample_columns):
-            for i, col in enumerate(sample_columns):
-                col_to_info_row[col] = sample_info_df.iloc[i]
-            print(f"  名稱匹配: 位置對齊 {len(col_to_info_row)}/{len(sample_columns)}")
-        else:
-            # 嘗試模糊匹配（使用 ISTD 中的 token 方法）
-            import re
-            def _extract_tokens(name):
-                s = str(name).strip().lower()
-                s = re.sub(r'^(dna|rna)_program\d+_', '', s)
-                parts = re.split(r'[\s_\-/]+', s)
-                tokens = set()
-                numbers = set()
-                for part in parts:
-                    sub = re.findall(r'[a-z]+|[0-9]+', part)
-                    tokens.update(sub)
-                    combo = re.findall(r'[a-z]+\d+', part)
-                    tokens.update(combo)
-                    # Extract pure numbers (specimen IDs)
-                    nums = re.findall(r'\d{3,}', part)
-                    numbers.update(nums)
-                generic = {'tissue', 'cancer', 'breast', 'pooled', 'fat', 'dna', 'rna', 'and', 'program1'}
-                return tokens - generic, numbers
-
-            for col in sample_columns:
-                col_tokens, col_nums = _extract_tokens(col)
-                best_match = None
-                best_score = 0
-                for idx, info_name in enumerate(info_names):
-                    info_tokens, info_nums = _extract_tokens(info_name)
-                    # Numeric ID match is strongest signal
-                    num_overlap = len(col_nums & info_nums)
-                    token_overlap = len(col_tokens & info_tokens)
-                    if num_overlap > 0:
-                        score = 0.8 + 0.2 * (token_overlap / max(len(col_tokens), len(info_tokens), 1))
-                    elif col_tokens and info_tokens:
-                        score = token_overlap / max(len(col_tokens), len(info_tokens))
-                    else:
-                        score = 0
-                    if score > best_score:
-                        best_score = score
-                        best_match = idx
-                if best_match is not None and best_score >= 0.5:
-                    col_to_info_row[col] = sample_info_df.iloc[best_match]
-            print(f"  名稱匹配: 模糊匹配 {len(col_to_info_row)}/{len(sample_columns)}")
+    col_to_info_row = build_sample_info_mapping(sample_columns, sample_info_df)
+    print(f"  名稱匹配: 標準化優先匹配 {len(col_to_info_row)}/{len(sample_columns)}")
 
     reference_values = []
     for sample in sample_columns:
@@ -2314,7 +2331,15 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     
     return normalized_df, summary_report, method_name, output_dir, quality_metrics, figures_dir
 
-def save_normalization_results(normalized_df, summary_report, file_path, method_name, original_sheets, output_dir):
+def save_normalization_results(
+    normalized_df,
+    summary_report,
+    file_path,
+    method_name,
+    preserved_data_sheet_name,
+    sample_info_sheet_name,
+    output_dir,
+):
     """儲存標準化結果到Excel檔案"""
     try:
         timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
@@ -2376,23 +2401,24 @@ def save_normalization_results(normalized_df, summary_report, file_path, method_
         
         ws_summary.column_dimensions['A'].width = 80
         
-        # 3. 複製原始工作表並保留格式
-        for sheet_name in wb_original.sheetnames:
-            if sheet_name in [f'{method_name}_Result', SUMMARY_SHEET_NAME]:
+        # 3. 僅保留上一步資料工作表與 SampleInfo
+        preserved_sheet_names = []
+        for sheet_name in [preserved_data_sheet_name, sample_info_sheet_name]:
+            if not sheet_name or sheet_name in preserved_sheet_names:
                 continue
-            
+            if sheet_name not in wb_original.sheetnames:
+                continue
+
             ws_original = wb_original[sheet_name]
             ws_new = wb_new.create_sheet(title=sheet_name[:31])
-            
-            # 設置列寬
+            preserved_sheet_names.append(sheet_name)
+
             for col in ws_original.column_dimensions:
                 ws_new.column_dimensions[col].width = ws_original.column_dimensions[col].width
-            
-            # 設置行高
+
             for row_idx, row_dim in ws_original.row_dimensions.items():
                 ws_new.row_dimensions[row_idx].height = row_dim.height
-            
-            # 複製儲存格內容和格式
+
             for row in ws_original.iter_rows():
                 for cell in row:
                     new_cell = ws_new.cell(row=cell.row, column=cell.column, value=cell.value)
@@ -2405,9 +2431,8 @@ def save_normalization_results(normalized_df, summary_report, file_path, method_
         print(f"\n包含工作表:")
         print(f"  1. {method_name}_Result (標準化後資料)")
         print(f"  2. {SUMMARY_SHEET_NAME} (摘要報告)")
-        for sheet_name in wb_original.sheetnames:
-            if sheet_name not in [f'{method_name}_Result', SUMMARY_SHEET_NAME]:
-                print(f"  3. {sheet_name} (原始資料)")
+        for index, sheet_name in enumerate(preserved_sheet_names, start=3):
+            print(f"  {index}. {sheet_name} (保留輸入資料)")
         
         return str(output_path)
         
@@ -2518,7 +2543,13 @@ def main(input_file=None):
     # 儲存結果
     print("\n儲存結果...")
     output_path = save_normalization_results(
-        normalized_df, summary_report, input_file, method_name, sheets, output_dir
+        normalized_df,
+        summary_report,
+        input_file,
+        method_name,
+        data_sheet_name,
+        sample_info_sheet_name,
+        output_dir,
     )
     
     if not output_path:

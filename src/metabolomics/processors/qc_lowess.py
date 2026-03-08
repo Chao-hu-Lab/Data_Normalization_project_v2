@@ -47,6 +47,13 @@ QC_LOWESS_ADVANCED_SHEET = SHEET_NAMES.get('qc_lowess_advanced', "QC_LOWESS_Adva
 DEFAULT_NON_SAMPLE_COLUMNS = NON_SAMPLE_COLUMNS
 
 
+def parse_batch_labels(value):
+    """Parse semicolon-separated batch labels and trim whitespace."""
+    if pd.isna(value):
+        return []
+    return [part.strip() for part in str(value).split(';') if part.strip()]
+
+
 def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensities, debug_flag=None, global_qc_median=None):
     """對單一批次特徵執行 QC-LOWESS 校正並回傳詳細統計。
 
@@ -248,6 +255,7 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
 def perform_lowess_normalization(istd_df, sample_info_df):
     """執行分批次的 QC-LOWESS 正規化流程。"""
     try:
+        source_sheet_name = istd_df.attrs.get('source_sheet_name', SHEET_NAMES['istd_correction'])
         if istd_df is None or istd_df.empty:
             raise ValueError("ISTD_Correction 數據為空")
 
@@ -317,22 +325,30 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             if meta_name not in sample_meta.index:
                 continue
             meta_row = sample_meta.loc[meta_name]
-            batch_name = str(meta_row.get('Batch', 'Batch1'))
-            batch_entry = batch_groups.setdefault(
-                batch_name,
-                {'samples': [], 'qc_samples': [], 'injection_orders': {}}
-            )
-            batch_entry['samples'].append(sample)
-
-            sample_type = str(meta_row.get('Sample_Type', '')).upper()
-            if 'QC' in sample_type:
-                batch_entry['qc_samples'].append(sample)
-
             order = meta_row.get('Injection_Order')
             if pd.isna(order):
                 missing_order_samples.append(sample)
-                order = len(batch_entry['injection_orders']) + 1
-            batch_entry['injection_orders'][sample] = order
+            sample_type = normalize_sample_type(meta_row.get('Sample_Type', ''))
+            batches = parse_batch_labels(meta_row.get('Batch', 'Batch1')) or ['Batch1']
+
+            if sample_type != 'QC' and len(batches) != 1:
+                raise ValueError(f"Non-QC sample '{sample}' must belong to a single batch")
+
+            for batch_name in batches:
+                batch_entry = batch_groups.setdefault(
+                    batch_name,
+                    {'samples': [], 'qc_samples': [], 'injection_orders': {}}
+                )
+                if sample not in batch_entry['samples']:
+                    batch_entry['samples'].append(sample)
+
+                if sample_type == 'QC' and sample not in batch_entry['qc_samples']:
+                    batch_entry['qc_samples'].append(sample)
+
+                batch_order = order
+                if pd.isna(batch_order):
+                    batch_order = len(batch_entry['injection_orders']) + 1
+                batch_entry['injection_orders'][sample] = batch_order
 
         active_batches = {k: v for k, v in batch_groups.items() if v['samples']}
         if not active_batches:
@@ -509,6 +525,8 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 result_row[sample] = row[sample]
 
             qc_corrected_dict = {sample: row[sample] for sample in qc_samples if sample in row.index}
+            corrected_candidates = {}
+            fallback_candidates = {}
             trend_metric_buffer = []
             batch_statuses = []
             frac_value_buffer = []
@@ -527,10 +545,9 @@ def perform_lowess_normalization(istd_df, sample_info_df):
 
                 corrected_map = batch_result['corrected_samples']
                 if corrected_map:
+                    target_buffer = corrected_candidates if status == 'success' else fallback_candidates
                     for sample, value in corrected_map.items():
-                        result_row[sample] = value
-                        if sample in qc_corrected_dict:
-                            qc_corrected_dict[sample] = value
+                        target_buffer.setdefault(sample, []).append(value)
 
                 if batch_result['trend_validation']:
                     trend_metric_buffer.append(batch_result['trend_validation'])
@@ -543,6 +560,18 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 # 收集趨勢擬合圖數據（僅限 debug 特徵）
                 if debug_flag and 'plot_data' in batch_result:
                     trend_plot_data[(feature_id, batch_name)] = batch_result['plot_data']
+
+            for sample in sample_columns:
+                if sample in corrected_candidates:
+                    result_row[sample] = safe_nanmedian(corrected_candidates[sample])
+                elif sample in fallback_candidates:
+                    result_row[sample] = safe_nanmedian(fallback_candidates[sample])
+
+            for sample in qc_corrected_dict:
+                if sample in corrected_candidates:
+                    qc_corrected_dict[sample] = safe_nanmedian(corrected_candidates[sample])
+                elif sample in fallback_candidates:
+                    qc_corrected_dict[sample] = safe_nanmedian(fallback_candidates[sample])
 
             success_batches = batch_statuses.count('success')
             if success_batches == len(active_batches):
@@ -682,17 +711,23 @@ def load_and_process_data(file_path):
         # ===== 防呆5: 必要工作表檢查 =====
         print(f"📋 找到的工作表: {', '.join(excel_file.sheet_names)}")
 
-        required_sheets = [SHEET_NAMES['istd_correction'], SHEET_NAMES['sample_info']]
+        required_sheets = [SHEET_NAMES['sample_info']]
         missing_sheets = [sheet for sheet in required_sheets if sheet not in excel_file.sheet_names]
 
         if missing_sheets:
             raise ValueError(
                 f"輸入檔案缺少必要的工作表: {', '.join(missing_sheets)}。"
                 f" 找到的工作表: {', '.join(excel_file.sheet_names)}。"
-                f" QC-LOWESS 校正需要先執行 ISTD_Correction"
+                f" QC-LOWESS 校正需要至少包含 RawIntensity 或 ISTD_Correction"
             )
 
         # ===== 防呆6: SampleInfo 完整性檢查 =====
+        source_sheet_name = (
+            SHEET_NAMES['istd_correction']
+            if SHEET_NAMES['istd_correction'] in excel_file.sheet_names
+            else SHEET_NAMES['raw_intensity']
+        )
+
         sample_info_df = pd.read_excel(excel_file, sheet_name=SHEET_NAMES['sample_info'])
         print(f"✓ 成功讀取 '{SHEET_NAMES['sample_info']}' 工作表，包含 {len(sample_info_df)} 筆樣本資訊")
 
@@ -772,11 +807,11 @@ def load_and_process_data(file_path):
                 print(f"⚠️  警告：已為缺少 Injection_Order 的樣本指派遞增序號，請於 SampleInfo 中確認")
 
         # ===== 防呆10: ISTD_Correction 基本檢查 =====
-        istd_df = pd.read_excel(excel_file, sheet_name=SHEET_NAMES['istd_correction'])
-        print(f"✓ 成功讀取 '{SHEET_NAMES['istd_correction']}' 工作表，包含 {len(istd_df)} 個特徵")
+        istd_df = pd.read_excel(excel_file, sheet_name=source_sheet_name)
+        print(f"✓ 成功讀取 '{source_sheet_name}' 工作表，包含 {len(istd_df)} 個特徵")
 
         if istd_df.empty:
-            raise ValueError(f"'{SHEET_NAMES['istd_correction']}' 工作表為空")
+            raise ValueError(f"'{source_sheet_name}' 工作表為空")
 
         # 支援 'Mz/RT' 或 'FeatureID' 作為特徵ID欄位
         if FEATURE_ID_COLUMN in istd_df.columns and FEATURE_ID_COLUMN != 'FeatureID':
@@ -826,14 +861,14 @@ def load_and_process_data(file_path):
         missing_in_info = sample_names_in_istd - sample_names_in_info
 
         if missing_in_istd:
-            print(f"⚠️  警告：以下樣本在 SampleInfo 中有記錄，但在 ISTD_Correction 中找不到:")
+            print(f"⚠️  警告：以下樣本在 SampleInfo 中有記錄，但在 {source_sheet_name} 中找不到:")
             for name in list(missing_in_istd)[:5]:
                 print(f"     - {name}")
             if len(missing_in_istd) > 5:
                 print(f"     ... 還有 {len(missing_in_istd) - 5} 個樣本")
 
         if missing_in_info:
-            print(f"⚠️  警告：以下樣本在 ISTD_Correction 中有數據，但在 SampleInfo 中找不到:")
+            print(f"⚠️  警告：以下樣本在 {source_sheet_name} 中有數據，但在 SampleInfo 中找不到:")
             for name in list(missing_in_info)[:5]:
                 print(f"     - {name}")
             if len(missing_in_info) > 5:
@@ -859,7 +894,7 @@ def load_and_process_data(file_path):
 
         # 填充 NaN 為 0
         istd_df = istd_df.fillna(0)
-        print(f"✓ ISTD_Correction 數據類型檢查：樣本欄位已轉換為數值型")
+        print(f"✓ {source_sheet_name} 數據類型檢查：樣本欄位已轉換為數值型")
 
         # ===== 防呆16: 數值範圍檢查 =====
         negative_count = 0
@@ -903,6 +938,7 @@ def load_and_process_data(file_path):
         # 將識別出的樣本欄位保存於 DataFrame attrs，供後續流程使用
         istd_df.attrs['sample_columns'] = sample_columns
         istd_df.attrs['excluded_non_sample_columns'] = dropped_columns
+        istd_df.attrs['source_sheet_name'] = source_sheet_name
 
         return raw_df, istd_df, sample_info_df, sample_type_row
 
@@ -1399,11 +1435,11 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
                 return None
             return df.replace([np.inf, -np.inf], np.nan)
 
-        raw_export = sanitize_excel_df(raw_df) if raw_df is not None else None
         istd_export = sanitize_excel_df(istd_df)
         lowess_export = sanitize_excel_df(lowess_with_cv)
         advanced_export = sanitize_excel_df(advanced_stats_df)
         sample_info_export = sanitize_excel_df(sample_info_df)
+        source_sheet_name = istd_df.attrs.get('source_sheet_name', SHEET_NAMES['istd_correction'])
 
         # ===== 回插 Sample_Type 資訊行（若有）=====
         if sample_type_row is not None:
@@ -1411,15 +1447,12 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             istd_export = insert_sample_type_row(istd_export, sample_type_row)
             lowess_export = insert_sample_type_row(lowess_export, sample_type_row)
 
-        sheets_to_write = []
-        if raw_export is not None and not raw_export.empty:
-            sheets_to_write.append((SHEET_NAMES['raw_intensity'], raw_export))
-        sheets_to_write.extend([
-            (SHEET_NAMES['istd_correction'], istd_export),
+        sheets_to_write = [
+            (source_sheet_name, istd_export),
             (SHEET_NAMES['qc_lowess'], lowess_export),
             (QC_LOWESS_ADVANCED_SHEET, advanced_export),
             (SHEET_NAMES['sample_info'], sample_info_export),
-        ])
+        ]
 
         # 輸出時將內部欄名 'FeatureID' 還原為 FEATURE_ID_COLUMN
         def _rename_feature_col(df):
@@ -1435,14 +1468,14 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
 
         # 複製輸入檔的原始格式（保留 ISTD 紅色標記等）
         original_wb = load_workbook(input_file)
-        for sheet_name in [SHEET_NAMES['raw_intensity'], SHEET_NAMES['istd_correction']]:
+        for sheet_name in [source_sheet_name]:
             if sheet_name in original_wb.sheetnames and sheet_name in workbook.sheetnames:
                 copy_sheet_formatting_only(original_wb[sheet_name], workbook[sheet_name])
         original_wb.close()
 
         scientific_format = '0.00E+00'
         
-        for sheet_name in [SHEET_NAMES['istd_correction'], SHEET_NAMES['qc_lowess'], QC_LOWESS_ADVANCED_SHEET, SHEET_NAMES['sample_info']]:
+        for sheet_name in [source_sheet_name, SHEET_NAMES['qc_lowess'], QC_LOWESS_ADVANCED_SHEET, SHEET_NAMES['sample_info']]:
             if sheet_name in workbook.sheetnames:
                 worksheet = workbook[sheet_name]
                 for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=1, max_col=worksheet.max_column):
@@ -1923,7 +1956,10 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
         )
 
         sample_types = [sample_type_map.get(col, 'Unknown') for col in sample_columns_clean]
-        batch_labels = [sample_batches.get(col, 'Unknown') for col in sample_columns_clean]
+        batch_memberships = [
+            tuple(parse_batch_labels(sample_batches.get(col, 'Unknown')) or ['Unknown'])
+            for col in sample_columns_clean
+        ]
 
         qc_outliers_left = {name for name, is_out in qc_outlier_map_istd.items() if is_out}
         qc_outliers_right = {name for name, is_out in qc_outlier_map_lowess.items() if is_out}
@@ -1935,7 +1971,7 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
             var_lowess,
             sample_columns_clean,
             sample_types,
-            batch_labels=batch_labels,
+            batch_memberships=batch_memberships,
             grouping=grouping_tag,
             suptitle=suptitle,
             left_title='ISTD Corrected',
@@ -2021,6 +2057,7 @@ def main(input_file=None):
     print(f"{'='*70}")
     
     raw_df, istd_df, sample_info_df, sample_type_row = load_and_process_data(file_path)
+    source_sheet_name = istd_df.attrs.get('source_sheet_name', SHEET_NAMES['istd_correction'])
 
     print(f"\n{'='*70}")
     print(f"🔧 執行 QC-LOWESS 校正...")
@@ -2072,7 +2109,7 @@ def main(input_file=None):
     print(f"{'='*70}")
     print(f"\n📁 輸出內容:")
     print(f"  - Excel 結果: output/{os.path.basename(output_file)}")
-    print(f"    ├── ISTD_Correction（保留原格式）")
+    print(f"    ├── {source_sheet_name}（保留原格式）")
     print(f"    ├── QC LOWESS result（主表：Levene's test + CV%）")
     print(f"    ├── {QC_LOWESS_ADVANCED_SHEET}（副表：Mann-Kendall + R²/RMSE）")
     print(f"    └── SampleInfo")

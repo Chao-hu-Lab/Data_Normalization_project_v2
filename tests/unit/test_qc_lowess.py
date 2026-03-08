@@ -25,9 +25,46 @@ class TestQCLOWESSInput:
         for func_name in expected_functions:
             assert hasattr(qc_lowess_module, func_name), f"Missing function: {func_name}"
 
+    def test_load_and_process_data_reports_actual_source_sheet(
+        self,
+        qc_lowess_module,
+        sample_input_file,
+        capsys,
+    ):
+        """Fallback logging should mention RawIntensity when no ISTD sheet exists."""
+        qc_lowess_module.load_and_process_data(sample_input_file)
+
+        captured = capsys.readouterr().out
+        assert "成功讀取 'RawIntensity' 工作表" in captured
+        assert "成功讀取 'ISTD_Correction' 工作表" not in captured
+
 
 class TestQCLOWESSOutput:
     """Tests for output validation."""
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_main_falls_back_to_raw_intensity_when_istd_sheet_is_missing(
+        self,
+        qc_lowess_module,
+        sample_input_file,
+        workbook_sheet_names,
+    ):
+        """Step 2 should accept a workbook that only has RawIntensity and SampleInfo."""
+        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+
+        validation_target = (
+            step2_result.output_path
+            if hasattr(step2_result, "output_path")
+            else step2_result.get("output_path")
+        )
+
+        assert set(workbook_sheet_names(validation_target)) == {
+            "RawIntensity",
+            "QC LOWESS result",
+            "QC_LOWESS_Advanced Statistics",
+            "SampleInfo",
+        }
 
     @pytest.mark.slow
     @pytest.mark.integration
@@ -119,9 +156,203 @@ class TestQCLOWESSOutput:
         plot_files = sorted(Path(plots_dir).glob("*.png"))
         assert plot_files, "QC-LOWESS should generate PNG plots"
 
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_output_workbook_only_keeps_required_sheets(
+        self,
+        istd_module,
+        qc_lowess_module,
+        sample_input_file,
+        copy_workbook_with_extra_sheet,
+        workbook_sheet_names,
+    ):
+        """Step 2 output should only keep the previous step sheet and required metadata."""
+        step1_result = istd_module.main(input_file=sample_input_file)
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
+        step1_with_extra_sheet = copy_workbook_with_extra_sheet(step1_output)
+
+        step2_result = qc_lowess_module.main(input_file=step1_with_extra_sheet)
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
+
+        expected_source_sheet = 'RawIntensity'
+        if 'ISTD_Correction' in workbook_sheet_names(step1_with_extra_sheet):
+            expected_source_sheet = 'ISTD_Correction'
+
+        assert set(workbook_sheet_names(step2_output)) == {
+            expected_source_sheet,
+            'QC LOWESS result',
+            'QC_LOWESS_Advanced Statistics',
+            'SampleInfo',
+        }
+
 
 class TestQCLOWESSHelpers:
     """Tests for helper functions."""
+
+    def test_perform_pca_analysis_passes_multi_batch_memberships_to_plotter(
+        self,
+        qc_lowess_module,
+        tmp_path,
+        monkeypatch,
+    ):
+        captured = {}
+
+        def fake_plotter(*args, **kwargs):
+            captured["batch_memberships"] = kwargs.get("batch_memberships")
+            output_path = kwargs.get("output_path")
+            if output_path:
+                from pathlib import Path
+
+                Path(output_path).write_bytes(b"png")
+            return None, (None, None)
+
+        monkeypatch.setattr(qc_lowess_module, "plot_pca_comparison_qc_style", fake_plotter)
+
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": [
+                    "QC1",
+                    "QC2",
+                    "QC3",
+                    "QC4",
+                    "QC5",
+                    "QC6",
+                    "QC7",
+                    "SampleA",
+                    "SampleB",
+                    "SampleC",
+                ],
+                "Sample_Type": [
+                    "QC",
+                    "QC",
+                    "QC",
+                    "QC",
+                    "QC",
+                    "QC",
+                    "QC",
+                    "Exposure",
+                    "Normal",
+                    "Benign",
+                ],
+                "Batch": ["A", "A", "A;B", "B", "B;C", "C", "C", "A", "B", "C"],
+                "Injection_Order": [1, 2, 3, 4, 5, 6, 7, 2.5, 4.5, 6.5],
+            }
+        )
+        feature_rows = []
+        for idx in range(4):
+            feature_rows.append(
+                {
+                    "FeatureID": f"100.{idx}/5.{idx}",
+                    "QC1": 10.0 + idx,
+                    "QC2": 20.0 + idx,
+                    "QC3": 30.0 + idx,
+                    "QC4": 40.0 + idx,
+                    "QC5": 50.0 + idx,
+                    "QC6": 60.0 + idx,
+                    "QC7": 70.0 + idx,
+                    "SampleA": 25.0 + idx,
+                    "SampleB": 45.0 + idx,
+                    "SampleC": 65.0 + idx,
+                }
+            )
+
+        istd_df = pd.DataFrame(feature_rows)
+        lowess_df = pd.DataFrame(feature_rows)
+        sample_columns = [
+            "QC1",
+            "QC2",
+            "QC3",
+            "QC4",
+            "QC5",
+            "QC6",
+            "QC7",
+            "SampleA",
+            "SampleB",
+            "SampleC",
+        ]
+
+        qc_lowess_module.perform_pca_analysis(
+            istd_df,
+            lowess_df,
+            sample_columns,
+            sample_info_df,
+            plots_dir=str(tmp_path),
+            grouping="batch",
+        )
+
+        assert captured["batch_memberships"][2] == ("A", "B")
+        assert all(";" not in label for membership in captured["batch_memberships"] for label in membership)
+
+    def test_perform_lowess_supports_multi_batch_qc_membership(self, qc_lowess_module):
+        """QC samples tagged as A;B should contribute to both batches instead of forming a new batch."""
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": [
+                    "QC1",
+                    "QC2",
+                    "QC3",
+                    "QC4",
+                    "QC5",
+                    "QC6",
+                    "QC7",
+                    "SampleA",
+                    "SampleB",
+                    "SampleC",
+                ],
+                "Sample_Type": [
+                    "QC",
+                    "QC",
+                    "QC",
+                    "QC",
+                    "QC",
+                    "QC",
+                    "QC",
+                    "Exposure",
+                    "Control",
+                    "Exposure",
+                ],
+                "Batch": ["A", "A", "A;B", "B", "B;C", "C", "C", "A", "B", "C"],
+                "Injection_Order": [1, 2, 3, 4, 5, 6, 7, 2.5, 4.5, 6.5],
+            }
+        )
+        istd_df = pd.DataFrame(
+            [
+                {
+                    "FeatureID": "100.1/5.0",
+                    "QC1": 10.0,
+                    "QC2": 20.0,
+                    "QC3": 30.0,
+                    "QC4": 40.0,
+                    "QC5": 50.0,
+                    "QC6": 60.0,
+                    "QC7": 70.0,
+                    "SampleA": 25.0,
+                    "SampleB": 45.0,
+                    "SampleC": 65.0,
+                }
+            ]
+        )
+        istd_df.attrs["sample_columns"] = [
+            "QC1",
+            "QC2",
+            "QC3",
+            "QC4",
+            "QC5",
+            "QC6",
+            "QC7",
+            "SampleA",
+            "SampleB",
+            "SampleC",
+        ]
+
+        lowess_df, _, _, _, decision_stats, _ = qc_lowess_module.perform_lowess_normalization(
+            istd_df, sample_info_df
+        )
+
+        assert decision_stats["event_counts"]["insufficient_qc"] == 0
+        assert lowess_df.loc[0, "SampleA"] != pytest.approx(25.0)
+        assert lowess_df.loc[0, "SampleB"] != pytest.approx(45.0)
+        assert lowess_df.loc[0, "SampleC"] != pytest.approx(65.0)
 
     def test_get_valid_values_consistency(self, qc_lowess_module, istd_module):
         """Test that get_valid_values is consistent with ISTD module."""
