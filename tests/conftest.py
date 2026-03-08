@@ -6,6 +6,9 @@ import os
 import sys
 import shutil
 import tempfile
+from pathlib import Path
+
+from openpyxl import load_workbook
 
 # Add src directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -93,6 +96,42 @@ def clean_output_dir(output_dir):
     yield output_dir, existing_files
 
 
+@pytest.fixture
+def workbook_sheet_names():
+    """Return a function that lists worksheet names for a workbook."""
+
+    def _sheet_names(file_path):
+        workbook = load_workbook(file_path, read_only=True, data_only=True)
+        try:
+            return list(workbook.sheetnames)
+        finally:
+            workbook.close()
+
+    return _sheet_names
+
+
+@pytest.fixture
+def copy_workbook_with_extra_sheet(tmp_path):
+    """Copy a workbook and inject one extra sheet for retention tests."""
+
+    def _copy(src_path, extra_sheet_name="UnexpectedHistory"):
+        src = Path(src_path)
+        dest = tmp_path / f"{src.stem}_with_extra{src.suffix}"
+        shutil.copy2(src, dest)
+        workbook = load_workbook(dest)
+        try:
+            if extra_sheet_name in workbook.sheetnames:
+                del workbook[extra_sheet_name]
+            worksheet = workbook.create_sheet(extra_sheet_name)
+            worksheet["A1"] = "should not be copied downstream"
+            workbook.save(dest)
+        finally:
+            workbook.close()
+        return str(dest)
+
+    return _copy
+
+
 # ============================================================
 # Module Import Fixtures
 # ============================================================
@@ -116,6 +155,13 @@ def batch_effect_module():
     """Import and return Batch Effect processor module."""
     from metabolomics.processors import batch_effect
     return batch_effect
+
+
+@pytest.fixture(scope="session")
+def qc_batch_scaling_module():
+    """Import and return QC batch scaling processor module."""
+    from metabolomics.processors import qc_batch_scaling
+    return qc_batch_scaling
 
 
 @pytest.fixture(scope="session")
@@ -242,7 +288,7 @@ def validate_result_dict():
 
 @pytest.fixture(scope="session")
 def run_full_pipeline(sample_input_file, istd_module, qc_lowess_module,
-                      batch_effect_module, conc_norm_module):
+                      qc_batch_scaling_module, conc_norm_module):
     """
     Run the full 4-step pipeline once and cache results.
     Used for integration tests.
@@ -259,8 +305,8 @@ def run_full_pipeline(sample_input_file, istd_module, qc_lowess_module,
         results['step2'] = result2
 
         if result2 and hasattr(result2, "output_path"):
-            # Step 3: Batch Effect
-            result3 = batch_effect_module.main(input_file=result2.output_path)
+            # Step 3: QC Batch Scaling
+            result3 = qc_batch_scaling_module.main(input_file=result2.output_path)
             results['step3'] = result3
 
             if result3 and hasattr(result3, "output_path"):

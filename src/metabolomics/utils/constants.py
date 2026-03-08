@@ -55,6 +55,8 @@ SHEET_NAMES = {
     'istd_correction': 'ISTD_Correction',
     'qc_lowess': 'QC LOWESS result',
     'qc_lowess_advanced': 'QC_LOWESS_Advanced Statistics',
+    'qc_batch_scaling': 'QC_Batch_Scaling_result',
+    'qc_batch_scaling_summary': 'QC_Batch_Scaling_summary',
     'batch_effect': 'Batch_effect_result',
     'batch_summary': 'Batch_Effect_summary',
     'concentration': 'ConcNormalization_Summary',

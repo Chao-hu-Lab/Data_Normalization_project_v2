@@ -36,7 +36,7 @@ def _make_app():
     app.steps = [
         {"name": "Step 1: ISTD Correction", "module": "metabolomics.processors.istd"},
         {"name": "Step 2: QC Correction", "module": "metabolomics.processors.qc_lowess"},
-        {"name": "Step 3: Batch Correction", "module": "metabolomics.processors.batch_effect"},
+        {"name": "Step 3: Batch Correction", "module": "metabolomics.processors.qc_batch_scaling"},
         {"name": "Step 4: Conc. Normalization", "module": "metabolomics.processors.normalization"},
     ]
     app.master = _DummyMaster()
