@@ -63,7 +63,7 @@ def test_export_to_metaboanalyst_uses_shared_session_bridge_and_launch_args(monk
     app.steps = [
         {"name": "Step 1: ISTD Correction"},
         {"name": "Step 2: QC Correction"},
-        {"name": "Step 3: Batch Correction"},
+        {"name": "Step 3: QC Batch Scaling"},
         {"name": "Step 4: Conc. Normalization"},
     ]
     normalized = tmp_path / "Normalized.xlsx"
