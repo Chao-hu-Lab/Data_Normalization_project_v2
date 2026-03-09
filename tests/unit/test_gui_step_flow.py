@@ -34,10 +34,10 @@ class _DummyLogger:
 def _make_app():
     app = DataNormalizationApp.__new__(DataNormalizationApp)
     app.steps = [
-        {"name": "Step 1: ISTD Correction", "module": "metabolomics.processors.istd"},
-        {"name": "Step 2: QC Correction", "module": "metabolomics.processors.qc_lowess"},
-        {"name": "Step 3: Batch Correction", "module": "metabolomics.processors.qc_batch_scaling"},
-        {"name": "Step 4: Conc. Normalization", "module": "metabolomics.processors.normalization"},
+        {"name": "Step 1: ISTD Correction", "module": "metabolomics.processors.istd", "accent": "#1a73e8"},
+        {"name": "Step 2: QC Correction", "module": "metabolomics.processors.qc_lowess", "accent": "#34a853"},
+        {"name": "Step 3: QC Batch Scaling", "module": "metabolomics.processors.qc_batch_scaling", "accent": "#f9ab00"},
+        {"name": "Step 4: Conc. Normalization", "module": "metabolomics.processors.normalization", "accent": "#ea4335"},
     ]
     app.master = _DummyMaster()
     app.logger = _DummyLogger()
@@ -66,6 +66,126 @@ def _make_app():
         "border": "#ddd",
     }
     return app
+
+
+def test_build_workflow_steps_exposes_four_ordered_steps():
+    steps = DataNormalizationApp._build_workflow_steps()
+
+    assert [step["name"] for step in steps] == [
+        "Step 1: ISTD Correction",
+        "Step 2: QC Correction",
+        "Step 3: QC Batch Scaling",
+        "Step 4: Conc. Normalization",
+    ]
+
+
+def test_build_window_defaults_favors_wider_1920_layout():
+    defaults = DataNormalizationApp._build_window_defaults()
+
+    assert defaults["geometry"] == "1480x940+80+20"
+    assert defaults["minsize"] == (1360, 920)
+
+
+def test_build_header_button_tokens_makes_reset_destructive_and_explicit():
+    tokens = DataNormalizationApp._build_header_button_tokens()
+
+    assert tokens["reset"]["text"] == "Reset Workflow"
+    assert tokens["reset"]["bg"] == "#475569"
+    assert tokens["reset"]["fg"] == "#ffffff"
+
+
+def test_build_header_text_tokens_removes_duplicate_workflow_copy():
+    tokens = DataNormalizationApp._build_header_text_tokens()
+
+    assert tokens["title"] == "Pipeline Controls"
+    assert tokens["subtitle"] == ""
+
+
+def test_build_header_button_tokens_uses_uniform_control_grid_sizing():
+    tokens = DataNormalizationApp._build_header_button_tokens()
+
+    assert tokens["layout"] == "single_row"
+    assert tokens["columns"] == 4
+    assert tokens["run_all"]["width"] == 14
+    assert tokens["stop"]["width"] == 14
+    assert tokens["reset"]["width"] == 14
+    assert tokens["export"]["width"] == 14
+    assert tokens["export"]["disabled_text"] == "Export After Step 4"
+
+
+def test_build_header_button_tokens_raise_secondary_action_contrast():
+    tokens = DataNormalizationApp._build_header_button_tokens()
+
+    assert tokens["run_all"]["bg"] == "#2563eb"
+    assert tokens["run_all"]["fg"] == "#ffffff"
+    assert tokens["stop"]["bg"] == "#dc2626"
+    assert tokens["stop"]["fg"] == "#ffffff"
+    assert tokens["export"]["disabled_bg"] == "#94a3b8"
+    assert tokens["export"]["disabled_fg"] == "#f8fafc"
+    assert tokens["export"]["disabled_relief"] == "flat"
+
+
+def test_build_workspace_defaults_targets_balanced_split():
+    defaults = DataNormalizationApp._build_workspace_defaults()
+
+    assert defaults["left_minsize"] == 540
+    assert defaults["right_minsize"] == 540
+    assert defaults["split_ratio"] == 0.4
+    assert defaults["initial_retry_ms"] == 120
+    assert defaults["keep_ratio_on_resize"] is True
+    assert defaults["card_rows"] == 4
+
+
+def test_build_step_card_tokens_reserve_space_for_three_button_actions():
+    tokens = DataNormalizationApp._build_step_card_tokens()
+
+    assert tokens["badge_width"] == 96
+    assert tokens["actions_width"] == 348
+    assert tokens["show_status_chip"] is False
+    assert tokens["action_columns"] == 3
+    assert tokens["card_gap"] == 8
+    assert tokens["badge_layout"] == "inline"
+
+
+def test_ensure_workflow_state_tracks_export_readiness_from_completed_steps():
+    app = _make_app()
+    app.completed_steps = {step["name"] for step in app.steps}
+
+    app._ensure_workflow_state()
+
+    assert app.workflow_state["selected_file_path"] is None
+    assert app.workflow_state["completed_steps"] == app.completed_steps
+    assert app.workflow_state["export_ready"] is True
+    assert [step["name"] for step in app.workflow_state["steps"]] == [
+        "Step 1: ISTD Correction",
+        "Step 2: QC Correction",
+        "Step 3: QC Batch Scaling",
+        "Step 4: Conc. Normalization",
+    ]
+
+
+def test_render_pipeline_nav_highlights_next_incomplete_step():
+    app = _make_app()
+    app.pipeline_nav_labels = [_DummyWidget() for _ in app.steps]
+    app.completed_steps = {"Step 1: ISTD Correction"}
+    expected_primary = app.color_scheme.get("primary", "#1a73e8")
+
+    app._render_pipeline_nav()
+
+    assert app.pipeline_nav_labels[1].config_calls[-1]["bg"] == expected_primary
+    assert app.pipeline_nav_labels[0].config_calls[-1]["bg"] == "#0d1b2a"
+    assert app.pipeline_nav_labels[0].config_calls[-1]["fg"] == "#9fb3c8"
+
+
+def test_update_button_states_keeps_disabled_export_readable():
+    app = _make_app()
+    app.pipeline_nav_labels = [_DummyWidget() for _ in app.steps]
+
+    app.update_button_states()
+
+    assert app.export_meta_btn.config_calls[-1]["text"] == "Export After Step 4"
+    assert app.export_meta_btn.config_calls[-1]["bg"] == "#94a3b8"
+    assert app.export_meta_btn.config_calls[-1]["fg"] == "#f8fafc"
 
 
 def test_run_step_uses_previous_step_output_instead_of_last_output_file():
@@ -102,12 +222,12 @@ def test_on_step_error_invalidates_failed_step_and_downstream(monkeypatch):
     app.completed_steps = {
         "Step 1: ISTD Correction",
         "Step 2: QC Correction",
-        "Step 3: Batch Correction",
+        "Step 3: QC Batch Scaling",
         "Step 4: Conc. Normalization",
     }
     app.step_outputs = {
         "Step 2: QC Correction": {"output_path": "C:/tmp/step2-output.xlsx"},
-        "Step 3: Batch Correction": {"output_path": "C:/tmp/step3-output.xlsx"},
+        "Step 3: QC Batch Scaling": {"output_path": "C:/tmp/step3-output.xlsx"},
         "Step 4: Conc. Normalization": {"output_path": "C:/tmp/step4-output.xlsx"},
     }
     app.last_output_file = "C:/tmp/step4-output.xlsx"
@@ -116,8 +236,8 @@ def test_on_step_error_invalidates_failed_step_and_downstream(monkeypatch):
 
     app.on_step_error(step, "boom")
 
-    assert "Step 3: Batch Correction" not in app.completed_steps
+    assert "Step 3: QC Batch Scaling" not in app.completed_steps
     assert "Step 4: Conc. Normalization" not in app.completed_steps
-    assert "Step 3: Batch Correction" not in app.step_outputs
+    assert "Step 3: QC Batch Scaling" not in app.step_outputs
     assert "Step 4: Conc. Normalization" not in app.step_outputs
     assert app.last_output_file == "C:/tmp/step2-output.xlsx"

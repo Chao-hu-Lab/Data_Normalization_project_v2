@@ -61,11 +61,102 @@ def _load_dnp_to_ma_adapter():
 
 
 class DataNormalizationApp:
+    @staticmethod
+    def _build_workflow_steps():
+        return [
+            {'name': 'Step 1: ISTD Correction', 'module': 'metabolomics.processors.istd', 'enabled': True},
+            {'name': 'Step 2: QC Correction', 'module': 'metabolomics.processors.qc_lowess', 'enabled': False},
+            {'name': 'Step 3: QC Batch Scaling', 'module': 'metabolomics.processors.qc_batch_scaling', 'enabled': False},
+            {'name': 'Step 4: Conc. Normalization', 'module': 'metabolomics.processors.normalization', 'enabled': False},
+        ]
+
+    @staticmethod
+    def _build_window_defaults():
+        return {
+            'geometry': '1480x940+80+20',
+            'minsize': (1360, 920),
+        }
+
+    @staticmethod
+    def _build_header_text_tokens():
+        return {
+            'title': 'Pipeline Controls',
+            'subtitle': '',
+        }
+
+    @staticmethod
+    def _build_header_button_tokens():
+        return {
+            'layout': 'single_row',
+            'columns': 4,
+            'run_all': {
+                'text': 'Auto Run',
+                'width': 14,
+                'bg': '#2563eb',
+                'fg': '#ffffff',
+                'activebackground': '#1d4ed8',
+            },
+            'stop': {
+                'text': 'Stop',
+                'width': 14,
+                'bg': '#dc2626',
+                'fg': '#ffffff',
+                'activebackground': '#b91c1c',
+            },
+            'reset': {
+                'text': 'Reset Workflow',
+                'bg': '#475569',
+                'fg': '#ffffff',
+                'activebackground': '#334155',
+                'width': 14,
+            },
+            'export': {
+                'text': 'Export to MetaboAnalyst',
+                'disabled_text': 'Export After Step 4',
+                'width': 14,
+                'disabled_bg': '#94a3b8',
+                'disabled_fg': '#f8fafc',
+                'disabled_relief': 'flat',
+            },
+        }
+
+    @staticmethod
+    def _build_workspace_defaults():
+        return {
+            'left_minsize': 540,
+            'right_minsize': 540,
+            'split_ratio': 0.4,
+            'initial_retry_ms': 120,
+            'keep_ratio_on_resize': True,
+            'card_rows': 4,
+        }
+
+    @staticmethod
+    def _build_step_card_tokens():
+        return {
+            'badge_width': 96,
+            'actions_width': 348,
+            'section_padx': 16,
+            'section_pady': 14,
+            'card_spacing': 8,
+            'card_gap': 8,
+            'show_status_chip': False,
+            'action_columns': 3,
+            'badge_layout': 'inline',
+            'status_idle_text': 'Idle',
+            'status_running_text': 'Running',
+            'status_complete_text': 'Done',
+            'status_error_text': 'Error',
+            'status_cancelled_text': 'Stopped',
+            'button_font_size': 10,
+        }
+
     def __init__(self, master):
         self.master = master
+        window_defaults = self._build_window_defaults()
         master.title("Data Normalization Workflow v2")
-        master.geometry("1150x900")
-        master.minsize(1000, 750)  # 設定最小視窗大小，確保進度條不被遮擋
+        master.geometry(window_defaults['geometry'])
+        master.minsize(*window_defaults['minsize'])  # 設定最小視窗大小，確保進度條不被遮擋
         
         # 🎨 現代化色彩方案
         self.color_scheme = {
@@ -117,8 +208,11 @@ class DataNormalizationApp:
         self._ms_session_dir = None
         
         self.last_output_file = None  # 記錄最後一個輸出檔案
+        self.steps = self._build_workflow_steps()
         self.step_outputs = {}
+        self.workflow_state = {}
         self.auto_run_mode = False
+        self._split_ratio_applied = False
         self.current_step_index = -1  # 追蹤當前步驟索引
         
         # 統計資訊
@@ -200,9 +294,11 @@ class DataNormalizationApp:
         card = tk.Frame(parent, bg='#f8f9fa', padx=16, pady=12)
         card.pack(fill=tk.X, pady=(0, 12))
 
+        label_text = f"{icon} {title}" if isinstance(icon, str) and icon.isascii() else title
+
         tk.Label(
             card,
-            text=f"{icon} {title}",
+            text=label_text,
             font=(FONTS['sans'], 10),
             fg=self.color_scheme['text_light'],
             bg='#f8f9fa'
@@ -247,6 +343,7 @@ class DataNormalizationApp:
             font=(FONTS['sans'], 9),
             bg=self.color_scheme['ghost'],
             fg=self.color_scheme['ghost_text'],
+            disabledforeground=self.color_scheme['ghost_text'],
             relief='flat',
             padx=8,
             pady=2
@@ -261,6 +358,27 @@ class DataNormalizationApp:
         if isinstance(result, dict):
             return result
         return None
+
+    def _is_export_ready(self):
+        steps = getattr(self, 'steps', self._build_workflow_steps())
+        completed_steps = getattr(self, 'completed_steps', set())
+        return len(steps) > 0 and len(completed_steps) == len(steps)
+
+    def _ensure_workflow_state(self):
+        steps = getattr(self, 'steps', None)
+        if not steps:
+            steps = self._build_workflow_steps()
+            self.steps = steps
+
+        self.workflow_state = {
+            'selected_file_path': getattr(self, 'selected_file_path', None),
+            'steps': steps,
+            'active_step': getattr(self, 'current_stats', {}).get('step_name', ''),
+            'completed_steps': set(getattr(self, 'completed_steps', set())),
+            'step_outputs': dict(getattr(self, 'step_outputs', {})),
+            'export_ready': self._is_export_ready(),
+        }
+        return self.workflow_state
 
     def _get_output_path(self, result):
         if isinstance(result, ProcessingResult):
@@ -277,6 +395,88 @@ class DataNormalizationApp:
         if isinstance(result, dict):
             return result.get('plots_dir')
         return None
+
+    def _get_step_result(self, step_name):
+        workflow_state = self._ensure_workflow_state()
+        return workflow_state['step_outputs'].get(step_name)
+
+    def _open_path_in_system(self, path, missing_message, error_prefix):
+        if not path or not os.path.exists(path):
+            messagebox.showwarning("Warning", missing_message)
+            return
+
+        try:
+            if sys.platform == 'win32':
+                os.startfile(path)
+            elif sys.platform == 'darwin':
+                subprocess.run(['open', path])
+            else:
+                subprocess.run(['xdg-open', path])
+        except Exception as e:
+            self.logger.error(f"{error_prefix}: {e}")
+
+    def _set_default_split_ratio(self):
+        if not hasattr(self, 'split_frame'):
+            return
+
+        workspace_defaults = self._build_workspace_defaults()
+        self.main_frame.update_idletasks()
+        total_width = self.split_frame.winfo_width()
+        if total_width <= 0:
+            total_width = self.main_frame.winfo_width()
+        if total_width <= 0:
+            self.master.after(workspace_defaults['initial_retry_ms'], self._set_default_split_ratio)
+            return
+
+        sash_x = int(total_width * workspace_defaults['split_ratio'])
+        try:
+            self.split_frame.sash_place(0, sash_x, 0)
+            self._split_ratio_applied = True
+        except Exception:
+            self.master.after(workspace_defaults['initial_retry_ms'], self._set_default_split_ratio)
+            return
+
+    def _set_step_status(self, index, state):
+        if not hasattr(self, 'step_status_labels') or index >= len(self.step_status_labels):
+            return
+        label = self.step_status_labels[index]
+        if label is None:
+            return
+
+        tokens = self._build_step_card_tokens()
+        status_styles = {
+            'idle': {
+                'text': tokens['status_idle_text'],
+                'bg': '#eef2f7',
+                'fg': self.color_scheme.get('text_light', self.color_scheme.get('ghost_text', '#6b7280')),
+            },
+            'running': {
+                'text': tokens['status_running_text'],
+                'bg': self.color_scheme['running'],
+                'fg': '#ffffff',
+            },
+            'success': {
+                'text': tokens['status_complete_text'],
+                'bg': self.color_scheme['success'],
+                'fg': '#ffffff',
+            },
+            'error': {
+                'text': tokens['status_error_text'],
+                'bg': self.color_scheme['danger'],
+                'fg': '#ffffff',
+            },
+            'cancelled': {
+                'text': tokens['status_cancelled_text'],
+                'bg': self.color_scheme.get('text_light', self.color_scheme.get('ghost_text', '#6b7280')),
+                'fg': '#ffffff',
+            },
+        }
+        style = status_styles.get(state, status_styles['idle'])
+        label.config(
+            text=style['text'],
+            bg=style['bg'],
+            fg=style['fg'],
+        )
 
     def _refresh_last_output_file(self):
         self.last_output_file = None
@@ -467,11 +667,12 @@ class DataNormalizationApp:
         self.master.grid_columnconfigure(0, weight=1)
 
         self.main_frame = ttk.Frame(self.master, style='Main.TFrame')
-        self.main_frame.grid(row=1, column=0, padx=20, pady=(5, 15), sticky='nsew')
+        self.main_frame.grid(row=1, column=0, padx=20, pady=(5, 12), sticky='nsew')
 
         # 主框架內部也使用 grid 佈局
         self.main_frame.grid_rowconfigure(4, weight=1)  # split_frame 行可擴展
         self.main_frame.grid_columnconfigure(0, weight=1)
+        self.main_frame.grid_rowconfigure(5, weight=0, minsize=88)
 
     def create_pipeline_nav(self):
         """Create pipeline navigation bar showing overall workflow position."""
@@ -480,28 +681,50 @@ class DataNormalizationApp:
         nav_frame.grid(row=0, column=0, sticky='ew')
         nav_frame.grid_propagate(False)
 
-        inner = tk.Frame(nav_frame, bg=nav_bg)
-        inner.place(relx=0.5, rely=0.5, anchor='center')
+        self.pipeline_nav_inner = tk.Frame(nav_frame, bg=nav_bg)
+        self.pipeline_nav_inner.place(relx=0.5, rely=0.5, anchor='center')
+        self.pipeline_nav_labels = []
 
-        steps = [
-            ("Step 1: Preprocessing", False),
-            ("Step 2: Normalization", True),
-            ("Step 3: Statistical Analysis", False),
-        ]
-
-        for i, (label, is_current) in enumerate(steps):
+        for i, step in enumerate(self.steps):
             if i > 0:
-                arrow = tk.Label(inner, text="  →  ", font=('Consolas', 12),
+                arrow = tk.Label(self.pipeline_nav_inner, text="  →  ", font=('Consolas', 12),
                                  fg='#4a6fa5', bg=nav_bg)
                 arrow.pack(side=tk.LEFT)
 
-            fg = '#e0e0e0' if is_current else '#5a6a7a'
-            bg_color = self.color_scheme['primary'] if is_current else nav_bg
-            font_style = (FONTS['sans'], 11, 'bold') if is_current else (FONTS['sans'], 10)
-
-            lbl = tk.Label(inner, text=label, font=font_style,
-                           fg=fg, bg=bg_color, padx=10, pady=2)
+            lbl = tk.Label(
+                self.pipeline_nav_inner,
+                text=step['name'],
+                font=(FONTS['sans'], 10),
+                fg='#5a6a7a',
+                bg=nav_bg,
+                padx=10,
+                pady=2,
+            )
             lbl.pack(side=tk.LEFT)
+            self.pipeline_nav_labels.append(lbl)
+
+        self._render_pipeline_nav()
+
+    def _render_pipeline_nav(self):
+        if not hasattr(self, 'pipeline_nav_labels'):
+            return
+
+        workflow_state = self._ensure_workflow_state()
+        completed_steps = workflow_state['completed_steps']
+        steps = workflow_state['steps']
+        primary_color = self.color_scheme.get('primary', '#1a73e8')
+        current_index = next(
+            (index for index, step in enumerate(steps) if step['name'] not in completed_steps),
+            len(steps) - 1,
+        )
+
+        for index, label in enumerate(self.pipeline_nav_labels):
+            is_current = index == current_index
+            label.config(
+                fg='#eef4fb' if is_current else '#9fb3c8',
+                bg=primary_color if is_current else '#0d1b2a',
+                font=(FONTS['sans'], 11, 'bold') if is_current else (FONTS['sans'], 10),
+            )
 
     def create_title_section(self):
         """Create title section - 頂部標題區"""
@@ -537,28 +760,32 @@ class DataNormalizationApp:
         """Create Hero Section - 檔案選擇區域 (頂部橫幅)"""
         # Hero 容器 - 主色調背景 - 使用 grid row 2
         hero_container = tk.Frame(self.main_frame, bg=self.color_scheme['hero_bg'])
-        hero_container.grid(row=2, column=0, sticky='ew', pady=(0, 15))
+        hero_container.grid(row=2, column=0, sticky='ew', pady=(0, 12))
         
-        hero_inner = tk.Frame(hero_container, bg=self.color_scheme['hero_bg'], padx=24, pady=20)
+        hero_inner = tk.Frame(hero_container, bg=self.color_scheme['hero_bg'], padx=18, pady=16)
         hero_inner.pack(fill=tk.X)
+        hero_inner.grid_columnconfigure(0, weight=1)
+        hero_inner.grid_columnconfigure(1, minsize=340)
         
         # 左側：標題與說明
         left_section = tk.Frame(hero_inner, bg=self.color_scheme['hero_bg'])
-        left_section.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        left_section.grid(row=0, column=0, sticky='w', padx=(0, 18))
         
         title_label = tk.Label(
             left_section,
-            text="📂 Input File Selection",
-            font=(FONTS['sans'], 16, 'bold'),
+            text="Input File Selection",
+            font=(FONTS['sans'], 15, 'bold'),
             fg=self.color_scheme['hero_text'],
-            bg=self.color_scheme['hero_bg']
+            bg=self.color_scheme['hero_bg'],
+            wraplength=460,
+            justify='left'
         )
         title_label.pack(anchor='w')
         
         subtitle_label = tk.Label(
             left_section,
             text="Select your VBA-formatted Excel file to begin the workflow",
-            font=(FONTS['sans'], 11),
+            font=(FONTS['sans'], 10),
             fg='#cce0ff',
             bg=self.color_scheme['hero_bg']
         )
@@ -566,153 +793,178 @@ class DataNormalizationApp:
         
         # 右側：檔案選擇區
         right_section = tk.Frame(hero_inner, bg=self.color_scheme['hero_bg'])
-        right_section.pack(side=tk.RIGHT)
+        right_section.grid(row=0, column=1, sticky='e')
+        right_section.grid_columnconfigure(0, weight=1)
+        right_section.grid_columnconfigure(1, weight=1, uniform='hero-actions')
         
         # 檔案顯示框
         file_display_frame = tk.Frame(right_section, bg='#ffffff', padx=2, pady=2)
-        file_display_frame.pack(side=tk.LEFT, padx=(0, 10))
+        file_display_frame.grid(row=0, column=0, columnspan=2, sticky='ew')
         
         self.input_file_label = tk.Label(
             file_display_frame,
-            text="  No file selected...  ",
+            text="No file selected...",
             font=(FONTS['sans'], 11),
             bg='#ffffff',
             fg=self.color_scheme['text_light'],
-            width=35,
             anchor='w',
             padx=10,
-            pady=8
+            pady=7,
+            justify='left'
         )
-        self.input_file_label.pack()
+        self.input_file_label.pack(fill=tk.X)
+
+        actions_row = tk.Frame(right_section, bg=self.color_scheme['hero_bg'])
+        actions_row.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(10, 0))
+        actions_row.grid_columnconfigure(0, weight=1, uniform='hero-actions')
+        actions_row.grid_columnconfigure(1, weight=1, uniform='hero-actions')
         
         # 選擇按鈕 (白色背景)
         select_btn = tk.Button(
-            right_section,
-            text="📁 Browse...",
+            actions_row,
+            text="Browse",
             command=self.select_initial_file,
             font=(FONTS['sans'], 11, 'bold'),
             bg='#ffffff',
             fg=self.color_scheme['hero_bg'],
             activebackground='#f0f0f0',
             relief='flat',
-            padx=20,
+            padx=12,
             pady=8,
             cursor='hand2'
         )
-        select_btn.pack(side=tk.LEFT)
+        select_btn.grid(row=0, column=0, sticky='ew', padx=(0, 6))
 
         # 「從前處理匯入」按鈕
         import_btn = tk.Button(
-            right_section,
-            text="🔗 Import from Preprocessing",
+            actions_row,
+            text="Import Preprocessing",
             command=self.import_from_preprocessing,
             font=(FONTS['sans'], 10),
             bg='#e8f0fe',
             fg=self.color_scheme['hero_bg'],
             activebackground='#d2e3fc',
             relief='flat',
-            padx=14,
+            padx=12,
             pady=8,
             cursor='hand2'
         )
-        import_btn.pack(side=tk.LEFT, padx=(8, 0))
+        import_btn.grid(row=0, column=1, sticky='ew', padx=(6, 0))
 
     def create_header(self):
         """Create header and control buttons"""
+        text_tokens = self._build_header_text_tokens()
+        button_tokens = self._build_header_button_tokens()
         # 使用 grid row 3
         header_frame = ttk.Frame(self.main_frame, style='Header.TFrame')
         header_frame.grid(row=3, column=0, sticky='ew', pady=(0, 10))
+        header_frame.grid_columnconfigure(0, weight=1)
+        header_frame.grid_columnconfigure(1, weight=0)
         
         # Left: Title & Notice
         title_frame = ttk.Frame(header_frame, style='Header.TFrame')
-        title_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        title_frame.grid(row=0, column=0, sticky='ew')
         
         self.title_label = tk.Label(
             title_frame, 
-            text="🛠️ Workflow Steps", 
+            text=text_tokens['title'], 
             font=(FONTS['sans'], 14, 'bold'),
             fg=self.color_scheme['text_dark'],
             bg=self.color_scheme['background']
         )
         self.title_label.pack(anchor='w')
         
-        notice_text = "Order: ISTD → QC → Batch → Conc. | Scripts must be in same directory"
-        
         self.notice_label = tk.Label(
             title_frame, 
-            text=notice_text,
+            text=text_tokens['subtitle'],
             font=(FONTS['sans'], 10),
             fg=self.color_scheme['text_light'],
-            bg=self.color_scheme['background']
+            bg=self.color_scheme['background'],
+            wraplength=520,
+            justify='left'
         )
-        self.notice_label.pack(anchor='w', pady=(2, 0))
+        if text_tokens['subtitle']:
+            self.notice_label.pack(anchor='w', pady=(2, 0))
         
         # Right: Control Buttons
-        control_frame = tk.Frame(header_frame, bg=self.color_scheme['background'])
-        control_frame.pack(side=tk.RIGHT, padx=(12, 0))
+        control_grid = tk.Frame(header_frame, bg=self.color_scheme['background'])
+        control_grid.grid(row=0, column=1, sticky='ne', padx=(16, 0))
+        for column in range(button_tokens['columns']):
+            control_grid.grid_columnconfigure(column, weight=1, uniform='controls')
         
         # Auto Run Button
         self.run_all_btn = tk.Button(
-            control_frame,
-            text="⚡ Auto Run",
+            control_grid,
+            text=button_tokens['run_all']['text'],
             command=self.run_all_steps,
             font=(FONTS['sans'], 10, 'bold'),
-            bg=self.color_scheme['primary'],
-            fg=self.color_scheme['primary_text'],
-            activebackground=self.color_scheme['accent_hover'],
+            bg=button_tokens['run_all']['bg'],
+            fg=button_tokens['run_all']['fg'],
+            activebackground=button_tokens['run_all']['activebackground'],
             relief='flat',
             padx=12,
-            pady=4,
+            pady=8,
+            width=button_tokens['run_all']['width'],
             state='disabled',
-            cursor='hand2'
+            cursor='hand2',
+            disabledforeground='#dbeafe'
         )
-        self.run_all_btn.pack(side=tk.LEFT, padx=3)
+        self.run_all_btn.grid(row=0, column=0, padx=4, pady=4, sticky='ew')
         
         self.cancel_btn = tk.Button(
-            control_frame,
-            text="⏹ Stop",
+            control_grid,
+            text=button_tokens['stop']['text'],
             command=self.cancel_execution,
-            font=(FONTS['sans'], 10),
-            bg=self.color_scheme['ghost'],
-            fg=self.color_scheme['ghost_text'],
+            font=(FONTS['sans'], 10, 'bold'),
+            bg=button_tokens['stop']['bg'],
+            fg=button_tokens['stop']['fg'],
+            activebackground=button_tokens['stop']['activebackground'],
             relief='flat',
             padx=12,
-            pady=4,
-            state='disabled'
+            pady=8,
+            width=button_tokens['stop']['width'],
+            state='disabled',
+            disabledforeground='#e2e8f0'
         )
-        self.cancel_btn.pack(side=tk.LEFT, padx=3)
+        self.cancel_btn.grid(row=0, column=1, padx=4, pady=4, sticky='ew')
         
         self.reset_btn = tk.Button(
-            control_frame,
-            text="🔄 Reset",
+            control_grid,
+            text=button_tokens['reset']['text'],
             command=self.reset_all_steps,
-            font=(FONTS['sans'], 10),
-            bg=self.color_scheme['ghost'],
-            fg=self.color_scheme['ghost_text'],
+            font=(FONTS['sans'], 10, 'bold'),
+            bg=button_tokens['reset']['bg'],
+            fg=button_tokens['reset']['fg'],
+            activebackground=button_tokens['reset']['activebackground'],
             relief='flat',
             padx=12,
-            pady=4
+            pady=8,
+            width=button_tokens['reset']['width']
         )
-        self.reset_btn.pack(side=tk.LEFT, padx=3)
+        self.reset_btn.grid(row=0, column=2, padx=4, pady=4, sticky='ew')
 
         # Export to Metaboanalyst button (disabled until Step 4 complete)
         self.export_meta_btn = tk.Button(
-            control_frame,
-            text="Export → Metaboanalyst ⛔",
+            control_grid,
+            text=button_tokens['export']['disabled_text'],
             command=self.export_to_metaboanalyst,
-            font=(FONTS['sans'], 10),
-            bg='#6b7280',
-            fg='#ffffff',
-            activebackground='#4b5563',
-            relief='flat',
+            font=(FONTS['sans'], 10, 'bold'),
+            bg=button_tokens['export']['disabled_bg'],
+            fg=button_tokens['export']['disabled_fg'],
+            activebackground='#f8fafc',
+            relief=button_tokens['export']['disabled_relief'],
             padx=12,
-            pady=4,
+            pady=8,
+            width=button_tokens['export']['width'],
             state='disabled',
+            bd=1,
+            disabledforeground=button_tokens['export']['disabled_fg'],
         )
-        self.export_meta_btn.pack(side=tk.LEFT, padx=(12, 3))
+        self.export_meta_btn.grid(row=0, column=3, padx=4, pady=4, sticky='ew')
 
     def create_split_layout(self):
         """創建左右分欄佈局 - 使用 grid row 4"""
+        workspace_defaults = self._build_workspace_defaults()
         # 使用 PanedWindow 確保左右等高
         self.split_frame = tk.PanedWindow(
             self.main_frame,
@@ -721,11 +973,11 @@ class DataNormalizationApp:
             sashwidth=8,
             sashrelief='flat'
         )
-        self.split_frame.grid(row=4, column=0, sticky='nsew', pady=5)
+        self.split_frame.grid(row=4, column=0, sticky='nsew', pady=4)
         
         # 左側框架（步驟區域）- 卡片式設計
         self.left_frame = tk.Frame(self.split_frame, bg=self.color_scheme['background'])
-        self.split_frame.add(self.left_frame, minsize=400, stretch='always')
+        self.split_frame.add(self.left_frame, minsize=workspace_defaults['left_minsize'], stretch='always')
         
         # 右側框架（分頁式資訊面板）
         self.right_frame = tk.Frame(
@@ -734,21 +986,31 @@ class DataNormalizationApp:
             highlightbackground=self.color_scheme['border'],
             highlightthickness=1
         )
-        self.split_frame.add(self.right_frame, minsize=350, stretch='always')
+        self.split_frame.add(self.right_frame, minsize=workspace_defaults['right_minsize'], stretch='always')
+        self.master.after(workspace_defaults['initial_retry_ms'], self._set_default_split_ratio)
+        if workspace_defaults.get('keep_ratio_on_resize'):
+            self.split_frame.bind('<Configure>', lambda _event: self.master.after_idle(self._set_default_split_ratio))
 
     def create_steps_area(self):
         """Create steps area - Card Layout with Input Source Display"""
+        card_tokens = self._build_step_card_tokens()
         # Step Definitions
-        self.steps = [
-            {'name': 'Step 1: ISTD Correction', 'module': 'metabolomics.processors.istd', 'enabled': True,
-             'color': self.color_scheme['step1'], 'accent': self.color_scheme['step1_accent']},
-            {'name': 'Step 2: QC Correction', 'module': 'metabolomics.processors.qc_lowess', 'enabled': False,
-             'color': self.color_scheme['step2'], 'accent': self.color_scheme['step2_accent']},
-            {'name': 'Step 3: Batch Correction', 'module': 'metabolomics.processors.qc_batch_scaling', 'enabled': False,
-             'color': self.color_scheme['step3'], 'accent': self.color_scheme['step3_accent']},
-            {'name': 'Step 4: Conc. Normalization', 'module': 'metabolomics.processors.normalization', 'enabled': False,
-             'color': self.color_scheme['step4'], 'accent': self.color_scheme['step4_accent']}
+        workflow_steps = self._build_workflow_steps()
+        step_colors = [
+            (self.color_scheme['step1'], self.color_scheme['step1_accent']),
+            (self.color_scheme['step2'], self.color_scheme['step2_accent']),
+            (self.color_scheme['step3'], self.color_scheme['step3_accent']),
+            (self.color_scheme['step4'], self.color_scheme['step4_accent']),
         ]
+        self.steps = [
+            {
+                **step,
+                'color': step_colors[index][0],
+                'accent': step_colors[index][1],
+            }
+            for index, step in enumerate(workflow_steps)
+        ]
+        steps = self.steps
 
         self.step_buttons = []
         self.step_status_labels = []
@@ -759,9 +1021,13 @@ class DataNormalizationApp:
 
         # 簡單的卡片容器（不需要滾動）
         cards_container = tk.Frame(self.left_frame, bg=self.color_scheme['background'])
-        cards_container.pack(fill=tk.BOTH, expand=True)
+        self.left_frame.grid_rowconfigure(0, weight=1)
+        self.left_frame.grid_columnconfigure(0, weight=1)
+        cards_container.grid(row=0, column=0, sticky='nsew')
+        cards_container.grid_columnconfigure(0, weight=1)
         
-        for i, step in enumerate(self.steps):
+        for i, step in enumerate(steps):
+            cards_container.grid_rowconfigure(i, weight=1, uniform='step-cards')
             # === 卡片容器 ===
             card_frame = tk.Frame(
                 cards_container, 
@@ -771,21 +1037,29 @@ class DataNormalizationApp:
                 padx=0,
                 pady=0
             )
-            card_frame.pack(fill=tk.X, pady=8, ipady=4)  # 增加卡片間距和內部高度 (1.25x)
+            card_frame.grid(
+                row=i,
+                column=0,
+                sticky='nsew',
+                pady=(0, card_tokens['card_gap'] if i < len(steps) - 1 else 0),
+            )
+            card_frame.grid_rowconfigure(0, weight=1)
             self.step_cards.append(card_frame)
             
             # 卡片內部佈局
             card_inner = tk.Frame(card_frame, bg=self.color_scheme['panel_bg'])
-            card_inner.pack(fill=tk.X, padx=0, pady=0)
+            card_inner.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+            card_inner.grid_columnconfigure(1, weight=1)
+            card_inner.grid_columnconfigure(2, minsize=card_tokens['actions_width'])
             
             # === 左側：顏色指示條 + 步驟編號 ===
-            left_indicator = tk.Frame(card_inner, bg=step['accent'], width=50)
-            left_indicator.pack(side=tk.LEFT, fill=tk.Y)
-            left_indicator.pack_propagate(False)
+            left_indicator = tk.Frame(card_inner, bg=step['accent'], width=card_tokens['badge_width'], height=104)
+            left_indicator.grid(row=0, column=0, sticky='ns')
+            left_indicator.grid_propagate(False)
             
             step_num_label = tk.Label(
                 left_indicator,
-                text=f"Step\n{i+1}",
+                text=f"Step {i+1}",
                 font=(FONTS['sans'], 11, 'bold'),
                 fg='#ffffff',
                 bg=step['accent'],
@@ -794,8 +1068,13 @@ class DataNormalizationApp:
             step_num_label.pack(expand=True)
             
             # === 中間：步驟資訊區 ===
-            info_section = tk.Frame(card_inner, bg=self.color_scheme['panel_bg'], padx=15, pady=15)  # pady: 12 -> 15 (1.25x)
-            info_section.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            info_section = tk.Frame(
+                card_inner,
+                bg=self.color_scheme['panel_bg'],
+                padx=card_tokens['section_padx'],
+                pady=card_tokens['section_pady'],
+            )
+            info_section.grid(row=0, column=1, sticky='nsew')
             
             # 步驟名稱
             step_name_label = tk.Label(
@@ -820,6 +1099,7 @@ class DataNormalizationApp:
                 bg=self.color_scheme['panel_bg']
             )
             input_icon_label.pack(side=tk.LEFT)
+            input_icon_label.config(text="Input:")
             
             # 根據步驟索引顯示不同的輸入來源
             if i == 0:
@@ -827,6 +1107,9 @@ class DataNormalizationApp:
             else:
                 input_text = f"← Output from Step {i}"
             
+            if i != 0:
+                input_text = f"Output from Step {i}"
+
             input_source_label = tk.Label(
                 input_source_frame,
                 text=input_text,
@@ -838,23 +1121,26 @@ class DataNormalizationApp:
             self.step_input_labels.append(input_source_label)
             
             # === 右側：控制按鈕區 ===
-            control_section = tk.Frame(card_inner, bg=self.color_scheme['panel_bg'], padx=15, pady=15)  # pady: 12 -> 15 (1.25x)
-            control_section.pack(side=tk.RIGHT, fill=tk.Y)
+            control_section = tk.Frame(
+                card_inner,
+                bg='#f8fafc',
+                padx=12,
+                pady=12,
+                width=card_tokens['actions_width'],
+                height=104,
+                highlightbackground=self.color_scheme['divider'],
+                highlightthickness=1,
+            )
+            control_section.grid(row=0, column=2, sticky='nsew', padx=(0, 10), pady=10)
+            control_section.grid_propagate(True)
+            control_section.grid_columnconfigure(0, weight=1, uniform='step-actions')
+            control_section.grid_columnconfigure(1, weight=1, uniform='step-actions')
+            control_section.grid_columnconfigure(2, weight=1, uniform='step-actions')
             
             # 按鈕行
-            btn_row = tk.Frame(control_section, bg=self.color_scheme['panel_bg'])
-            btn_row.pack()
+            btn_row = control_section
             
-            # 狀態指示器
-            status_label = tk.Label(
-                btn_row,
-                text="⚪",
-                font=(FONTS['sans'], 14),
-                bg=self.color_scheme['panel_bg'],
-                width=2
-            )
-            status_label.pack(side=tk.LEFT, padx=(0, 8))
-            self.step_status_labels.append(status_label)
+            self.step_status_labels.append(None)
             
             # 執行按鈕 (Primary/Ghost 樣式)
             is_first_step = (i == 0)
@@ -876,13 +1162,19 @@ class DataNormalizationApp:
                 state='disabled' if not step['enabled'] else 'normal',
                 cursor='hand2'
             )
-            run_btn.pack(side=tk.LEFT, padx=2)
+            run_btn.config(
+                text="Run Step",
+                font=(FONTS['sans'], card_tokens['button_font_size'], 'bold'),
+                pady=8,
+                disabledforeground=self.color_scheme['disabled'],
+            )
+            run_btn.grid(row=0, column=0, padx=4, pady=4, sticky='ew')
             self.step_buttons.append(run_btn)
             
             # Excel 按鈕
             excel_btn = tk.Button(
                 btn_row,
-                text="📑",
+                text="Open Excel",
                 command=lambda s=step: self.open_step_excel(s),
                 font=(FONTS['sans'], 11),
                 bg=self.color_scheme['ghost'],
@@ -892,13 +1184,19 @@ class DataNormalizationApp:
                 pady=4,
                 state='disabled'
             )
-            excel_btn.pack(side=tk.LEFT, padx=2)
+            excel_btn.config(
+                font=(FONTS['sans'], card_tokens['button_font_size']),
+                padx=10,
+                pady=8,
+                disabledforeground=self.color_scheme['disabled'],
+            )
+            excel_btn.grid(row=0, column=1, padx=4, pady=4, sticky='ew')
             self.step_excel_buttons.append(excel_btn)
             
             # Plot 按鈕
             plot_btn = tk.Button(
                 btn_row,
-                text="📊",
+                text="Open Plots",
                 command=lambda s=step: self.open_step_plots(s),
                 font=(FONTS['sans'], 11),
                 bg=self.color_scheme['ghost'],
@@ -908,18 +1206,24 @@ class DataNormalizationApp:
                 pady=4,
                 state='disabled'
             )
-            plot_btn.pack(side=tk.LEFT, padx=2)
+            plot_btn.config(
+                font=(FONTS['sans'], card_tokens['button_font_size']),
+                padx=10,
+                pady=8,
+                disabledforeground=self.color_scheme['disabled'],
+            )
+            plot_btn.grid(row=0, column=2, padx=4, pady=4, sticky='ew')
             self.step_plot_buttons.append(plot_btn)
 
     def create_right_panel(self):
         """Create right panel - Tabbed Interface (Stats + Log)"""
         # 建立 Notebook (分頁容器)
         self.info_notebook = ttk.Notebook(self.right_frame)
-        self.info_notebook.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        self.info_notebook.pack(fill=tk.BOTH, expand=True)
         
         # === Tab 1: 執行日誌 ===
         log_tab = tk.Frame(self.info_notebook, bg=self.color_scheme['panel_bg'])
-        self.info_notebook.add(log_tab, text="📋 Execution Log")
+        self.info_notebook.add(log_tab, text="Execution Log")
         
         # Log 標題列
         log_header = tk.Frame(log_tab, bg=self.color_scheme['panel_bg'])
@@ -934,9 +1238,7 @@ class DataNormalizationApp:
         ).pack(side=tk.LEFT)
         
         # Clear Log Button (使用輔助方法)
-        clear_log_btn = self._create_ghost_button(
-            log_header, "Clear", self.clear_log, emoji="🗑"
-        )
+        clear_log_btn = self._create_ghost_button(log_header, "Clear", self.clear_log)
         clear_log_btn.pack(side=tk.RIGHT)
         
         # Log 文字區域
@@ -963,7 +1265,7 @@ class DataNormalizationApp:
         
         # === Tab 2: 狀態統計 ===
         stats_tab = tk.Frame(self.info_notebook, bg=self.color_scheme['panel_bg'])
-        self.info_notebook.add(stats_tab, text="📊 Status")
+        self.info_notebook.add(stats_tab, text="Status")
 
         stats_inner = tk.Frame(stats_tab, bg=self.color_scheme['panel_bg'], padx=20, pady=20)
         stats_inner.pack(fill=tk.BOTH, expand=True)
@@ -983,8 +1285,9 @@ class DataNormalizationApp:
     def create_progress_area(self):
         """Create bottom progress area - 使用 grid row 5 確保不被遮擋"""
         # 進度條固定在底部 - 使用 grid row 5
-        self.progress_frame = tk.Frame(self.main_frame, bg=self.color_scheme['background'])
-        self.progress_frame.grid(row=5, column=0, sticky='sew', pady=(10, 0))
+        self.progress_frame = tk.Frame(self.main_frame, bg=self.color_scheme['background'], height=88)
+        self.progress_frame.grid(row=5, column=0, sticky='ew', pady=(8, 0))
+        self.progress_frame.grid_propagate(False)
 
         # 進度條容器
         progress_inner = tk.Frame(
@@ -993,10 +1296,10 @@ class DataNormalizationApp:
             highlightbackground=self.color_scheme['border'],
             highlightthickness=1
         )
-        progress_inner.pack(fill=tk.X)
+        progress_inner.pack(fill=tk.BOTH, expand=True)
 
-        content = tk.Frame(progress_inner, bg=self.color_scheme['panel_bg'], padx=16, pady=12)
-        content.pack(fill=tk.X)
+        content = tk.Frame(progress_inner, bg=self.color_scheme['panel_bg'], padx=16, pady=10)
+        content.pack(fill=tk.BOTH, expand=True)
 
         # 進度標題與文字
         progress_header = tk.Frame(content, bg=self.color_scheme['panel_bg'])
@@ -1004,7 +1307,7 @@ class DataNormalizationApp:
         
         tk.Label(
             progress_header,
-            text="⏳ Progress",
+            text="Progress",
             font=(FONTS['sans'], 11, 'bold'),
             fg=self.color_scheme['text_dark'],
             bg=self.color_scheme['panel_bg']
@@ -1041,29 +1344,33 @@ class DataNormalizationApp:
     def update_button_states(self):
         """更新按鈕狀態 - 引導式按鈕樣式"""
         # 找出下一個應該執行的步驟
+        workflow_state = self._ensure_workflow_state()
+        completed_steps = workflow_state['completed_steps']
+        steps = workflow_state['steps']
+
         next_step_index = 0
-        for i, step in enumerate(self.steps):
-            if step['name'] not in self.completed_steps:
+        for i, step in enumerate(steps):
+            if step['name'] not in completed_steps:
                 next_step_index = i
                 break
-            next_step_index = len(self.steps)  # 全部完成
+            next_step_index = len(steps)  # 全部完成
         
         # Step 1 永遠可用
         self.step_buttons[0].config(state='normal')
         
         # 更新所有按鈕樣式
-        for i in range(len(self.steps)):
-            step = self.steps[i]
-            prev_step = self.steps[i-1]['name'] if i > 0 else None
+        for i in range(len(steps)):
+            step = steps[i]
+            prev_step = steps[i-1]['name'] if i > 0 else None
             
             # 判斷是否可以執行此步驟
-            can_execute = (i == 0) or (prev_step and prev_step in self.completed_steps)
+            can_execute = (i == 0) or (prev_step and prev_step in completed_steps)
             
             if can_execute:
                 self.step_buttons[i].config(state='normal')
                 
                 # 如果是下一個待執行步驟 (Primary 高亮樣式)
-                if step['name'] not in self.completed_steps and i == next_step_index:
+                if step['name'] not in completed_steps and i == next_step_index:
                     self.step_buttons[i].config(
                         bg=step['accent'],
                         fg='#ffffff',
@@ -1094,28 +1401,36 @@ class DataNormalizationApp:
         
         # 更新完成進度標籤
         if hasattr(self, 'stats_completed_label'):
-            completed_count = len(self.completed_steps)
+            completed_count = len(completed_steps)
             self.stats_completed_label.config(text=f"{completed_count} / 4")
 
         # 更新 Export to Metaboanalyst 按鈕狀態
         if hasattr(self, 'export_meta_btn'):
-            all_done = len(self.completed_steps) == len(self.steps)
+            export_tokens = self._build_header_button_tokens()['export']
+            all_done = workflow_state['export_ready']
             if all_done:
                 self.export_meta_btn.config(
                     state='normal',
-                    text="Export → Metaboanalyst",
+                    text=export_tokens['text'],
                     bg='#34a853',
                     fg='#ffffff',
+                    relief='flat',
                     cursor='hand2',
+                    disabledforeground='#ffffff',
                 )
             else:
                 self.export_meta_btn.config(
                     state='disabled',
-                    text="Export → Metaboanalyst ⛔",
-                    bg='#6b7280',
-                    fg='#ffffff',
+                    text=export_tokens['disabled_text'],
+                    bg=export_tokens['disabled_bg'],
+                    fg=export_tokens['disabled_fg'],
+                    relief=export_tokens['disabled_relief'],
+                    activebackground=export_tokens['disabled_bg'],
                     cursor='',
+                    disabledforeground=export_tokens['disabled_fg'],
                 )
+
+        self._render_pipeline_nav()
 
     def check_progress(self):
         """檢查進度隊列"""
@@ -1187,55 +1502,46 @@ class DataNormalizationApp:
             else:
                 # Step 2~4: 顯示上一步驟的輸出檔案
                 prev_step_name = self.steps[i-1]['name']
+                output_path = None
                 if prev_step_name in self.step_outputs:
                     output_path = self._get_output_path(self.step_outputs[prev_step_name])
                     if output_path:
                         output_filename = os.path.basename(output_path)
+                        label.config(text=f"Output: {output_filename}", fg=self.steps[i]['accent'])
+                        label.config(text=f"Output: {output_filename}", fg=self.steps[i]['accent'])
                         label.config(text=f"← {output_filename}", fg=self.steps[i]['accent'])
                     else:
                         label.config(text=f"← Output from Step {i}", fg=self.color_scheme['text_light'])
                 else:
                     label.config(text=f"← Output from Step {i}", fg=self.color_scheme['text_light'])
 
+                if output_path:
+                    output_filename = os.path.basename(output_path)
+                    label.config(text=f"Output: {output_filename}", fg=self.steps[i]['accent'])
+                if not output_path:
+                    label.config(text=f"Output from Step {i}", fg=self.color_scheme['text_light'])
+
     def open_step_excel(self, step):
         """Open step output Excel file"""
         step_name = step['name']
-        if step_name in self.step_outputs:
-            path = self._get_output_path(self.step_outputs[step_name])
-            if path and os.path.exists(path):
-                try:
-                    if sys.platform == 'win32':
-                        os.startfile(path)
-                    elif sys.platform == 'darwin':
-                        subprocess.run(['open', path])
-                    else:
-                        subprocess.run(['xdg-open', path])
-                except Exception as e:
-                    self.logger.error(f"Cannot open file: {e}")
-            else:
-                messagebox.showwarning("Warning", "File does not exist")
-        else:
+        result = self._get_step_result(step_name)
+        if not result:
             messagebox.showwarning("Notice", "No output generated for this step yet")
+            return
+
+        path = self._get_output_path(result)
+        self._open_path_in_system(path, "File does not exist", "Cannot open file")
 
     def open_step_plots(self, step):
         """Open step output plots folder"""
         step_name = step['name']
-        if step_name in self.step_outputs:
-            plots_dir = self._get_plots_dir(self.step_outputs[step_name])
-            if plots_dir and os.path.exists(plots_dir):
-                try:
-                    if sys.platform == 'win32':
-                        os.startfile(plots_dir)
-                    elif sys.platform == 'darwin':
-                        subprocess.run(['open', plots_dir])
-                    else:
-                        subprocess.run(['xdg-open', plots_dir])
-                except Exception as e:
-                    self.logger.error(f"Cannot open folder: {e}")
-            else:
-                messagebox.showwarning("Warning", "Plot folder does not exist")
-        else:
+        result = self._get_step_result(step_name)
+        if not result:
             messagebox.showwarning("Notice", "No plots generated for this step yet")
+            return
+
+        plots_dir = self._get_plots_dir(result)
+        self._open_path_in_system(plots_dir, "Plot folder does not exist", "Cannot open folder")
 
     def check_log_queue(self):
         """Check log queue"""
@@ -1257,7 +1563,7 @@ class DataNormalizationApp:
             tag = 'ERROR'
         elif record.levelno >= logging.WARNING:
             tag = 'WARNING'
-        elif '✅' in msg or 'Success' in msg or 'Completed' in msg:
+        elif 'Success' in msg or 'Completed' in msg:
             tag = 'SUCCESS'
         else:
             tag = 'INFO'
@@ -1298,7 +1604,7 @@ class DataNormalizationApp:
         self.selected_file_path = file_path
         filename = os.path.basename(file_path)
         self.input_file_label.config(
-            text=f"  {filename}  ",
+            text=filename,
             fg=self.color_scheme['text_dark']
         )
         self.logger.info(f"Selected initial file: {file_path}")
@@ -1460,23 +1766,14 @@ class DataNormalizationApp:
     def open_step_folder(self, step):
         """Open step output folder"""
         step_name = step['name']
-        if step_name in self.step_outputs:
-            path = self._get_output_path(self.step_outputs[step_name])
-            folder = os.path.dirname(path) if path else None
-            if folder and os.path.exists(folder):
-                try:
-                    if sys.platform == 'win32':
-                        os.startfile(folder)
-                    elif sys.platform == 'darwin':
-                        subprocess.run(['open', folder])
-                    else:
-                        subprocess.run(['xdg-open', folder])
-                except Exception as e:
-                    self.logger.error(f"Cannot open folder: {e}")
-            else:
-                messagebox.showwarning("Warning", "Folder does not exist")
-        else:
+        result = self._get_step_result(step_name)
+        if not result:
             messagebox.showwarning("Notice", "No output generated for this step yet")
+            return
+
+        path = self._get_output_path(result)
+        folder = os.path.dirname(path) if path else None
+        self._open_path_in_system(folder, "Folder does not exist", "Cannot open folder")
 
     def execute_step(self, step):
         """Execute step"""
@@ -1524,7 +1821,7 @@ class DataNormalizationApp:
                 return
 
             if step['name'] != 'Step 1: ISTD Correction':
-                self.logger.info(f"🔄 Auto-selected previous output: {os.path.basename(current_input)}")
+                self.logger.info(f"Auto-selected previous output: {os.path.basename(current_input)}")
             
             self.logger.info(f"Using input file: {os.path.basename(current_input)}")
             
@@ -1582,31 +1879,15 @@ class DataNormalizationApp:
 
     def select_input_file(self):
         """Select input file"""
-        file_path = filedialog.askopenfilename(
-            title="Select Input File",
-            filetypes=[
-                ("Excel files", "*.xlsx *.xls"),
-                ("All files", "*.*")
-            ]
-        )
-        
-        if file_path:
-            self.selected_file_path = file_path
-            self.file_selected.set()
-        else:
-            self.selected_file_path = None
-            self.file_selected.set()
+        self.select_initial_file()
+        self.file_selected.set()
 
     def on_step_start(self, step):
         """UI update on step start"""
         index = self.steps.index(step)
         
         self.is_executing = True
-        
-        self.step_status_labels[index].config(
-            text="🔄", 
-            fg=self.color_scheme['running']
-        )
+        self._set_step_status(index, 'running')
         
         for btn in self.step_buttons:
             btn.config(state='disabled')
@@ -1622,11 +1903,7 @@ class DataNormalizationApp:
         index = self.steps.index(step)
         
         self.is_executing = False
-        
-        self.step_status_labels[index].config(
-            text="✅", 
-            fg=self.color_scheme['success']
-        )
+        self._set_step_status(index, 'success')
         
         # Enable buttons
         self.step_excel_buttons[index].config(state='normal')
@@ -1635,8 +1912,8 @@ class DataNormalizationApp:
         self.completed_steps.add(step['name'])
         
         self.logger.info("=" * 80)
-        self.logger.info(f"✅ {step['name']} Completed!")
-        self.logger.info(f"⏱️ Execution Time: {self.current_stats['execution_time']:.2f} s")
+        self.logger.info(f"{step['name']} Completed!")
+        self.logger.info(f"Execution Time: {self.current_stats['execution_time']:.2f} s")
         if result and result != True:
             self.logger.info(f"Result: {result}")
         self.logger.info("=" * 80)
@@ -1656,7 +1933,7 @@ class DataNormalizationApp:
         if self.auto_run_mode:
             next_index = index + 1
             if next_index < len(self.steps):
-                self.logger.info(f"⏳ Auto-running next step in 1s: {self.steps[next_index]['name']}")
+                self.logger.info(f"Auto-running next step in 1s: {self.steps[next_index]['name']}")
                 self.master.after(1000, lambda: self.execute_step(self.steps[next_index]))
             else:
                 self.auto_run_mode = False
@@ -1678,14 +1955,10 @@ class DataNormalizationApp:
         self.is_executing = False
         self.auto_run_mode = False # Stop auto run
         self._invalidate_step_and_downstream(step['name'])
-        
-        self.step_status_labels[index].config(
-            text="❌", 
-            fg=self.color_scheme['danger']
-        )
+        self._set_step_status(index, 'error')
         
         self.logger.error("=" * 80)
-        self.logger.error(f"❌ {step['name']} Failed!")
+        self.logger.error(f"{step['name']} Failed!")
         self.logger.error(f"Error: {error}")
         self.logger.error("=" * 80)
         
@@ -1716,8 +1989,9 @@ class DataNormalizationApp:
             fg=self.color_scheme['running']
         )
         
+        self._set_step_status(index, 'cancelled')
         self.logger.warning("=" * 80)
-        self.logger.warning(f"⚠️ {step['name']} Cancelled")
+        self.logger.warning(f"{step['name']} Cancelled")
         if reason:
             self.logger.warning(f"Reason: {reason}")
         self.logger.warning("=" * 80)
@@ -1753,6 +2027,9 @@ class DataNormalizationApp:
             for label in self.step_status_labels:
                 label.config(text="⚪", fg="gray")
             
+            for index, _label in enumerate(self.step_status_labels):
+                self._set_step_status(index, 'idle')
+
             for btn in self.step_excel_buttons:
                 btn.config(state='disabled')
             for btn in self.step_plot_buttons:
@@ -1760,7 +2037,7 @@ class DataNormalizationApp:
             
             # Reset file selection
             self.input_file_label.config(
-                text="  No file selected...  ",
+                text="No file selected...",
                 fg=self.color_scheme['text_light']
             )
             self.selected_file_path = None
@@ -1787,7 +2064,7 @@ class DataNormalizationApp:
             
             self.update_button_states()
             
-            self.logger.info("🔄 All steps reset")
+            self.logger.info("All steps reset")
             self.set_progress("Not started", value=0, running=False)
 
     def clear_log(self):
