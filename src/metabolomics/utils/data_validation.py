@@ -219,24 +219,24 @@ class DataValidator:
 
         result.info['feature_count'] = len(df)
 
-        # Check feature ID column (supports both 'Mz/RT' and 'FeatureID')
+        # Check feature ID column (prefer 'Mz/RT', keep 'FeatureID' as legacy fallback)
         if FEATURE_ID_COLUMN not in df.columns and 'FeatureID' not in df.columns:
             if len(df.columns) > 0:
                 result.add_warning(
-                    f"未找到 '{FEATURE_ID_COLUMN}' 欄位，使用第一欄 '{df.columns[0]}' 作為特徵ID"
+                    f"未找到 '{FEATURE_ID_COLUMN}' 欄位，將使用第一欄 '{df.columns[0]}' 作為特徵 ID"
                 )
             else:
-                result.add_error("RawIntensity 沒有任何欄位")
+                result.add_error("RawIntensity 缺少必要欄位")
                 return result
 
-        # Check for duplicate FeatureIDs
+        # Check for duplicate feature IDs
         feature_col = (FEATURE_ID_COLUMN if FEATURE_ID_COLUMN in df.columns
                        else 'FeatureID' if 'FeatureID' in df.columns
                        else df.columns[0])
         duplicates = df[df[feature_col].duplicated(keep=False)]
         if not duplicates.empty:
             dup_count = len(duplicates[feature_col].unique())
-            result.add_warning(f"發現 {dup_count} 個重複的 FeatureID")
+            result.add_warning(f"發現 {dup_count} 個重複的特徵 ID（欄位: {feature_col}）")
 
         # Check sample column matching
         if sample_names:

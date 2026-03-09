@@ -468,9 +468,17 @@ def save_results_to_excel(
     source_export = source_df.copy()
     result_export = result_df.copy()
 
+    def _rename_feature_col_for_output(df):
+        if "FeatureID" in df.columns and FEATURE_ID_COLUMN != "FeatureID":
+            return df.rename(columns={"FeatureID": FEATURE_ID_COLUMN})
+        return df
+
+    source_export = _rename_feature_col_for_output(source_export)
+    result_export = _rename_feature_col_for_output(result_export)
+
     if sample_type_row is not None:
-        source_export = insert_sample_type_row(source_export, sample_type_row, feature_col="FeatureID")
-        result_export = insert_sample_type_row(result_export, sample_type_row, feature_col="FeatureID")
+        source_export = insert_sample_type_row(source_export, sample_type_row, feature_col=FEATURE_ID_COLUMN)
+        result_export = insert_sample_type_row(result_export, sample_type_row, feature_col=FEATURE_ID_COLUMN)
 
     with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
         source_export.to_excel(writer, sheet_name=source_sheet_name, index=False)

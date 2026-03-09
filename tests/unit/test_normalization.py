@@ -352,6 +352,30 @@ class TestConcentrationNormOutput:
             'ConcNormalization_Summary',
         }
 
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_step4_output_uses_mz_rt_as_feature_column(
+        self,
+        qc_lowess_module,
+        conc_norm_module,
+        sample_input_file,
+    ):
+        qc_batch_scaling_module = import_module("metabolomics.processors.qc_batch_scaling")
+
+        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
+        step3_result = qc_batch_scaling_module.main(input_file=step2_output)
+        step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
+
+        step4_result = conc_norm_module.main(input_file=step3_output)
+        step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get('output_path')
+
+        result_df = pd.read_excel(step4_output, sheet_name='PQN_SampleSpecific_Result', nrows=1)
+        preserved_df = pd.read_excel(step4_output, sheet_name='QC_Batch_Scaling_result', nrows=1)
+
+        assert result_df.columns[0] == 'Mz/RT'
+        assert preserved_df.columns[0] == 'Mz/RT'
+
 
 class TestFullPipeline:
     """Integration tests for full pipeline."""

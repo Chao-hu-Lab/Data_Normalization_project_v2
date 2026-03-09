@@ -363,3 +363,32 @@ class TestQCBatchScalingOutput:
 
         plot_files = sorted(Path(plots_dir).glob("*.png"))
         assert len(plot_files) >= 2, "QC Batch Scaling should generate PCA PNG files"
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_step3_output_uses_mz_rt_as_feature_column(
+        self,
+        qc_lowess_module,
+        sample_input_file,
+    ):
+        module = load_qc_batch_scaling_module()
+
+        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+        step2_output = (
+            step2_result.output_path
+            if hasattr(step2_result, "output_path")
+            else step2_result.get("output_path")
+        )
+
+        step3_result = module.main(input_file=step2_output)
+        step3_output = (
+            step3_result.output_path
+            if hasattr(step3_result, "output_path")
+            else step3_result.get("output_path")
+        )
+
+        result_df = pd.read_excel(step3_output, sheet_name="QC_Batch_Scaling_result", nrows=1)
+        source_df = pd.read_excel(step3_output, sheet_name="QC LOWESS result", nrows=1)
+
+        assert result_df.columns[0] == "Mz/RT"
+        assert source_df.columns[0] == "Mz/RT"
