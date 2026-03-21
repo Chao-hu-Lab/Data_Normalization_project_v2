@@ -3,6 +3,8 @@ Excel file I/O utilities for metabolomics data processing.
 
 Provides output path generation, directory management, and column validation helpers.
 """
+from datetime import datetime
+
 import pandas as pd
 from openpyxl import load_workbook
 from typing import Dict, Optional, Tuple, List
@@ -98,8 +100,6 @@ def generate_output_filename(
     Returns:
         Generated filename string
     """
-    from datetime import datetime
-
     if timestamp is None:
         timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
 
@@ -166,3 +166,34 @@ def build_plots_dir(
         plots_dir = plots_root
     plots_dir.mkdir(parents=True, exist_ok=True)
     return plots_dir
+
+
+def create_session_dir(output_root: Path = None, timestamp: str = None) -> Path:
+    """
+    Create a timestamped session directory for a pipeline run.
+
+    Structure: output_root/run_{timestamp}/plots/
+    """
+    if output_root is None:
+        output_root = get_output_root()
+    if timestamp is None:
+        timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
+
+    session_dir = Path(output_root) / f"run_{timestamp}"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "plots").mkdir(exist_ok=True)
+    return session_dir
+
+
+def session_output_path(
+    session_dir: Path, step: int, prefix: str, extension: str = ".xlsx"
+) -> Path:
+    """Return the output file path within a session directory."""
+    return Path(session_dir) / f"Step{step}_{prefix}{extension}"
+
+
+def session_plots_dir(session_dir: Path) -> Path:
+    """Return the plots subdirectory within a session directory."""
+    plots = Path(session_dir) / "plots"
+    plots.mkdir(parents=True, exist_ok=True)
+    return plots

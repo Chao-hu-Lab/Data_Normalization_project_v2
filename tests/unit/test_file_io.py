@@ -30,3 +30,34 @@ class TestOutputRootInference:
         expected = upstream_output / "Normalization_Figures" / "PQN_SampleSpecific_20260307_010203"
         assert plots_dir == expected
         assert plots_dir.exists()
+
+
+from metabolomics.utils.file_io import (
+    create_session_dir,
+    session_output_path,
+    session_plots_dir,
+)
+
+
+class TestSessionDir:
+    def test_create_session_dir_creates_timestamped_folder(self, tmp_path):
+        session = create_session_dir(output_root=tmp_path)
+        assert session.exists()
+        assert session.parent == tmp_path
+        assert session.name.startswith("run_")
+
+    def test_create_session_dir_creates_plots_subdir(self, tmp_path):
+        session = create_session_dir(output_root=tmp_path)
+        assert (session / "plots").exists()
+
+    def test_session_output_path_returns_path_in_session(self, tmp_path):
+        session = create_session_dir(output_root=tmp_path)
+        path = session_output_path(session, step=1, prefix="ISTD_Results")
+        assert path.parent == session
+        assert path.name == "Step1_ISTD_Results.xlsx"
+
+    def test_session_plots_dir_returns_plots_subdir(self, tmp_path):
+        session = create_session_dir(output_root=tmp_path)
+        plots = session_plots_dir(session)
+        assert plots == session / "plots"
+        assert plots.exists()

@@ -133,6 +133,17 @@ class TestISTDCorrectionOutput:
         assert 'FeatureID' in output_df.columns, "Output should have FeatureID column"
 
     @pytest.mark.slow
+    def test_main_writes_to_session_dir(self, istd_module, sample_input_file, tmp_path):
+        """When session_dir is provided, output goes into that directory."""
+        from pathlib import Path
+        from metabolomics.utils.file_io import create_session_dir
+
+        session = create_session_dir(output_root=tmp_path)
+        result = istd_module.main(input_file=sample_input_file, session_dir=session)
+        assert Path(result.output_path).is_relative_to(session)
+        assert "Step1_" in Path(result.output_path).name
+
+    @pytest.mark.slow
     def test_output_workbook_only_keeps_required_sheets(
         self,
         istd_module,

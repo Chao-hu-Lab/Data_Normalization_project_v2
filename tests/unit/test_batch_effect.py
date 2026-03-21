@@ -132,6 +132,35 @@ class TestBatchEffectOutput:
         }
 
 
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_main_writes_to_session_dir(self, istd_module, qc_lowess_module,
+                                         batch_effect_module, sample_input_file, tmp_path):
+        """When session_dir is provided, output goes into that directory."""
+        from pathlib import Path
+        from metabolomics.utils.file_io import create_session_dir
+
+        # Run Steps 1-2 to produce valid Step 3 input
+        step1_result = istd_module.main(input_file=sample_input_file)
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
+        step2_result = qc_lowess_module.main(input_file=step1_output)
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
+
+        session = create_session_dir(output_root=tmp_path)
+        result = batch_effect_module.main(input_file=step2_output, session_dir=session)
+        # batch_effect may return dict or ProcessingResult
+        if hasattr(result, 'output_path'):
+            output_path = result.output_path
+        else:
+            output_path = result.get('output_path', '')
+        # For single-batch data, output_path may be the input file (skip case)
+        # Only assert session containment if it's not a skip
+        if hasattr(result, 'extra') and not result.extra.get('skipped', False):
+            assert Path(output_path).is_relative_to(session)
+        elif isinstance(result, dict) and not result.get('skipped', False):
+            assert Path(output_path).is_relative_to(session)
+
+
 class TestBatchEffectHelpers:
     """Tests for helper functions."""
 

@@ -2017,7 +2017,7 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
 
 
 # ========== 主程式 ==========
-def main(input_file=None):
+def main(input_file=None, session_dir=None):
     """主程式入口"""
     print("="*70)
     print("🔬 QC-LOWESS 批次效應校正工具 v3")
@@ -2072,18 +2072,23 @@ def main(input_file=None):
     print(f"{'='*70}")
 
     timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
-    output_file = build_output_path("QC_LOWESS", timestamp=timestamp)
-    plots_session_dir = build_plots_dir(
-        "QC_LOWESS_plots",
-        timestamp=timestamp,
-        session_prefix="QC_LOWESS"
-    )
+    if session_dir is not None:
+        from metabolomics.utils.file_io import session_output_path, session_plots_dir
+        output_file = session_output_path(session_dir, step=2, prefix="QC_LOWESS")
+        _plots_dir = session_plots_dir(session_dir)
+    else:
+        output_file = build_output_path("QC_LOWESS", timestamp=timestamp)
+        _plots_dir = build_plots_dir(
+            "QC_LOWESS_plots",
+            timestamp=timestamp,
+            session_prefix="QC_LOWESS"
+        )
 
     success = save_results_to_excel(
         raw_df, istd_df, lowess_df, sample_info_df,
         sample_columns, output_file, file_path,
         qc_corrected_values, trend_stats_df, decision_stats,
-        plots_dir=plots_session_dir, trend_plot_data=trend_plot_data,
+        plots_dir=_plots_dir, trend_plot_data=trend_plot_data,
         sample_type_row=sample_type_row
     )
     
@@ -2097,11 +2102,11 @@ def main(input_file=None):
     
     perform_pca_analysis(
         istd_df, lowess_df, sample_columns, sample_info_df,
-        plots_session_dir, grouping='batch'
+        _plots_dir, grouping='batch'
     )
     perform_pca_analysis(
         istd_df, lowess_df, sample_columns, sample_info_df,
-        plots_session_dir, grouping='sample_type'
+        _plots_dir, grouping='sample_type'
     )
     
     print(f"\n{'='*70}")
@@ -2113,7 +2118,7 @@ def main(input_file=None):
     print(f"    ├── QC LOWESS result（主表：Levene's test + CV%）")
     print(f"    ├── {QC_LOWESS_ADVANCED_SHEET}（副表：Mann-Kendall + R²/RMSE）")
     print(f"    └── SampleInfo")
-    print(f"\n  - 圖表輸出: {plots_session_dir}")
+    print(f"\n  - 圖表輸出: {_plots_dir}")
     print(f"    ├── 2D_PCA_ISTD_vs_LOWESS_*.png")
     print(f"    └── Pvalue_Distribution_Levene_*.png")
     print(f"\n  💡 統計方法:")
@@ -2127,7 +2132,7 @@ def main(input_file=None):
     return ProcessingResult(
         file_path=file_path,
         output_path=str(output_file),
-        plots_dir=str(plots_session_dir),
+        plots_dir=str(_plots_dir),
         metabolites=metabolites_count,
         samples=samples_count
     )

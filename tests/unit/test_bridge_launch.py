@@ -87,10 +87,11 @@ def test_export_to_metaboanalyst_uses_shared_session_bridge_and_launch_args(monk
     monkeypatch.setattr("metabolomics.gui.app.messagebox.showwarning", lambda *_a, **_k: None)
     monkeypatch.setattr("metabolomics.gui.app.messagebox.showerror", lambda *_a, **_k: None)
 
-    exists_impl = Path.exists
+    import os as _os
+    exists_impl = _os.path.exists
     monkeypatch.setattr(
         "metabolomics.gui.app.os.path.exists",
-        lambda value: exists_impl(Path(value)) or str(value).endswith("main.py"),
+        lambda value: exists_impl(value) or str(value).endswith("main.py"),
     )
     monkeypatch.setattr(
         "metabolomics.gui.app.subprocess.Popen",

@@ -48,6 +48,7 @@ def _make_app():
     app.last_output_file = None
     app.completed_steps = set()
     app.step_outputs = {}
+    app.current_session_dir = None
     app.step_status_labels = [_DummyWidget() for _ in app.steps]
     app.step_buttons = [_DummyWidget() for _ in app.steps]
     app.step_excel_buttons = [_DummyWidget() for _ in app.steps]
@@ -195,7 +196,7 @@ def test_run_step_uses_previous_step_output_instead_of_last_output_file():
 
     class _DummyModule:
         @staticmethod
-        def main(input_file=None):
+        def main(input_file=None, **kwargs):
             captured["input_file"] = input_file
             return {
                 "output_path": "C:/tmp/step3-output.xlsx",

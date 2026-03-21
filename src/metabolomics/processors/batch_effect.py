@@ -2257,7 +2257,7 @@ def save_results_to_excel(input_file, output_file, data, sample_info,
     output_wb.save(output_file)
     print(f"   ✓ Excel 檔案已保存: {os.path.basename(output_file)}")
 
-def main(input_file=None):
+def main(input_file=None, session_dir=None):
     """
     主函數 - 批次效應校正與評估（無母數版本）
 
@@ -2326,32 +2326,37 @@ def main(input_file=None):
         raise Exception(f"輸出目錄無寫入權限: {output_dir}")
 
     timestamp = datetime.datetime.now().strftime(DATETIME_FORMAT_FULL)
-    output_file = build_output_path("Combat_corrected", timestamp=timestamp)
+    if session_dir is not None:
+        from metabolomics.utils.file_io import session_output_path, session_plots_dir
+        output_file = session_output_path(session_dir, step=3, prefix="Combat_corrected")
+        run_plot_dir = session_plots_dir(session_dir)
+    else:
+        output_file = build_output_path("Combat_corrected", timestamp=timestamp)
 
-    # ===== 防呆38: 輸出文件檢查 =====
-    if os.path.exists(output_file):
-        print(f"⚠️ 警告：輸出檔案已存在，將被覆蓋")
-        print(f"  {output_file}")
+        # ===== 防呆38: 輸出文件檢查 =====
+        if os.path.exists(output_file):
+            print(f"⚠️ 警告：輸出檔案已存在，將被覆蓋")
+            print(f"  {output_file}")
 
-    plots_dir = build_plots_dir(PLOT_FOLDER_NAME)
+        plots_dir = build_plots_dir(PLOT_FOLDER_NAME)
 
-    # ===== 防呆39: 圖表目錄創建 =====
-    try:
-        if not os.path.exists(plots_dir):
-            os.makedirs(plots_dir, exist_ok=True)
-            print(f"✓ 已創建圖表資料夾: {plots_dir}")
-        else:
-            print(f"✓ 圖表資料夾已存在: {plots_dir}")
-    except Exception as e:
-        print(f"❌ 錯誤：無法創建圖表資料夾")
-        print(f"詳細錯誤: {e}")
-        raise Exception(f"無法創建圖表目錄: {e}")
+        # ===== 防呆39: 圖表目錄創建 =====
+        try:
+            if not os.path.exists(plots_dir):
+                os.makedirs(plots_dir, exist_ok=True)
+                print(f"✓ 已創建圖表資料夾: {plots_dir}")
+            else:
+                print(f"✓ 圖表資料夾已存在: {plots_dir}")
+        except Exception as e:
+            print(f"❌ 錯誤：無法創建圖表資料夾")
+            print(f"詳細錯誤: {e}")
+            raise Exception(f"無法創建圖表目錄: {e}")
 
-    run_plot_dir = build_plots_dir(
-        PLOT_FOLDER_NAME,
-        timestamp=timestamp,
-        session_prefix="Batch_Effect"
-    )
+        run_plot_dir = build_plots_dir(
+            PLOT_FOLDER_NAME,
+            timestamp=timestamp,
+            session_prefix="Batch_Effect"
+        )
     print(f"✓ 本次圖表輸出子資料夾: {run_plot_dir}")
     
     try:
