@@ -60,6 +60,12 @@ def _load_dnp_to_ma_adapter():
     return convert_dnp_to_metaboanalyst
 
 
+def _load_preprocessing_adapter():
+    from metabolomics.adapters.preprocessing_to_dnp import convert_preprocessing_to_dnp
+
+    return convert_preprocessing_to_dnp
+
+
 class DataNormalizationApp:
     @staticmethod
     def _build_workflow_steps():
@@ -1483,8 +1489,6 @@ class DataNormalizationApp:
         if hasattr(self, 'stats_completed_label'):
             completed_count = len(self.completed_steps)
             self.stats_completed_label.config(text=f"{completed_count} / 4")
-        
-        self.master.after(100, self.update_stats_display)
     
     def update_input_source_labels(self):
         """更新輸入來源顯示 (Chain of Custody)"""
@@ -1502,23 +1506,11 @@ class DataNormalizationApp:
             else:
                 # Step 2~4: 顯示上一步驟的輸出檔案
                 prev_step_name = self.steps[i-1]['name']
-                output_path = None
-                if prev_step_name in self.step_outputs:
-                    output_path = self._get_output_path(self.step_outputs[prev_step_name])
-                    if output_path:
-                        output_filename = os.path.basename(output_path)
-                        label.config(text=f"Output: {output_filename}", fg=self.steps[i]['accent'])
-                        label.config(text=f"Output: {output_filename}", fg=self.steps[i]['accent'])
-                        label.config(text=f"← {output_filename}", fg=self.steps[i]['accent'])
-                    else:
-                        label.config(text=f"← Output from Step {i}", fg=self.color_scheme['text_light'])
-                else:
-                    label.config(text=f"← Output from Step {i}", fg=self.color_scheme['text_light'])
-
+                output_path = self._get_output_path(self.step_outputs.get(prev_step_name))
                 if output_path:
                     output_filename = os.path.basename(output_path)
-                    label.config(text=f"Output: {output_filename}", fg=self.steps[i]['accent'])
-                if not output_path:
+                    label.config(text=f"← {output_filename}", fg=self.steps[i]['accent'])
+                else:
                     label.config(text=f"Output from Step {i}", fg=self.color_scheme['text_light'])
 
     def open_step_excel(self, step):
@@ -1632,6 +1624,7 @@ class DataNormalizationApp:
             output_path = os.path.join(input_dir, f"DNP_import_{base_name}.xlsx")
 
             self.logger.info(f"Converting preprocessing output: {file_path}")
+            convert_preprocessing_to_dnp = _load_preprocessing_adapter()
             result_path = convert_preprocessing_to_dnp(file_path, output_path)
             self.logger.info(f"Conversion complete: {result_path}")
 
@@ -1646,8 +1639,29 @@ class DataNormalizationApp:
         finally:
             self.master.config(cursor='')
 
+    @staticmethod
+    def _is_ms_core_available():
+        """Check if ms_core bridge utilities are available."""
+        try:
+            build_bridge_path()
+        except ModuleNotFoundError:
+            return False
+        except TypeError:
+            # build_bridge_path exists but was called without args — ms_core is available
+            return True
+        return True
+
     def export_to_metaboanalyst(self):
         """Export Step 4 result to Metaboanalyst-compatible format."""
+        if not self._is_ms_core_available():
+            messagebox.showwarning(
+                "ms-core Not Found",
+                "Export requires the ms-core library.\n\n"
+                "Ensure ms-core is available on PYTHONPATH\n"
+                "or launch this program from the MS toolkit."
+            )
+            return
+
         # Find Step 4 output
         step4_name = self.steps[3]['name']
         if step4_name not in self.step_outputs:
@@ -1898,19 +1912,46 @@ class DataNormalizationApp:
         start_progress = index * 25
         self.set_progress(f"{step['name']} Running...", value=start_progress, running=True)
 
+    def _is_result_skipped(self, result):
+        """Check if a processor result indicates the step was skipped."""
+        if isinstance(result, ProcessingResult):
+            return result.extra.get('skipped', False)
+        if isinstance(result, dict):
+            return result.get('skipped', False)
+        return False
+
+    def _get_skip_reason(self, result):
+        """Get human-readable skip reason from result."""
+        if isinstance(result, ProcessingResult):
+            return result.extra.get('skip_reason', 'unknown')
+        if isinstance(result, dict):
+            return result.get('skip_reason', 'unknown')
+        return 'unknown'
+
     def on_step_complete(self, step, result):
         """UI update on step complete"""
         index = self.steps.index(step)
-        
+
         self.is_executing = False
-        self._set_step_status(index, 'success')
-        
+
+        # Check if the step was skipped (e.g. ISTD gate)
+        was_skipped = self._is_result_skipped(result)
+        if was_skipped:
+            self._set_step_status(index, 'cancelled')
+            skip_reason = self._get_skip_reason(result)
+            self.logger.warning(f"{step['name']} was SKIPPED: {skip_reason}")
+            self.logger.warning("Downstream steps will process uncorrected data.")
+        else:
+            self._set_step_status(index, 'success')
+
         # Enable buttons
         self.step_excel_buttons[index].config(state='normal')
-        self.step_plot_buttons[index].config(state='normal')
-        
+        output_plots = self._get_plots_dir(result)
+        if output_plots and os.path.isdir(output_plots):
+            self.step_plot_buttons[index].config(state='normal')
+
         self.completed_steps.add(step['name'])
-        
+
         self.logger.info("=" * 80)
         self.logger.info(f"{step['name']} Completed!")
         self.logger.info(f"Execution Time: {self.current_stats['execution_time']:.2f} s")
@@ -1940,7 +1981,17 @@ class DataNormalizationApp:
                 messagebox.showinfo("Auto Run Complete", "All steps completed!")
                 self._offer_metaboanalyst_export()
         else:
-            messagebox.showinfo("Complete", f"{step['name']} Successfully Executed!\nTime: {self.current_stats['execution_time']:.2f} s")
+            if was_skipped:
+                skip_reason = self._get_skip_reason(result)
+                messagebox.showwarning(
+                    "Step Skipped",
+                    f"{step['name']} was skipped.\n"
+                    f"Reason: {skip_reason}\n\n"
+                    "Data was passed through without correction.\n"
+                    "Downstream steps will process uncorrected data."
+                )
+            else:
+                messagebox.showinfo("Complete", f"{step['name']} Successfully Executed!\nTime: {self.current_stats['execution_time']:.2f} s")
             # Offer export after Step 4 completes
             if index == len(self.steps) - 1:
                 self._offer_metaboanalyst_export()
@@ -1983,12 +2034,7 @@ class DataNormalizationApp:
         self.is_executing = False
         self.auto_run_mode = False # Stop auto run
         self._invalidate_step_and_downstream(step['name'])
-        
-        self.step_status_labels[index].config(
-            text="⚠️", 
-            fg=self.color_scheme['running']
-        )
-        
+
         self._set_step_status(index, 'cancelled')
         self.logger.warning("=" * 80)
         self.logger.warning(f"{step['name']} Cancelled")
@@ -2023,11 +2069,8 @@ class DataNormalizationApp:
             self.last_output_file = None
             self.auto_run_mode = False
             
-            # Reset UI
-            for label in self.step_status_labels:
-                label.config(text="⚪", fg="gray")
-            
-            for index, _label in enumerate(self.step_status_labels):
+            # Reset UI (use safe method — labels may be None)
+            for index in range(len(self.step_status_labels)):
                 self._set_step_status(index, 'idle')
 
             for btn in self.step_excel_buttons:
