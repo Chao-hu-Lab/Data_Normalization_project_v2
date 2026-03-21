@@ -383,7 +383,47 @@ def perform_normalization(df, method, ..., plots_dir=None):
     )
 ```
 
-4. **BUG FIX**: `save_normalization_results()` (line ~2346) creates its own timestamp. When `session_dir` is used, pass the session output path directly. When not used, pass `run_timestamp` to fix the mismatch.
+4. **BUG FIX** for `save_normalization_results()` (line ~2334). Add an `output_path` override parameter:
+
+```python
+# Current:
+def save_normalization_results(
+    normalized_df, summary_report, file_path, method_name,
+    preserved_data_sheet_name, sample_info_sheet_name, output_dir,
+):
+
+# New — add output_path=None:
+def save_normalization_results(
+    normalized_df, summary_report, file_path, method_name,
+    preserved_data_sheet_name, sample_info_sheet_name, output_dir,
+    output_path=None,
+):
+```
+
+Inside the function, replace the timestamp/path generation block (lines 2345-2349):
+
+```python
+    # When output_path is pre-built (session mode), use it directly
+    if output_path is None:
+        timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
+        output_filename = generate_output_filename(
+            f"Normalized_{method_name}", timestamp=timestamp, extension=".xlsx"
+        )
+        output_path = output_dir / output_filename
+```
+
+Call site in `main()`:
+
+```python
+    if session_dir is not None:
+        _save_path = session_output_path(session_dir, step=4, prefix=f"Normalized_{method_name}")
+    else:
+        _save_path = None  # let save_normalization_results generate its own
+
+    save_normalization_results(
+        ..., output_path=_save_path,
+    )
+```
 
 - [ ] **Step 1: Write the failing test**
 - [ ] **Step 2: Run test to verify it fails**
