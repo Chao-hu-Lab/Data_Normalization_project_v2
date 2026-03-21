@@ -1766,7 +1766,7 @@ def save_skipped_istd_results_to_excel(output_file, all_sheets, original_workboo
         new_workbook.close()
 
 
-def main(input_file=None):
+def main(input_file=None, session_dir=None):
     """
     主函數 - 修改為與 GUI 配合
     
@@ -1827,12 +1827,23 @@ def main(input_file=None):
     
     # 🔧 修改：儲存結果到 output 資料夾
     run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
-    output_file = build_output_path("ISTD_Results", timestamp=run_timestamp)
-    plots_session_dir = build_plots_dir(
-        "ISTD_Correction_plots",
-        timestamp=run_timestamp,
-        session_prefix="ISTD_Correction"
-    )
+    if session_dir is not None:
+        from metabolomics.utils.file_io import session_output_path, session_plots_dir
+        output_file = session_output_path(session_dir, step=1, prefix="ISTD_Results")
+        _plots_dir = session_plots_dir(session_dir)
+    else:
+        output_file = build_output_path("ISTD_Results", timestamp=run_timestamp)
+        _plots_dir = build_plots_dir(
+            "ISTD_Correction_plots",
+            timestamp=run_timestamp,
+            session_prefix="ISTD_Correction"
+        )
+
+    def _plot_path(filename_without_ext):
+        """Build plot file path, adding step prefix when in session mode."""
+        if session_dir is not None:
+            return os.path.join(str(_plots_dir), f"Step1_{filename_without_ext}.png")
+        return os.path.join(str(_plots_dir), f"{filename_without_ext}_{run_timestamp}.png")
 
     # ===== 防呆17: 输出目录权限检查 =====
     try:
@@ -1884,7 +1895,7 @@ def main(input_file=None):
     save_results_to_excel(
         original_df, results_df, sample_info_df,
         output_file, all_sheets, sample_columns, input_file,
-        plots_dir=plots_session_dir, col_to_info=col_to_info
+        plots_dir=_plots_dir, col_to_info=col_to_info
     )
     
     # ✅ 執行 2D PCA 分析（傳入 output_dir）
@@ -1893,7 +1904,7 @@ def main(input_file=None):
     print("="*70 + "\n")
     perform_pca_analysis_2d(
         original_df, results_df, None,
-        sample_columns, sample_info_df, plots_session_dir,
+        sample_columns, sample_info_df, _plots_dir,
         col_to_info=col_to_info
     )
     
@@ -1902,14 +1913,14 @@ def main(input_file=None):
     print("="*70)
     print("\n📁 輸出檔案:")
     print(f"  1. Excel 結果: output/{os.path.basename(output_file)}")
-    print(f"  2. PCA 圖表: {plots_session_dir}")
+    print(f"  2. PCA 圖表: {_plots_dir}")
     print("\n💡 請使用輸出的檔案進行後續 QC LOWESS 處理。\n")
     
     # 🎯 返回統計資訊給 GUI
     return ProcessingResult(
         file_path=input_file,
         output_path=str(output_file),
-        plots_dir=str(plots_session_dir),
+        plots_dir=str(_plots_dir),
         metabolites=len(original_df),
         samples=len(sample_columns)
     )
