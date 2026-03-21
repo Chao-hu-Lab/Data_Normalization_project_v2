@@ -186,6 +186,18 @@ class TestQCLOWESSOutput:
         }
 
 
+    @pytest.mark.slow
+    def test_main_writes_to_session_dir(self, qc_lowess_module, sample_input_file, tmp_path):
+        """When session_dir is provided, output goes into that directory."""
+        from pathlib import Path
+        from metabolomics.utils.file_io import create_session_dir
+
+        session = create_session_dir(output_root=tmp_path)
+        result = qc_lowess_module.main(input_file=sample_input_file, session_dir=session)
+        assert Path(result.output_path).is_relative_to(session)
+        assert "Step2_" in Path(result.output_path).name
+
+
 class TestQCLOWESSHelpers:
     """Tests for helper functions."""
 
