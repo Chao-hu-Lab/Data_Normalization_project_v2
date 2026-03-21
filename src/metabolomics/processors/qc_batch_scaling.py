@@ -340,14 +340,15 @@ def plot_batch_residual_analysis(
     return fig
 
 
-def generate_pca_plots(source_df, result_df, sample_columns, sample_info_df, input_file, timestamp):
+def generate_pca_plots(source_df, result_df, sample_columns, sample_info_df, input_file, timestamp, plots_dir=None):
     """Generate before/after PCA plots for QC Batch Scaling."""
-    plots_dir = build_plots_dir(
-        "QC_Batch_Scaling_plots",
-        input_file=input_file,
-        timestamp=timestamp,
-        session_prefix="QC_Batch_Scaling",
-    )
+    if plots_dir is None:
+        plots_dir = build_plots_dir(
+            "QC_Batch_Scaling_plots",
+            input_file=input_file,
+            timestamp=timestamp,
+            session_prefix="QC_Batch_Scaling",
+        )
 
     if len(sample_columns) < 3:
         return str(plots_dir)
@@ -497,7 +498,7 @@ def save_results_to_excel(
         new_wb.close()
 
 
-def main(input_file=None):
+def main(input_file=None, session_dir=None):
     """Run QC batch scaling on the selected upstream sheet."""
     if not input_file:
         raise ValueError("input_file is required")
@@ -513,6 +514,14 @@ def main(input_file=None):
     summary_df = build_summary_df(source_sheet_name, batch_to_qc, batch_to_samples, invalid_median_counts)
 
     timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
+    if session_dir is not None:
+        from metabolomics.utils.file_io import session_output_path, session_plots_dir
+        output_file = session_output_path(session_dir, step=3, prefix="QC_Batch_Scaling")
+        _plots_dir = str(session_plots_dir(session_dir))
+    else:
+        output_file = build_output_path("QC_Batch_Scaling", input_file=input_file, timestamp=timestamp)
+        _plots_dir = None  # let generate_pca_plots create its own
+
     plots_dir = generate_pca_plots(
         data_df,
         result_df,
@@ -520,8 +529,8 @@ def main(input_file=None):
         sample_info_df,
         input_file,
         timestamp,
+        plots_dir=_plots_dir,
     )
-    output_file = build_output_path("QC_Batch_Scaling", input_file=input_file, timestamp=timestamp)
     save_results_to_excel(
         data_df,
         result_df,
