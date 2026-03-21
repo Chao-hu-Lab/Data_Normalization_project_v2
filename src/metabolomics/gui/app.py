@@ -1604,6 +1604,7 @@ class DataNormalizationApp:
     def _set_input_file(self, file_path):
         """Set the input file and update UI state."""
         self.selected_file_path = file_path
+        self.current_session_dir = None  # new file = new session
         filename = os.path.basename(file_path)
         self.input_file_label.config(
             text=filename,
