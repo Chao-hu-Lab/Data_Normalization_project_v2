@@ -2123,7 +2123,7 @@ from metabolomics.utils.excel_format import copy_cell_style  # noqa: E302
 
 # ==================== 主要處理函數 ====================
 
-def perform_normalization(data_df, sample_info_df, correction_col, file_path):
+def perform_normalization(data_df, sample_info_df, correction_col, file_path, plots_dir=None):
     """
     執行 PQN + Sample-specific 混合標準化處理（增強版）
     """
@@ -2203,29 +2203,38 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path):
     output_dir = get_output_root(input_file=file_path)
     run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
     method_slug = method_name.replace(' ', '_')
-    figures_dir = build_plots_dir(
-        "Normalization_Figures",
-        input_file=file_path,
-        timestamp=run_timestamp,
-        session_prefix=method_slug
-    )
+
+    if plots_dir is not None:
+        figures_dir = plots_dir
+        figure_paths = {
+            "boxplot": Path(figures_dir) / "Step4_Boxplot.png",
+            "cv": Path(figures_dir) / "Step4_CV.png",
+            "rle": Path(figures_dir) / "Step4_RLE.png",
+            "pca": Path(figures_dir) / "Step4_PCA.png",
+        }
+    else:
+        figures_dir = build_plots_dir(
+            "Normalization_Figures",
+            input_file=file_path,
+            timestamp=run_timestamp,
+            session_prefix=method_slug
+        )
+        figure_paths = {
+            "boxplot": figures_dir / generate_output_filename(
+                f"Fig1_Boxplot_{method_slug}", timestamp=run_timestamp, extension=".png"
+            ),
+            "cv": figures_dir / generate_output_filename(
+                f"Fig2_CV_{method_slug}", timestamp=run_timestamp, extension=".png"
+            ),
+            "rle": figures_dir / generate_output_filename(
+                f"Fig3_RLE_{method_slug}", timestamp=run_timestamp, extension=".png"
+            ),
+            "pca": figures_dir / generate_output_filename(
+                f"Fig4_PCA_{method_slug}", timestamp=run_timestamp, extension=".png"
+            ),
+        }
     print(f"✓ Excel 將輸出到: {output_dir}")
     print(f"✓ 本次圖表輸出目錄: {figures_dir}")
-
-    figure_paths = {
-        "boxplot": figures_dir / generate_output_filename(
-            f"Fig1_Boxplot_{method_slug}", timestamp=run_timestamp, extension=".png"
-        ),
-        "cv": figures_dir / generate_output_filename(
-            f"Fig2_CV_{method_slug}", timestamp=run_timestamp, extension=".png"
-        ),
-        "rle": figures_dir / generate_output_filename(
-            f"Fig3_RLE_{method_slug}", timestamp=run_timestamp, extension=".png"
-        ),
-        "pca": figures_dir / generate_output_filename(
-            f"Fig4_PCA_{method_slug}", timestamp=run_timestamp, extension=".png"
-        ),
-    }
     # 分離有效樣本用於評估
     valid_sample_mask = ~np.isnan(normalized_data[0, :])
     original_data_valid = original_data[:, valid_sample_mask]
@@ -2339,15 +2348,17 @@ def save_normalization_results(
     preserved_data_sheet_name,
     sample_info_sheet_name,
     output_dir,
+    output_path=None,
 ):
     """儲存標準化結果到Excel檔案"""
     try:
-        timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
-        output_filename = generate_output_filename(
-            f"Normalized_{method_name}", timestamp=timestamp, extension=".xlsx"
-        )
-        output_path = output_dir / output_filename
-        
+        if output_path is None:
+            timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
+            output_filename = generate_output_filename(
+                f"Normalized_{method_name}", timestamp=timestamp, extension=".xlsx"
+            )
+            output_path = output_dir / output_filename
+
         # 載入原始工作簿
         wb_original = load_workbook(file_path, data_only=False)
         
@@ -2444,16 +2455,19 @@ def save_normalization_results(
 
 # ==================== 主程式 ====================
 
-def main(input_file=None):
+def main(input_file=None, session_dir=None):
     """
     主函數 - 支援 GUI 和獨立運行
-    
+
     Parameters:
     -----------
     input_file : str, optional
         輸入檔案路徑（由 GUI 傳入）
         如果為 None，則顯示檔案選擇對話框
-    
+    session_dir : str or Path, optional
+        Session directory for pipeline-aware output.
+        When provided, outputs are written into this directory.
+
     Returns:
     --------
     dict or None
@@ -2524,8 +2538,15 @@ def main(input_file=None):
     if sample_type_row is not None:
         print(f"✓ 偵測到 Sample_Type 資訊行，已提取保存（不參與計算）")
 
+    # Determine session-aware paths
+    if session_dir is not None:
+        from metabolomics.utils.file_io import session_output_path, session_plots_dir
+        _session_plots = session_plots_dir(session_dir)
+    else:
+        _session_plots = None
+
     # 執行標準化
-    result = perform_normalization(data_df, sample_info_df, correction_col, input_file)
+    result = perform_normalization(data_df, sample_info_df, correction_col, input_file, plots_dir=_session_plots)
     
     if result is None:
         print("\n❌ 標準化失敗")
@@ -2540,6 +2561,12 @@ def main(input_file=None):
         from metabolomics.utils.data_helpers import insert_sample_type_row
         normalized_df = insert_sample_type_row(normalized_df, sample_type_row, feature_col)
 
+    # Build session-aware output path
+    if session_dir is not None:
+        _save_path = session_output_path(session_dir, step=4, prefix=f"Normalized_{method_name}")
+    else:
+        _save_path = None
+
     # 儲存結果
     print("\n儲存結果...")
     output_path = save_normalization_results(
@@ -2550,6 +2577,7 @@ def main(input_file=None):
         data_sheet_name,
         sample_info_sheet_name,
         output_dir,
+        output_path=_save_path,
     )
     
     if not output_path:

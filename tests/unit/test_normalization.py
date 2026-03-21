@@ -377,6 +377,38 @@ class TestConcentrationNormOutput:
         assert preserved_df.columns[0] == 'Mz/RT'
 
 
+class TestConcentrationNormSessionDir:
+    """Tests for session_dir support in normalization."""
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_main_writes_to_session_dir(
+        self,
+        istd_module,
+        qc_lowess_module,
+        batch_effect_module,
+        conc_norm_module,
+        sample_input_file,
+        tmp_path,
+    ):
+        """When session_dir is provided, output goes into that directory."""
+        from pathlib import Path
+        from metabolomics.utils.file_io import create_session_dir
+
+        # Run Steps 1-3 to produce valid Step 4 input
+        step1_result = istd_module.main(input_file=sample_input_file)
+        step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
+        step2_result = qc_lowess_module.main(input_file=step1_output)
+        step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
+        step3_result = batch_effect_module.main(input_file=step2_output)
+        step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
+
+        session = create_session_dir(output_root=tmp_path)
+        result = conc_norm_module.main(input_file=step3_output, session_dir=session)
+        assert Path(result.output_path).is_relative_to(session)
+        assert "Step4_" in Path(result.output_path).name
+
+
 class TestFullPipeline:
     """Integration tests for full pipeline."""
 
