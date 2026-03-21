@@ -216,6 +216,7 @@ class DataNormalizationApp:
         self.last_output_file = None  # 記錄最後一個輸出檔案
         self.steps = self._build_workflow_steps()
         self.step_outputs = {}
+        self.current_session_dir = None
         self.workflow_state = {}
         self.auto_run_mode = False
         self._split_ratio_applied = False
@@ -1526,12 +1527,21 @@ class DataNormalizationApp:
 
     def open_step_plots(self, step):
         """Open step output plots folder"""
+        # When session-based output is active, all plots are in one folder
+        if self.current_session_dir is not None:
+            plots_dir = str(Path(self.current_session_dir) / "plots")
+            if os.path.isdir(plots_dir):
+                self._open_path_in_system(plots_dir, "Plot folder does not exist", "Cannot open folder")
+            else:
+                messagebox.showwarning("Notice", "No plots generated yet")
+            return
+
+        # Legacy: per-step plots folder
         step_name = step['name']
         result = self._get_step_result(step_name)
         if not result:
             messagebox.showwarning("Notice", "No plots generated for this step yet")
             return
-
         plots_dir = self._get_plots_dir(result)
         self._open_path_in_system(plots_dir, "Plot folder does not exist", "Cannot open folder")
 
@@ -1804,7 +1814,15 @@ class DataNormalizationApp:
         
         # Reset cancel flag
         self.cancel_flag.clear()
-        
+
+        # Create session dir on first step execution
+        if self.current_session_dir is None:
+            from metabolomics.utils.file_io import create_session_dir, get_output_root
+            self.current_session_dir = create_session_dir(
+                output_root=get_output_root(input_file=self.selected_file_path)
+            )
+            self.logger.info(f"Session directory: {self.current_session_dir}")
+
         # Update current step name
         self.current_stats['step_name'] = step['name']
         self.current_stats['execution_time'] = 0
@@ -1855,7 +1873,10 @@ class DataNormalizationApp:
             
             try:
                 # Execute subprocess
-                result = script_module.main(input_file=current_input)
+                result = script_module.main(
+                    input_file=current_input,
+                    session_dir=self.current_session_dir,
+                )
                 
             finally:
                 # Restore stdout and stderr
@@ -2068,7 +2089,8 @@ class DataNormalizationApp:
             self.step_outputs.clear()
             self.last_output_file = None
             self.auto_run_mode = False
-            
+            self.current_session_dir = None
+
             # Reset UI (use safe method — labels may be None)
             for index in range(len(self.step_status_labels)):
                 self._set_step_status(index, 'idle')
