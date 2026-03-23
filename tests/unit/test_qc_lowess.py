@@ -68,6 +68,33 @@ class TestQCLOWESSOutput:
 
     @pytest.mark.slow
     @pytest.mark.integration
+    def test_fallback_excludes_red_marked_istds_from_qc_lowess_result(
+        self,
+        istd_module,
+        qc_lowess_module,
+        sample_input_file,
+    ):
+        """When Step 1 is skipped, red-marked ISTDs should not re-enter downstream result sheets."""
+        from metabolomics.utils.data_helpers import extract_sample_type_row
+
+        raw_df, _, _, _ = istd_module.load_and_process_data(sample_input_file)
+        raw_df, _ = extract_sample_type_row(raw_df, "FeatureID")
+        expected_rows = len(raw_df[~raw_df["is_ISTD"]])
+
+        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+        step2_output = (
+            step2_result.output_path
+            if hasattr(step2_result, "output_path")
+            else step2_result.get("output_path")
+        )
+
+        output_df = pd.read_excel(step2_output, sheet_name="QC LOWESS result")
+        output_df, _ = extract_sample_type_row(output_df, output_df.columns[0])
+
+        assert len(output_df) == expected_rows
+
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_main_with_step1_output(self, istd_module, qc_lowess_module,
                                      sample_input_file, validate_result_dict):
         """Test QC-LOWESS with Step 1 output."""
@@ -294,6 +321,97 @@ class TestQCLOWESSHelpers:
 
         assert captured["batch_memberships"][2] == ("A", "B")
         assert all(";" not in label for membership in captured["batch_memberships"] for label in membership)
+
+    def test_perform_pca_analysis_uses_rawintensity_title_when_step1_is_skipped(
+        self,
+        qc_lowess_module,
+        tmp_path,
+        monkeypatch,
+    ):
+        captured = {}
+
+        def fake_plotter(*args, **kwargs):
+            captured["suptitle"] = kwargs.get("suptitle")
+            captured["left_title"] = kwargs.get("left_title")
+            output_path = kwargs.get("output_path")
+            if output_path:
+                from pathlib import Path
+
+                Path(output_path).write_bytes(b"png")
+            return None, (None, None)
+
+        monkeypatch.setattr(qc_lowess_module, "plot_pca_comparison_qc_style", fake_plotter)
+
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC1", "QC2", "QC3", "QC4", "SampleA", "SampleB"],
+                "Sample_Type": ["QC", "QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "B", "B", "A", "B"],
+                "Injection_Order": [1, 2, 3, 4, 5, 6],
+            }
+        )
+        rows = [
+            {"FeatureID": "100.1/5.0", "QC1": 10, "QC2": 11, "QC3": 12, "QC4": 13, "SampleA": 20, "SampleB": 21},
+            {"FeatureID": "100.2/5.1", "QC1": 14, "QC2": 15, "QC3": 16, "QC4": 17, "SampleA": 22, "SampleB": 23},
+            {"FeatureID": "100.3/5.2", "QC1": 18, "QC2": 19, "QC3": 20, "QC4": 21, "SampleA": 24, "SampleB": 25},
+        ]
+        istd_df = pd.DataFrame(rows)
+        lowess_df = pd.DataFrame(rows)
+        istd_df.attrs["source_sheet_name"] = "RawIntensity"
+
+        qc_lowess_module.perform_pca_analysis(
+            istd_df,
+            lowess_df,
+            ["QC1", "QC2", "QC3", "QC4", "SampleA", "SampleB"],
+            sample_info_df,
+            plots_dir=str(tmp_path),
+            grouping="sample_type",
+        )
+
+        assert "RawIntensity vs QC-LOWESS" in captured["suptitle"]
+        assert captured["left_title"] == "RawIntensity"
+
+    def test_perform_pca_analysis_skips_batch_plot_when_only_one_batch(
+        self,
+        qc_lowess_module,
+        tmp_path,
+        monkeypatch,
+    ):
+        captured = {"called": False}
+
+        def fake_plotter(*args, **kwargs):
+            captured["called"] = True
+            return None, (None, None)
+
+        monkeypatch.setattr(qc_lowess_module, "plot_pca_comparison_qc_style", fake_plotter)
+
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC1", "QC2", "QC3", "QC4", "SampleA", "SampleB"],
+                "Sample_Type": ["QC", "QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "A", "A", "A", "A"],
+                "Injection_Order": [1, 2, 3, 4, 5, 6],
+            }
+        )
+        rows = [
+            {"FeatureID": "100.1/5.0", "QC1": 10, "QC2": 11, "QC3": 12, "QC4": 13, "SampleA": 20, "SampleB": 21},
+            {"FeatureID": "100.2/5.1", "QC1": 14, "QC2": 15, "QC3": 16, "QC4": 17, "SampleA": 22, "SampleB": 23},
+            {"FeatureID": "100.3/5.2", "QC1": 18, "QC2": 19, "QC3": 20, "QC4": 21, "SampleA": 24, "SampleB": 25},
+        ]
+        istd_df = pd.DataFrame(rows)
+        lowess_df = pd.DataFrame(rows)
+
+        result = qc_lowess_module.perform_pca_analysis(
+            istd_df,
+            lowess_df,
+            ["QC1", "QC2", "QC3", "QC4", "SampleA", "SampleB"],
+            sample_info_df,
+            plots_dir=str(tmp_path),
+            grouping="batch",
+        )
+
+        assert result is None
+        assert captured["called"] is False
 
     def test_perform_lowess_supports_multi_batch_qc_membership(self, qc_lowess_module):
         """QC samples tagged as A;B should contribute to both batches instead of forming a new batch."""

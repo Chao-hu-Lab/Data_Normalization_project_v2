@@ -1950,6 +1950,43 @@ class DataNormalizationApp:
             return result.get('skip_reason', 'unknown')
         return 'unknown'
 
+    def _build_result_summary_lines(self, result):
+        """Build concise result lines for GUI logging."""
+        data = self._result_to_dict(result)
+        if not data:
+            return []
+
+        lines = []
+        metabolites = data.get('metabolites')
+        samples = data.get('samples')
+        if metabolites is not None and samples is not None:
+            lines.append(f"Output data: {metabolites} metabolites x {samples} samples")
+
+        output_path = data.get('output_path')
+        if output_path:
+            lines.append(f"Output file: {os.path.basename(output_path)}")
+
+        plots_dir = data.get('plots_dir')
+        if plots_dir:
+            lines.append(f"Plots folder: {os.path.basename(plots_dir)}")
+
+        extra_keys = ('batches', 'total_istd', 'good_istd')
+        extra_parts = [f"{key}={data[key]}" for key in extra_keys if key in data]
+        if extra_parts:
+            lines.append("Run stats: " + ", ".join(extra_parts))
+
+        return lines
+
+    def _build_skip_guidance(self, step_name, skip_reason):
+        """Describe downstream behavior after a step is skipped."""
+        if step_name == 'Step 1: ISTD Correction' and skip_reason == 'insufficient_good_istd':
+            return (
+                "Step 2 will use 'RawIntensity' as input. "
+                "Red-marked ISTD rows stay in 'RawIntensity' and will be excluded "
+                "from downstream corrected result sheets."
+            )
+        return "Downstream steps will use the best available upstream sheet."
+
     def on_step_complete(self, step, result):
         """UI update on step complete"""
         index = self.steps.index(step)
@@ -1962,7 +1999,7 @@ class DataNormalizationApp:
             self._set_step_status(index, 'cancelled')
             skip_reason = self._get_skip_reason(result)
             self.logger.warning(f"{step['name']} was SKIPPED: {skip_reason}")
-            self.logger.warning("Downstream steps will process uncorrected data.")
+            self.logger.warning(self._build_skip_guidance(step['name'], skip_reason))
         else:
             self._set_step_status(index, 'success')
 
@@ -1977,8 +2014,8 @@ class DataNormalizationApp:
         self.logger.info("=" * 80)
         self.logger.info(f"{step['name']} Completed!")
         self.logger.info(f"Execution Time: {self.current_stats['execution_time']:.2f} s")
-        if result and result != True:
-            self.logger.info(f"Result: {result}")
+        for line in self._build_result_summary_lines(result):
+            self.logger.info(line)
         self.logger.info("=" * 80)
         
         # 更新輸入來源標籤 (Chain of Custody)
@@ -2009,8 +2046,7 @@ class DataNormalizationApp:
                     "Step Skipped",
                     f"{step['name']} was skipped.\n"
                     f"Reason: {skip_reason}\n\n"
-                    "Data was passed through without correction.\n"
-                    "Downstream steps will process uncorrected data."
+                    f"{self._build_skip_guidance(step['name'], skip_reason)}"
                 )
             else:
                 messagebox.showinfo("Complete", f"{step['name']} Successfully Executed!\nTime: {self.current_stats['execution_time']:.2f} s")

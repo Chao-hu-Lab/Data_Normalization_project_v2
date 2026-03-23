@@ -13,7 +13,12 @@ from copy import copy
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-from metabolomics.utils.plotting import plot_pca_comparison_real_sample_style, setup_matplotlib
+from metabolomics.utils.plotting import (
+    plot_pca_comparison_real_sample_style,
+    setup_matplotlib,
+    build_pca_comparison_filename,
+    build_pca_comparison_suptitle,
+)
 from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS
 from metabolomics.utils.sample_classification import (
     SampleClassifier,
@@ -38,6 +43,13 @@ setup_matplotlib()
 # Centralized summary metadata to avoid magic strings and ease maintenance
 SUMMARY_SHEET_NAME = SHEET_NAMES.get('concentration', "ConcNormalization_Summary")
 SUMMARY_REPORT_SEPARATOR = "-" * 80
+NORMALIZATION_SOURCE_LABELS = {
+    SHEET_NAMES['qc_batch_scaling']: 'QC Batch Scaling result',
+    SHEET_NAMES['batch_effect']: 'Batch Effect result',
+    SHEET_NAMES['qc_lowess']: 'QC LOWESS result',
+    SHEET_NAMES['istd_correction']: 'ISTD Correction result',
+    SHEET_NAMES['raw_intensity']: 'RawIntensity',
+}
 
 def _lookup_sample_type(sample, sample_info_df, col_to_info_row=None, default='UNKNOWN'):
     """Helper: look up sample type using col_to_info_row mapping or fallback."""
@@ -964,11 +976,23 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
         levene_p = np.nan
         sig_mark = 'N/A'
 
-    fig = plt.figure(figsize=(max(18, len(sample_names) * 0.55), 14))
-    gs = fig.add_gridspec(3, 1, height_ratios=[2.2, 2.2, 1.7], hspace=0.35)
+    fig = plt.figure(figsize=(max(18, len(sample_names) * 0.50), 12.8))
+    gs = fig.add_gridspec(
+        3,
+        2,
+        width_ratios=[12, 2.2],
+        height_ratios=[2.2, 2.2, 1.7],
+        hspace=0.38,
+        wspace=0.06,
+    )
     ax1 = fig.add_subplot(gs[0, 0])
     ax2 = fig.add_subplot(gs[1, 0])
     ax3 = fig.add_subplot(gs[2, 0])
+    side1 = fig.add_subplot(gs[0, 1])
+    side2 = fig.add_subplot(gs[1, 1])
+    side3 = fig.add_subplot(gs[2, 1])
+    for side_ax in (side1, side2, side3):
+        side_ax.axis('off')
 
     positions = np.arange(len(sample_names))
     bp1 = ax1.boxplot([original_log[:, i] for i in range(len(sample_names))],
@@ -995,7 +1019,7 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
         tick_label.set_fontweight('bold')
 
     ax1.grid(True, alpha=0.3, axis='y')
-    ax1.legend(loc='upper right', fontsize=10)
+    handles1, labels1 = ax1.get_legend_handles_labels()
 
     bp2 = ax2.boxplot([normalized_log[:, i] for i in range(len(sample_names))],
                       positions=positions,
@@ -1019,7 +1043,7 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
         tick_label.set_fontweight('bold')
 
     ax2.grid(True, alpha=0.3, axis='y')
-    ax2.legend(loc='upper right', fontsize=10)
+    handles2, labels2 = ax2.get_legend_handles_labels()
 
     bar_width = 0.42
     ax3.bar(positions - bar_width / 2, original_totals, width=bar_width,
@@ -1041,34 +1065,53 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
         tick_label.set_fontweight('bold')
 
     ax3.grid(True, alpha=0.25, axis='y')
-    ax3.legend(loc='upper right', fontsize=9, ncol=2)
+    handles3, labels3 = ax3.get_legend_handles_labels()
 
-    stats_text = f"""Statistical Summary:
-Median intensity:
-  Before: {median_before:.2f}
-  After:  {median_after:.2f}
+    side1.text(0.02, 0.92, 'Before Legend', transform=side1.transAxes, fontsize=10, fontweight='bold', va='top')
+    if handles1:
+        legend1 = side1.legend(
+            handles1,
+            labels1,
+            loc='upper left',
+            bbox_to_anchor=(0.02, 0.78),
+            bbox_transform=side1.transAxes,
+            fontsize=9,
+            frameon=True,
+            borderaxespad=0.0,
+        )
+        side1.add_artist(legend1)
 
-Inter-sample RSD:
-  Before: {rsd_before:.2f}%
-  After:  {rsd_after:.2f}%
-  Reduction: {rsd_reduction:.1f}%
+    side2.text(0.02, 0.92, 'After Legend', transform=side2.transAxes, fontsize=10, fontweight='bold', va='top')
+    if handles2:
+        legend2 = side2.legend(
+            handles2,
+            labels2,
+            loc='upper left',
+            bbox_to_anchor=(0.02, 0.78),
+            bbox_transform=side2.transAxes,
+            fontsize=9,
+            frameon=True,
+            borderaxespad=0.0,
+        )
+        side2.add_artist(legend2)
 
-Sample total CV:
-  Before: {total_cv_before:.2f}%
-  After:  {total_cv_after:.2f}%
-  Reduction: {total_cv_reduction:.1f}%
-
-Levene's test:
-  p = {levene_p:.4f} {sig_mark}
-"""
-
-    ax1.text(1.02, 0.5, stats_text, transform=ax1.transAxes,
-             fontsize=10, verticalalignment='center',
-             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black', linewidth=1.5),
-             family='monospace')
+    side3.text(0.02, 0.92, 'Total Intensity Legend', transform=side3.transAxes, fontsize=10, fontweight='bold', va='top')
+    if handles3:
+        legend3 = side3.legend(
+            handles3,
+            labels3,
+            loc='upper left',
+            bbox_to_anchor=(0.02, 0.78),
+            bbox_transform=side3.transAxes,
+            fontsize=8.5,
+            frameon=True,
+            ncol=1,
+            borderaxespad=0.0,
+        )
+        side3.add_artist(legend3)
 
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.savefig(output_path, dpi=300)
     plt.close()
 
     print(f"  ✓ 盒鬚圖已儲存 (Fig 1 - Integrated)")
@@ -1224,13 +1267,12 @@ def plot_cv_comparison(original_cv, normalized_cv, output_path, method_name):
     改進項目：
     - 標題加警示信息
     - 增加閾值線 (20%, 30%, 50%)
-    - 增加統計檢驗框 (Wilcoxon, Cohen's d)
-    - 增加解釋框
+    - 圖中只保留讀圖必要元素，統計摘要留在 console / Excel
     """
     from scipy.stats import wilcoxon
 
-    # 創建圖形（移除底部備註框，讓主圖占比更高）
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 6))
+    # Keep a normal presentation size now that statistical summaries live outside the PNG.
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18.5, 5.6))
 
     # 移除 NaN 值
     original_cv_clean = original_cv[~np.isnan(original_cv)]
@@ -1334,30 +1376,6 @@ def plot_cv_comparison(original_cv, normalized_cv, output_path, method_name):
     ax3.legend(fontsize=10)
     ax3.grid(True, alpha=0.3)
 
-    # === 統計檢驗框 ===
-    improved_count = np.sum(cv_improvement > 0)
-    total_count = len(cv_improvement)
-    improvement_rate = (improved_count / total_count) * 100
-
-    stats_text = f"""Statistical Tests:
-Wilcoxon test:
-  statistic = {w_stat:.1f}
-  p = {p_value:.4f} {sig_mark}
-
-Cohen's d:
-  d = {cohens_d:.2f}
-  ({effect_interpretation})
-
-Features improved:
-  {improved_count}/{total_count}
-  ({improvement_rate:.1f}%)
-"""
-
-    ax3.text(0.05, 0.95, stats_text, transform=ax3.transAxes,
-            fontsize=9, verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black', linewidth=1.5),
-            family='monospace')
-
     fig.suptitle(
         f'Coefficient of Variation (CV%) Comparison ({method_name})',
         fontsize=16,
@@ -1365,7 +1383,7 @@ Features improved:
         fontweight='bold',
     )
     plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.savefig(output_path, dpi=300)
     plt.close()
 
     print(f"  ✓ CV%分佈圖已儲存 (Fig 2 - Improved)")
@@ -1379,6 +1397,8 @@ def plot_pca_with_confidence_ellipse(
     method_name,
     exclude_qc=True,
     col_to_info_row=None,
+    source_label='Input data',
+    result_label=None,
 ):
     """
     繪製 PCA 對比圖 (Fig 3 - Improved)
@@ -1553,6 +1573,8 @@ def plot_pca_with_confidence_ellipse(
     # ========== 繪圖（統一為 QC 子程式 PCA 風格）==========
     sample_types = [normalize_sample_type(group) for group in sample_groups]
 
+    result_label = result_label or f'{method_name} Result'
+
     plot_pca_comparison_real_sample_style(
         pc_original,
         pc_normalized,
@@ -1560,9 +1582,9 @@ def plot_pca_with_confidence_ellipse(
         var_normalized,
         sample_names_clean,
         sample_types,
-        suptitle=f'2D PCA Comparison: Before vs After Normalization ({method_name})',
-        left_title='Before Normalization',
-        right_title=f'After Normalization ({method_name})',
+        suptitle=build_pca_comparison_suptitle(source_label, result_label, grouping='sample_type'),
+        left_title=source_label,
+        right_title=result_label,
         output_path=output_path,
         dpi=300,
     )
@@ -2044,6 +2066,11 @@ def determine_correction_sheet(sheets):
     print("警告：未找到指定的資料工作表")
     return None, None
 
+
+def get_normalization_source_label(sheet_name):
+    """Return a stable PCA label for the selected normalization input sheet."""
+    return NORMALIZATION_SOURCE_LABELS.get(sheet_name, str(sheet_name))
+
 def find_sample_info_sheet(sheets):
     """尋找包含樣本資訊的工作表"""
     possible_names = [SHEET_NAMES['sample_info'], 'Sample_Info', 'sample_info', 'Sample Info']
@@ -2123,7 +2150,7 @@ from metabolomics.utils.excel_format import copy_cell_style  # noqa: E302
 
 # ==================== 主要處理函數 ====================
 
-def perform_normalization(data_df, sample_info_df, correction_col, file_path, plots_dir=None):
+def perform_normalization(data_df, sample_info_df, correction_col, file_path, plots_dir=None, source_sheet_name=None):
     """
     執行 PQN + Sample-specific 混合標準化處理（增強版）
     """
@@ -2203,14 +2230,21 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path, pl
     output_dir = get_output_root(input_file=file_path)
     run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
     method_slug = method_name.replace(' ', '_')
+    source_label = get_normalization_source_label(source_sheet_name or SHEET_NAMES['qc_batch_scaling'])
+    result_label = f"{method_name} Result"
 
     if plots_dir is not None:
         figures_dir = plots_dir
         figure_paths = {
-            "boxplot": Path(figures_dir) / "Step4_Boxplot.png",
-            "cv": Path(figures_dir) / "Step4_CV.png",
-            "rle": Path(figures_dir) / "Step4_RLE.png",
-            "pca": Path(figures_dir) / "Step4_PCA.png",
+            "boxplot": Path(figures_dir) / f"Step4_Boxplot_{method_slug}.png",
+            "cv": Path(figures_dir) / f"Step4_CV_{method_slug}.png",
+            "rle": Path(figures_dir) / f"Step4_RLE_{method_slug}.png",
+            "pca": Path(figures_dir) / build_pca_comparison_filename(
+                "Step4",
+                source_label,
+                result_label,
+                grouping="sample_type",
+            ),
         }
     else:
         figures_dir = build_plots_dir(
@@ -2221,16 +2255,20 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path, pl
         )
         figure_paths = {
             "boxplot": figures_dir / generate_output_filename(
-                f"Fig1_Boxplot_{method_slug}", timestamp=run_timestamp, extension=".png"
+                f"Step4_Boxplot_{method_slug}", timestamp=run_timestamp, extension=".png"
             ),
             "cv": figures_dir / generate_output_filename(
-                f"Fig2_CV_{method_slug}", timestamp=run_timestamp, extension=".png"
+                f"Step4_CV_{method_slug}", timestamp=run_timestamp, extension=".png"
             ),
             "rle": figures_dir / generate_output_filename(
-                f"Fig3_RLE_{method_slug}", timestamp=run_timestamp, extension=".png"
+                f"Step4_RLE_{method_slug}", timestamp=run_timestamp, extension=".png"
             ),
-            "pca": figures_dir / generate_output_filename(
-                f"Fig4_PCA_{method_slug}", timestamp=run_timestamp, extension=".png"
+            "pca": figures_dir / build_pca_comparison_filename(
+                "Step4",
+                source_label,
+                result_label,
+                grouping="sample_type",
+                timestamp=run_timestamp,
             ),
         }
     print(f"✓ Excel 將輸出到: {output_dir}")
@@ -2296,6 +2334,8 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path, pl
             method_name,
             exclude_qc=True,
             col_to_info_row=col_to_info_row,
+            source_label=source_label,
+            result_label=result_label,
         )
     except Exception as e:
         print(f"  ⚠ PCA對比圖生成失敗: {e}")
@@ -2546,7 +2586,14 @@ def main(input_file=None, session_dir=None):
         _session_plots = None
 
     # 執行標準化
-    result = perform_normalization(data_df, sample_info_df, correction_col, input_file, plots_dir=_session_plots)
+    result = perform_normalization(
+        data_df,
+        sample_info_df,
+        correction_col,
+        input_file,
+        plots_dir=_session_plots,
+        source_sheet_name=data_sheet_name,
+    )
     
     if result is None:
         print("\n❌ 標準化失敗")
@@ -2591,7 +2638,7 @@ def main(input_file=None, session_dir=None):
     
     print("\n📊 生成的視覺化圖表:")
     print(f"  - 儲存路徑: {figures_dir}")
-    print("  - 圖檔: Fig1_Boxplot_*.png, Fig2_CV_*.png, Fig3_RLE_*.png, Fig4_PCA_*.png")
+    print("  - 圖檔: Step4_Boxplot_*.png, Step4_CV_*.png, Step4_RLE_*.png, Step4_PCA_*_vs_*_grouped_by_sample_type_*.png")
     
     print("\n" + "=" * 80)
     print("📈 標準化質量評估摘要:")

@@ -16,7 +16,12 @@ warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
 from metabolomics.utils.data_helpers import get_valid_values
-from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
+from metabolomics.utils.plotting import (
+    setup_matplotlib,
+    plot_pca_comparison_qc_style,
+    build_pca_comparison_filename,
+    build_pca_comparison_suptitle,
+)
 from metabolomics.utils.constants import (
     FONT_SIZES,
     COLORBLIND_COLORS,
@@ -1172,7 +1177,7 @@ def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
         plt.tight_layout()
         
         # ✅ 儲存到 output/ISTD_Correction_plots/
-        pvalue_plot_path = os.path.join(plots_dir, f'Pvalue_Distribution_{timestamp}.png')
+        pvalue_plot_path = os.path.join(plots_dir, f'Step1_Pvalue_Distribution_{timestamp}.png')
         plt.savefig(pvalue_plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
@@ -1363,14 +1368,14 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
             return None
 
     datasets = {
-        'Raw Data': raw_df,
+        'RawIntensity': raw_df,
         'ISTD Corrected': corrected_df,
-        'LOWESS Normalized': lowess_df
+        'QC LOWESS': lowess_df
     }
 
-    comparisons = [('Raw Data', 'ISTD Corrected')]
+    comparisons = [('RawIntensity', 'ISTD Corrected')]
     if lowess_df is not None:
-        comparisons.append(('ISTD Corrected', 'LOWESS Normalized'))
+        comparisons.append(('ISTD Corrected', 'QC LOWESS'))
 
     for left_name, right_name in comparisons:
         left_df = datasets.get(left_name)
@@ -1421,7 +1426,16 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
         qc_outliers_left = {qc_columns[i] for i in range(len(qc_columns)) if outliers_left[i]}
         qc_outliers_right = {qc_columns[i] for i in range(len(qc_columns)) if outliers_right[i]}
 
-        output_path = os.path.join(plots_dir, f"2D_PCA_{left_name.replace(' ', '_')}_vs_{right_name.replace(' ', '_')}_{timestamp}.png")
+        output_path = os.path.join(
+            plots_dir,
+            build_pca_comparison_filename(
+                "Step1",
+                left_name,
+                right_name,
+                grouping='sample_type',
+                timestamp=timestamp,
+            ),
+        )
         plot_pca_comparison_qc_style(
             scores_left,
             scores_right,
@@ -1431,7 +1445,7 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
             sample_types,
             batch_labels=None,
             grouping='sample_type',
-            suptitle=f'2D PCA Comparison: {left_name} vs {right_name}',
+            suptitle=build_pca_comparison_suptitle(left_name, right_name, grouping='sample_type'),
             left_title=left_name,
             right_title=right_name,
             left_threshold_text=f'Hotelling T² Threshold: {t2_threshold_left:.2f}',

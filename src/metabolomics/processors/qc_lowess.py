@@ -19,7 +19,12 @@ warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
 from metabolomics.utils.data_helpers import get_valid_values
-from metabolomics.utils.plotting import setup_matplotlib, plot_pca_comparison_qc_style
+from metabolomics.utils.plotting import (
+    setup_matplotlib,
+    plot_pca_comparison_qc_style,
+    build_pca_comparison_filename,
+    build_pca_comparison_suptitle,
+)
 from metabolomics.utils.constants import (
     NON_SAMPLE_COLUMNS,
     SHEET_NAMES,
@@ -42,6 +47,11 @@ setup_matplotlib()
 
 # Sheet name constant
 QC_LOWESS_ADVANCED_SHEET = SHEET_NAMES.get('qc_lowess_advanced', "QC_LOWESS_Advanced Statistics")
+RED_FONT_RGBS = {'FFFF0000', 'FF0000'}
+STEP2_SOURCE_LABELS = {
+    SHEET_NAMES['raw_intensity']: 'RawIntensity',
+    SHEET_NAMES['istd_correction']: 'ISTD Correction result',
+}
 
 # For backward compatibility, alias the old constant names
 DEFAULT_NON_SAMPLE_COLUMNS = NON_SAMPLE_COLUMNS
@@ -52,6 +62,66 @@ def parse_batch_labels(value):
     if pd.isna(value):
         return []
     return [part.strip() for part in str(value).split(';') if part.strip()]
+
+
+def collect_red_marked_feature_ids(file_path, sheet_name):
+    """Collect red-font feature IDs from the first column of a worksheet."""
+    workbook = load_workbook(file_path)
+    try:
+        if sheet_name not in workbook.sheetnames:
+            return set()
+
+        worksheet = workbook[sheet_name]
+        feature_ids = set()
+        for row in worksheet.iter_rows(min_row=2):
+            cell = row[0]
+            color = getattr(getattr(cell, 'font', None), 'color', None)
+            rgb = getattr(color, 'rgb', None)
+            if rgb is None or cell.value is None:
+                continue
+            if str(rgb).upper() in RED_FONT_RGBS:
+                feature_ids.add(str(cell.value).strip())
+        return feature_ids
+    finally:
+        workbook.close()
+
+
+def exclude_fallback_istd_rows(data_df, file_path, source_sheet_name):
+    """Exclude red-marked ISTD rows when Step 2 falls back to RawIntensity."""
+    if source_sheet_name != SHEET_NAMES['raw_intensity']:
+        return data_df
+
+    print("\n⚠️ Step 1 未產生 'ISTD_Correction'，Step 2 改用 'RawIntensity' 作為上游來源。")
+    red_marked_feature_ids = collect_red_marked_feature_ids(file_path, source_sheet_name)
+    if not red_marked_feature_ids:
+        print("   - 未偵測到紅字 ISTD 標記，QC-LOWESS 將把所有列視為一般 feature。")
+        data_df.attrs['excluded_fallback_istd_count'] = 0
+        return data_df
+
+    istd_mask = data_df['FeatureID'].astype(str).str.strip().isin(red_marked_feature_ids)
+    excluded_count = int(istd_mask.sum())
+    if excluded_count == 0:
+        print("   - RawIntensity 中沒有對應到紅字 ISTD 的資料列，QC-LOWESS 將把所有列視為一般 feature。")
+        data_df.attrs['excluded_fallback_istd_count'] = 0
+        return data_df
+
+    filtered_df = data_df.loc[~istd_mask].copy()
+    filtered_df.attrs.update(data_df.attrs)
+    filtered_df.attrs['excluded_fallback_istd_count'] = excluded_count
+    filtered_df.attrs['fallback_istd_feature_ids'] = sorted(red_marked_feature_ids)
+
+    print(f"   - 偵測到 {excluded_count} 個紅字 ISTD；它們會保留在 'RawIntensity'，但不會進入 'QC LOWESS result' 與 PCA。")
+    print(f"   - QC-LOWESS 實際處理特徵數: {len(filtered_df)}")
+
+    if filtered_df.empty:
+        raise ValueError("排除紅字 ISTD 後沒有可供 QC-LOWESS 的 feature")
+
+    return filtered_df
+
+
+def get_step2_source_label(source_sheet_name):
+    """Return a stable PCA/plot label for the selected Step 2 input sheet."""
+    return STEP2_SOURCE_LABELS.get(source_sheet_name, str(source_sheet_name))
 
 
 def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensities, debug_flag=None, global_qc_median=None):
@@ -936,6 +1006,7 @@ def load_and_process_data(file_path):
         print(f"{'='*70}\n")
 
         # 將識別出的樣本欄位保存於 DataFrame attrs，供後續流程使用
+        istd_df = exclude_fallback_istd_rows(istd_df, file_path, source_sheet_name)
         istd_df.attrs['sample_columns'] = sample_columns
         istd_df.attrs['excluded_non_sample_columns'] = dropped_columns
         istd_df.attrs['source_sheet_name'] = source_sheet_name
@@ -1166,7 +1237,7 @@ def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
         
         plt.tight_layout()
         
-        pvalue_plot_path = os.path.join(plots_dir, f'Pvalue_Distribution_Levene_{timestamp}.png')
+        pvalue_plot_path = os.path.join(plots_dir, f'Step2_Pvalue_Distribution_Levene_{timestamp}.png')
 
         # ===== 防呆: 圖表保存檢查 =====
         try:
@@ -1302,20 +1373,20 @@ def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_pag
                     ax2.scatter(
                         qc_orders,
                         qc_raw,
-                        c='lightgray',
-                        s=55,
-                        alpha=0.55,
-                        edgecolors='gray',
-                        linewidth=0.5,
+                        c='#F0E442',
+                        s=65,
+                        alpha=1.0,
+                        edgecolors='black',
+                        linewidth=0.8,
                         label='Raw',
                         zorder=2,
                     )
                     ax2.scatter(
                         qc_orders,
                         qc_corrected,
-                        c='orange',
+                        c='#D55E00',
                         s=55,
-                        alpha=0.85,
+                        alpha=0.95,
                         edgecolors='black',
                         linewidth=0.8,
                         label='Corrected',
@@ -1336,7 +1407,7 @@ def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_pag
             plt.tight_layout(rect=[0, 0, 1, 0.97])
 
             safe_feature = str(feature_id).replace('/', '_').replace('\\', '_').replace(':', '_')
-            plot_path = os.path.join(plots_dir, f'Trend_Fitting_Feature_{safe_feature}_{timestamp}.png')
+            plot_path = os.path.join(plots_dir, f'Step2_Trend_Fitting_Feature_{safe_feature}_{timestamp}.png')
             plt.savefig(plot_path, dpi=200, bbox_inches='tight')
             plt.close(fig)
 
@@ -1440,15 +1511,22 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         advanced_export = sanitize_excel_df(advanced_stats_df)
         sample_info_export = sanitize_excel_df(sample_info_df)
         source_sheet_name = istd_df.attrs.get('source_sheet_name', SHEET_NAMES['istd_correction'])
+        source_export = istd_export
+        source_export_is_original = False
+
+        if source_sheet_name == SHEET_NAMES['raw_intensity'] and raw_df is not None:
+            source_export = sanitize_excel_df(raw_df.copy())
+            source_export_is_original = True
 
         # ===== 回插 Sample_Type 資訊行（若有）=====
         if sample_type_row is not None:
             from metabolomics.utils.data_helpers import insert_sample_type_row
-            istd_export = insert_sample_type_row(istd_export, sample_type_row)
+            if not source_export_is_original:
+                source_export = insert_sample_type_row(source_export, sample_type_row)
             lowess_export = insert_sample_type_row(lowess_export, sample_type_row)
 
         sheets_to_write = [
-            (source_sheet_name, istd_export),
+            (source_sheet_name, source_export),
             (SHEET_NAMES['qc_lowess'], lowess_export),
             (QC_LOWESS_ADVANCED_SHEET, advanced_export),
             (SHEET_NAMES['sample_info'], sample_info_export),
@@ -1926,6 +2004,9 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
         var_lowess = pca_lowess.explained_variance_ratio_
 
         # Hotelling T² 異常值檢測
+        source_sheet_name = istd_df.attrs.get('source_sheet_name', SHEET_NAMES['istd_correction'])
+        source_label = get_step2_source_label(source_sheet_name)
+        result_label = 'QC LOWESS result'
         qc_indices = [i for i, col in enumerate(sample_columns_clean) if col in qc_columns]
         qc_scores_istd = scores_istd[qc_indices]
         qc_scores_lowess = scores_lowess[qc_indices]
@@ -1941,18 +2022,21 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
         qc_outlier_map_lowess = {qc_columns[i]: bool(outliers_lowess[i]) for i in range(len(qc_columns))}
 
         print("\n🔍 Hotelling T² 異常值檢測：")
-        print(f"   ISTD: {np.sum(outliers_istd)}/{len(qc_columns)} QC 被標記為異常")
+        print(f"   {source_label}: {np.sum(outliers_istd)}/{len(qc_columns)} QC 被標記為異常")
         print(f"   QC-LOWESS: {np.sum(outliers_lowess)}/{len(qc_columns)} QC 被標記為異常")
 
         # 繪製 2D PCA 圖（統一為 QC 子程式風格的共用函式）
         print("\n🎨 繪製 2D PCA Score Plot...")
         grouping_tag = 'batch' if grouping == 'batch' else 'sample_type'
-        pca_plot_path = os.path.join(plots_dir, f'2D_PCA_ISTD_vs_LOWESS_{grouping_tag}_{timestamp}.png')
-
-        suptitle = (
-            '2D PCA Comparison: ISTD vs QC-LOWESS (Grouped by Batch)'
-            if grouping == 'batch'
-            else '2D PCA Comparison: ISTD vs QC-LOWESS (Grouped by Sample Type)'
+        pca_plot_path = os.path.join(
+            plots_dir,
+            build_pca_comparison_filename(
+                "Step2",
+                source_label,
+                result_label,
+                grouping=grouping_tag,
+                timestamp=timestamp,
+            ),
         )
 
         sample_types = [sample_type_map.get(col, 'Unknown') for col in sample_columns_clean]
@@ -1960,6 +2044,16 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
             tuple(parse_batch_labels(sample_batches.get(col, 'Unknown')) or ['Unknown'])
             for col in sample_columns_clean
         ]
+        unique_batch_labels = sorted({batch for memberships in batch_memberships for batch in memberships if batch})
+
+        if grouping == 'batch' and len(unique_batch_labels) < 2:
+            """
+            legacy skip log retained to neutralize malformed historical line
+            print(f"只有 {len(unique_batch_labels)} 個 batch，跳過依 batch 分組的 PCA 圖。")
+            print(f"⚠️  只有 {len(unique_batch_labels)} 個 batch，跳過依 batch 分組的 PCA 圖。")
+            """
+            print(f"只有 {len(unique_batch_labels)} 個 batch，跳過依 batch 分組的 PCA 圖。")
+            return None
 
         qc_outliers_left = {name for name, is_out in qc_outlier_map_istd.items() if is_out}
         qc_outliers_right = {name for name, is_out in qc_outlier_map_lowess.items() if is_out}
@@ -1973,9 +2067,9 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
             sample_types,
             batch_memberships=batch_memberships,
             grouping=grouping_tag,
-            suptitle=suptitle,
-            left_title='ISTD Corrected',
-            right_title='QC-LOWESS Normalized',
+            suptitle=build_pca_comparison_suptitle(source_label, result_label, grouping=grouping_tag),
+            left_title=source_label,
+            right_title=result_label,
             left_threshold_text=f'Hotelling T² Threshold: {t2_threshold_istd:.2f}',
             right_threshold_text=f'Hotelling T² Threshold: {t2_threshold_lowess:.2f}',
             qc_outlier_names_left=qc_outliers_left,
@@ -2006,14 +2100,16 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
         print(f"📊 PCA 分析完成")
         print(f"{'='*70}")
         print(f"  解釋變異量:")
-        print(f"    ISTD: PC1={var_istd[0]*100:.2f}%, PC2={var_istd[1]*100:.2f}%")
-        print(f"    LOWESS: PC1={var_lowess[0]*100:.2f}%, PC2={var_lowess[1]*100:.2f}%")
-        print(f"  異常值: ISTD={np.sum(outliers_istd)}, LOWESS={np.sum(outliers_lowess)}")
+        print(f"    {source_label}: PC1={var_istd[0]*100:.2f}%, PC2={var_istd[1]*100:.2f}%")
+        print(f"    QC-LOWESS: PC1={var_lowess[0]*100:.2f}%, PC2={var_lowess[1]*100:.2f}%")
+        print(f"  QC outliers: {source_label}={np.sum(outliers_istd)}, QC-LOWESS={np.sum(outliers_lowess)}")
+        return pca_plot_path
 
     except Exception as e:
         print(f"❌ PCA 分析失敗: {e}")
         import traceback
         traceback.print_exc()
+        return None
 
 
 # ========== 主程式 ==========
@@ -2100,11 +2196,11 @@ def main(input_file=None, session_dir=None):
     print(f"📊 執行 PCA 分析...")
     print(f"{'='*70}")
     
-    perform_pca_analysis(
+    batch_pca_path = perform_pca_analysis(
         istd_df, lowess_df, sample_columns, sample_info_df,
         _plots_dir, grouping='batch'
     )
-    perform_pca_analysis(
+    sample_type_pca_path = perform_pca_analysis(
         istd_df, lowess_df, sample_columns, sample_info_df,
         _plots_dir, grouping='sample_type'
     )
@@ -2119,8 +2215,9 @@ def main(input_file=None, session_dir=None):
     print(f"    ├── {QC_LOWESS_ADVANCED_SHEET}（副表：Mann-Kendall + R²/RMSE）")
     print(f"    └── SampleInfo")
     print(f"\n  - 圖表輸出: {_plots_dir}")
-    print(f"    ├── 2D_PCA_ISTD_vs_LOWESS_*.png")
-    print(f"    └── Pvalue_Distribution_Levene_*.png")
+    print(f"    ├── Step2_PCA_*_vs_QC_LOWESS_result_*.png")
+    print(f"    ├── Step2_Pvalue_Distribution_Levene_*.png")
+    print(f"    └── Step2_Trend_Fitting_Feature_*.png")
     print(f"\n  💡 統計方法:")
     print(f"    - Levene's test: 檢測單一特徵方差變化")
     print(f"    - Wilcoxon test: 檢測整體 CV% 是否顯著降低（終端機顯示）")

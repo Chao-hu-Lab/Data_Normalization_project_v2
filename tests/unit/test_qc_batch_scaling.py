@@ -273,6 +273,41 @@ class TestQCBatchScalingHelpers:
 
 
 class TestQCBatchScalingOutput:
+    def test_generate_pca_plots_skips_batch_plot_when_only_one_batch(self, tmp_path):
+        module = load_qc_batch_scaling_module()
+
+        source_df = pd.DataFrame(
+            {
+                "FeatureID": ["F1", "F2", "F3"],
+                "QC_1": [10.0, 20.0, 30.0],
+                "QC_2": [11.0, 19.0, 29.0],
+                "QC_3": [12.0, 18.0, 28.0],
+                "Sample_A1": [13.0, 17.0, 27.0],
+                "Sample_A2": [14.0, 16.0, 26.0],
+            }
+        )
+        result_df = source_df.copy()
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "QC_2", "QC_3", "Sample_A1", "Sample_A2"],
+                "Sample_Type": ["QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "A", "A", "A"],
+            }
+        )
+
+        plots_dir = module.generate_pca_plots(
+            source_df,
+            result_df,
+            ["QC_1", "QC_2", "QC_3", "Sample_A1", "Sample_A2"],
+            sample_info_df,
+            str(tmp_path / "input.xlsx"),
+            "20260323_120000",
+        )
+
+        plot_names = {path.name for path in Path(plots_dir).glob("*.png")}
+        assert "Step3_PCA_QC_LOWESS_result_vs_QC_Batch_Scaling_result_grouped_by_batch_20260323_120000.png" not in plot_names
+        assert "Step3_PCA_QC_LOWESS_result_vs_QC_Batch_Scaling_result_grouped_by_sample_type_20260323_120000.png" in plot_names
+
     def test_generate_pca_plots_also_writes_residual_analysis(self, tmp_path):
         module = load_qc_batch_scaling_module()
 
@@ -315,11 +350,11 @@ class TestQCBatchScalingOutput:
 
         plot_names = {path.name for path in Path(plots_dir).glob("*.png")}
 
-        assert f"Fig1_PCA_by_batch_20260308_130000.png" in plot_names
-        assert f"Fig2_PCA_by_sample_type_20260308_130000.png" in plot_names
-        assert f"Fig3_Residual_Analysis_20260308_130000.png" in plot_names
+        assert "Step3_PCA_QC_LOWESS_result_vs_QC_Batch_Scaling_result_grouped_by_batch_20260308_130000.png" in plot_names
+        assert "Step3_PCA_QC_LOWESS_result_vs_QC_Batch_Scaling_result_grouped_by_sample_type_20260308_130000.png" in plot_names
+        assert "Step3_Residual_Analysis_20260308_130000.png" in plot_names
 
-        residual_plots = list(Path(plots_dir).glob("Fig3_Residual_Analysis_*.png"))
+        residual_plots = list(Path(plots_dir).glob("Step3_Residual_Analysis_*.png"))
         assert residual_plots, "Residual Analysis figure should be generated"
 
     @pytest.mark.slow
@@ -403,3 +438,29 @@ class TestQCBatchScalingOutput:
         result = qc_batch_scaling_module.main(input_file=sample_input_file, session_dir=session)
         assert Path(result.output_path).is_relative_to(session)
         assert "Step3_" in Path(result.output_path).name
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_main_logs_stage_progress(
+        self,
+        qc_lowess_module,
+        sample_input_file,
+        capsys,
+    ):
+        module = load_qc_batch_scaling_module()
+
+        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+        step2_output = (
+            step2_result.output_path
+            if hasattr(step2_result, "output_path")
+            else step2_result.get("output_path")
+        )
+
+        module.main(input_file=step2_output)
+
+        captured = capsys.readouterr().out
+        assert "開始執行 Step 3: QC Batch Scaling" in captured
+        assert "建立 batch membership" in captured
+        assert "執行 QC batch median scaling" in captured
+        assert "生成 PCA / residual 圖" in captured
+        assert "Step 3 完成" in captured

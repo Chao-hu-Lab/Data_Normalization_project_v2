@@ -4,6 +4,7 @@ matplotlib 繪圖設定
 包含共用的繪圖設定和色彩定義。
 """
 import os
+import re
 import sys
 
 # Use a non-interactive backend by default to avoid Tk/Tcl dependency
@@ -60,6 +61,39 @@ def build_batch_group_indices(batch_memberships):
             group_indices.setdefault(batch, []).append(index)
 
     return {batch: group_indices[batch] for batch in sorted(group_indices)}
+
+
+def slugify_plot_label(label):
+    """Convert a user-facing label into a stable ASCII filename token."""
+    text = re.sub(r'[^A-Za-z0-9]+', '_', str(label).strip())
+    text = re.sub(r'_+', '_', text).strip('_')
+    return text or 'Unknown'
+
+
+def build_pca_comparison_suptitle(left_label, right_label, grouping=None):
+    """Create a consistent user-facing PCA comparison title."""
+    title = f"2D PCA Comparison: {left_label} vs {right_label}"
+    if grouping == "batch":
+        return f"{title} (Grouped by Batch)"
+    if grouping == "sample_type":
+        return f"{title} (Grouped by Sample Type)"
+    return title
+
+
+def build_pca_comparison_filename(step_label, left_label, right_label, grouping=None, timestamp=None):
+    """Create a consistent PCA figure filename across workflow steps."""
+    parts = [
+        slugify_plot_label(step_label),
+        "PCA",
+        slugify_plot_label(left_label),
+        "vs",
+        slugify_plot_label(right_label),
+    ]
+    if grouping:
+        parts.extend(["grouped_by", slugify_plot_label(grouping)])
+    if timestamp:
+        parts.append(str(timestamp))
+    return "_".join(parts) + ".png"
 
 
 def get_visible_sample_types(sample_types):
