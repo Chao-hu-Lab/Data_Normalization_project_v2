@@ -60,7 +60,7 @@ SHEET_NAMES = {
     'batch_effect': 'Batch_effect_result',
     'batch_summary': 'Batch_Effect_summary',
     'concentration': 'ConcNormalization_Summary',
-    'pqn_result': 'PQN_SampleSpecific_Result',
+    'pqn_result': 'PQN_Result',
 }
 
 # ========== Validation Thresholds ==========

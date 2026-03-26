@@ -2,7 +2,7 @@
 Adapter B: Convert DNP output → Metaboanalyst_clone input format.
 
 Transformations:
-1. Read PQN_SampleSpecific_Result sheet from DNP output
+1. Read PQN_Result sheet from DNP output
 2. Remove statistical columns (Mean, SD, CV%, etc.)
 3. Write cleaned data as the FIRST sheet (Metaboanalyst reads first sheet by default)
 4. Copy SampleInfo sheet (needed for SpecNorm)

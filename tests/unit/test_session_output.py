@@ -21,7 +21,7 @@ class TestSessionOutputUtilities:
             (1, "ISTD_Results"),
             (2, "QC_LOWESS"),
             (3, "QC_Batch_Scaling"),
-            (4, "Normalized_PQN_SampleSpecific"),
+            (4, "Normalized_PQN"),
         ]:
             path = session_output_path(session, step=step, prefix=prefix)
             assert path.parent == session

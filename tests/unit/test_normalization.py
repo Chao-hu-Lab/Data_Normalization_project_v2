@@ -168,7 +168,7 @@ class TestConcentrationNormHelpers:
             sample_names,
             sample_info_df,
             tmp_path / "step4_pca.png",
-            "PQN_SampleSpecific",
+            "PQN",
             exclude_qc=True,
             col_to_info_row=col_to_info_row,
         )
@@ -291,7 +291,7 @@ class TestConcentrationNormOutput:
         assert set(workbook_sheet_names(step4_output)) == {
             'Batch_effect_result',
             'SampleInfo',
-            'PQN_SampleSpecific_Result',
+            'PQN_Result',
             'ConcNormalization_Summary',
         }
 
@@ -319,7 +319,7 @@ class TestConcentrationNormOutput:
         assert set(workbook_sheet_names(step4_output)) == {
             'QC LOWESS result',
             'SampleInfo',
-            'PQN_SampleSpecific_Result',
+            'PQN_Result',
             'ConcNormalization_Summary',
         }
 
@@ -348,7 +348,7 @@ class TestConcentrationNormOutput:
         assert set(workbook_sheet_names(step4_output)) == {
             'QC_Batch_Scaling_result',
             'SampleInfo',
-            'PQN_SampleSpecific_Result',
+            'PQN_Result',
             'ConcNormalization_Summary',
         }
 
@@ -370,7 +370,7 @@ class TestConcentrationNormOutput:
         step4_result = conc_norm_module.main(input_file=step3_output)
         step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get('output_path')
 
-        result_df = pd.read_excel(step4_output, sheet_name='PQN_SampleSpecific_Result', nrows=1)
+        result_df = pd.read_excel(step4_output, sheet_name='PQN_Result', nrows=1)
         preserved_df = pd.read_excel(step4_output, sheet_name='QC_Batch_Scaling_result', nrows=1)
 
         assert result_df.columns[0] == 'Mz/RT'

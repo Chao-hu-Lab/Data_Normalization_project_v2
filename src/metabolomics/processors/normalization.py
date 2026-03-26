@@ -156,24 +156,30 @@ def build_sample_info_mapping(sample_columns, sample_info_df):
 
 # ==================== 標準化方法 ====================
 
-def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns, reference_values,
+def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns,
                                col_to_info_row=None):
     """
-    改進版 PQN 標準化：優先使用 QC 樣本作為參考
+    PQN 標準化：優先使用 QC 樣本作為參考
 
     Parameters:
     -----------
+    data_matrix : np.ndarray
+        Feature × Sample intensity matrix.
+    sample_info_df : pd.DataFrame
+        Sample metadata.
+    sample_columns : list[str]
+        Sample column names matching data_matrix columns.
     col_to_info_row : dict, optional
         Mapping from data column name to SampleInfo row (Series).
         Used when column names don't match SampleInfo names.
     """
-    print("\n執行改進版混合標準化方法：")
+    print("\n執行 PQN 標準化方法：")
 
-    # ========== 🔍 除錯輸出 ==========
+    # ========== 除錯輸出 ==========
     print(f"\n【除錯資訊】")
     print(f"  總樣本數: {len(sample_columns)}")
 
-     # ========== Step 1: 分離 QC 和真實樣本（改進版）==========
+    # ========== Step 1: 分離 QC 和真實樣本 ==========
     sample_types = {}
     for sample in sample_columns:
         info_row = col_to_info_row.get(sample) if col_to_info_row else None
@@ -192,44 +198,36 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns, refe
                     sample_types[sample] = 'QC'
                 else:
                     sample_types[sample] = 'UNKNOWN'
-    
+
     qc_indices = [i for i, s in enumerate(sample_columns) if sample_types[s] == 'QC']
     real_indices = [i for i, s in enumerate(sample_columns) if sample_types[s] != 'QC']
-    
-    # 🔍 除錯：顯示樣本類型分佈
-    print(f"  樣本類型統計:")
+
+    # 除錯：顯示樣本類型分佈
     from collections import Counter
     type_counts = Counter(sample_types.values())
+    print(f"  樣本類型統計:")
     for stype, count in type_counts.items():
         print(f"    - {stype}: {count}")
-    
-    # 🔍 除錯：顯示 QC 樣本名稱
-    qc_samples = [s for s, t in sample_types.items() if t == 'QC']
-    print(f"  QC 樣本列表: {qc_samples}")
-    
-    qc_indices = [i for i, s in enumerate(sample_columns) if sample_types[s] == 'QC']
-    real_indices = [i for i, s in enumerate(sample_columns) if sample_types[s] != 'QC']
-    
+
     qc_count = len(qc_indices)
     real_count = len(real_indices)
-    
+
     print(f"  樣本分類:")
     print(f"    - QC 樣本數量: {qc_count}")
     print(f"    - 真實樣本數量: {real_count}")
-    # ========== 除錯輸出結束 ==========
-    
+
     # ========== Step 2: 評估 QC 樣本質量 ==========
     qc_cv_median = np.nan
     reference_strategy = 'NONE'
-    
+
     if qc_count > 0:
         qc_data = data_matrix[:, qc_indices]
         qc_cv = calculate_rsd(qc_data)
         qc_cv_median = np.nanmedian(qc_cv)
-        
+
         print(f"  QC 質量評估:")
         print(f"    - QC 中位數 CV%: {qc_cv_median:.2f}%")
-        
+
         if qc_count >= VALIDATION_THRESHOLDS['min_qc_samples'] and qc_cv_median < CV_QUALITY_THRESHOLDS['acceptable']:
             reference_strategy = 'QC'
             print(f"    - ✓ QC 樣本質量良好，使用 QC 作為 PQN 參考")
@@ -238,80 +236,41 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns, refe
             print(f"    - ⚠ QC 樣本數量有限（{qc_count}），但仍使用 QC 作為參考")
         else:
             reference_strategy = 'ROBUST_MEDIAN'
-            print(f"    - ⚠ QC 樣本不足，使用穩健中位數作為參考")
+            print(f"    - ⚠ QC 樣本不足，使用全樣本中位數作為參考")
     else:
         reference_strategy = 'ROBUST_MEDIAN'
-        print(f"  ⚠ 無 QC 樣本，使用穩健中位數作為參考")
-    
-    # ========== Step 3: 肌酐校正（僅針對真實樣本）==========
-    print("\n  步驟1: Sample-specific Normalization (肌酐校正)")
-    
-    real_data = data_matrix[:, real_indices]
-    real_reference_values = reference_values[real_indices]
-    
-    # 過濾有效的參考值
-    valid_ref_mask = ~np.isnan(real_reference_values) & (real_reference_values > 0)
-    
-    if np.sum(valid_ref_mask) < len(real_reference_values) * 0.5:
-        print(f"    ⚠ 警告：有效肌酐值不足 50% ({np.sum(valid_ref_mask)}/{len(real_reference_values)})")
-    
-    # 肌酐校正
-    median_ref = np.nanmedian(real_reference_values[valid_ref_mask])
-    real_data_corrected = real_data.copy()
-    real_data_corrected[:, valid_ref_mask] = (real_data[:, valid_ref_mask] / 
-                                               real_reference_values[valid_ref_mask]) * median_ref
-    
-    print(f"    - 肌酐中位數: {median_ref:.2f}")
-    print(f"    - 肌酐範圍: {np.nanmin(real_reference_values):.2f} - {np.nanmax(real_reference_values):.2f}")
-    print(f"    - 校正樣本數: {np.sum(valid_ref_mask)}/{len(real_reference_values)}")
-    
-    # ========== Step 4: PQN 標準化 ==========
-    print("\n  步驟2: Probabilistic Quotient Normalization (PQN)")
-    
-    # 決定參考樣本
-    if reference_strategy == 'QC' or reference_strategy == 'QC_LIMITED':
-        # 使用 QC 樣本中位數
+        print(f"  ⚠ 無 QC 樣本，使用全樣本中位數作為參考")
+
+    # ========== Step 3: PQN 標準化 ==========
+    print("\n  Probabilistic Quotient Normalization (PQN)")
+
+    # 決定參考譜
+    if reference_strategy in ('QC', 'QC_LIMITED'):
         reference_sample = np.nanmedian(data_matrix[:, qc_indices], axis=1)
         print(f"    - 使用 QC 樣本中位數作為參考")
     else:
-        # 使用真實樣本的穩健中位數（排除極端 10%）
-        sorted_totals = np.argsort(np.nansum(real_data_corrected, axis=0))
-        n_exclude = max(1, int(len(sorted_totals) * 0.1))
-        robust_indices = sorted_totals[n_exclude:-n_exclude]
-        reference_sample = np.nanmedian(real_data_corrected[:, robust_indices], axis=1)
-        print(f"    - 使用穩健中位數作為參考（排除極端 {n_exclude*2} 個樣本）")
-    
-    # 4a. 真實樣本的 PQN
-    quotients_real = real_data_corrected / reference_sample[:, np.newaxis]
-    quotients_real = np.where(np.isfinite(quotients_real), quotients_real, np.nan)
-    normalization_factors_real = np.nanmedian(quotients_real, axis=0)
-    
-    real_data_final = real_data_corrected / normalization_factors_real
-    
-    print(f"    - 真實樣本標準化因子範圍: {np.nanmin(normalization_factors_real):.4f} - {np.nanmax(normalization_factors_real):.4f}")
-    
-    # 4b. QC 樣本的 PQN（不做肌酐校正）
-    normalization_factors_qc = None
-    qc_data_final = None
-    
+        # 使用所有樣本的中位數譜作為參考
+        reference_sample = np.nanmedian(data_matrix, axis=1)
+        print(f"    - 使用全樣本中位數譜作為參考")
+
+    # 對所有樣本計算 quotient 並正規化
+    quotients = data_matrix / reference_sample[:, np.newaxis]
+    quotients = np.where(np.isfinite(quotients), quotients, np.nan)
+    normalization_factors = np.nanmedian(quotients, axis=0)
+
+    final_data = data_matrix / normalization_factors
+
+    # 分別提取 real / QC 的因子用於報告
+    normalization_factors_real = normalization_factors[real_indices] if real_count > 0 else np.array([])
+    normalization_factors_qc = normalization_factors[qc_indices] if qc_count > 0 else None
+
+    if real_count > 0:
+        print(f"    - 真實樣本標準化因子範圍: {np.nanmin(normalization_factors_real):.4f} - {np.nanmax(normalization_factors_real):.4f}")
     if qc_count > 0:
-        qc_data = data_matrix[:, qc_indices]
-        quotients_qc = qc_data / reference_sample[:, np.newaxis]
-        quotients_qc = np.where(np.isfinite(quotients_qc), quotients_qc, np.nan)
-        normalization_factors_qc = np.nanmedian(quotients_qc, axis=0)
-        
-        qc_data_final = qc_data / normalization_factors_qc
-        
         print(f"    - QC 樣本標準化因子範圍: {np.nanmin(normalization_factors_qc):.4f} - {np.nanmax(normalization_factors_qc):.4f}")
-    
-    # ========== Step 5: 合併結果 ==========
-    final_data = np.full_like(data_matrix, np.nan)
-    final_data[:, real_indices] = real_data_final
-    if qc_count > 0:
-        final_data[:, qc_indices] = qc_data_final
-    
-    print("  ✓ 混合標準化完成")
-    
+
+    print("  ✓ PQN 標準化完成")
+
     # 返回資訊
     pqn_info = {
         'reference_strategy': reference_strategy,
@@ -320,10 +279,8 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns, refe
         'real_count': real_count,
         'normalization_factors_real': normalization_factors_real,
         'normalization_factors_qc': normalization_factors_qc,
-        'creatinine_median': median_ref,
-        'creatinine_valid_count': np.sum(valid_ref_mask)
     }
-    
+
     return final_data, pqn_info
 
 def get_all_sample_columns(df, sample_info_df):
@@ -1804,10 +1761,6 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
                 report.append("QC 質量評估: ✓ 良好")
             else:
                 report.append("QC 質量評估: ⚠ 需改進")
-        
-        report.append(f"肌酐校正:")
-        report.append(f"  - 肌酐中位數: {pqn_info['creatinine_median']:.2f}")
-        report.append(f"  - 有效樣本數: {pqn_info['creatinine_valid_count']}/{pqn_info['real_count']}")
     
     # ========== CV% 評估 ==========
     report.append("")
@@ -1986,15 +1939,12 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
         
         if not np.isnan(pqn_info['qc_cv']) and pqn_info['qc_cv'] > 25:
             report.append("⚠ 建議：QC CV% 較高，可能需要檢查實驗技術重現性")
-        
-        if pqn_info['creatinine_valid_count'] < pqn_info['real_count'] * 0.9:
-            report.append(f"⚠ 注意：有 {pqn_info['real_count'] - pqn_info['creatinine_valid_count']} 個樣本缺少有效肌酐值")
 
     # 組間差異相關建議
     if group_diff_results:
         if group_diff_results['severe_reduction'] > 0:
             report.append(f"⚠ 注意：有 {group_diff_results['severe_reduction']} 個特徵的組間差異顯著減弱")
-            report.append("  建議：檢查這些特徵是否與肌酐代謝相關，可能需要特別處理")
+            report.append("  建議：檢查這些特徵是否受標準化影響過大，可能需要特別處理")
         
         if group_diff_results['avg_preservation'] < 80:
             report.append("⚠ 建議：組間差異保留率較低，建議檢查標準化方法是否適合您的數據")
@@ -2080,48 +2030,9 @@ def find_sample_info_sheet(sheets):
             return sheets[name], name
     
     for sheet_name, df in sheets.items():
-        if any(col for col in df.columns if 'normalization' in str(col).lower() or 'creatinine' in str(col).lower()):
+        if any(col for col in df.columns if 'normalization' in str(col).lower() or 'sample_type' in str(col).lower()):
             return df, sheet_name
     
-    return None, None
-
-def find_correction_column(df):
-    """在樣本資訊工作表尋找可用於校正的欄位"""
-    if df.shape[1] < 6:
-        print("警告：樣本資訊工作表欄位不足")
-        return None, None
-    
-    # 預設使用第 F 欄（索引 5）
-    correction_col = df.columns[5]
-    valid_values = df[correction_col].dropna()
-    
-    if len(valid_values) > 0:
-        # 檢查是否為數值
-        numeric_count = valid_values.apply(lambda x: str(x).replace('.','').replace('-','').replace('e','').replace('E','').replace('+','').isnumeric()).sum()
-        if numeric_count / len(valid_values) > 0.5:
-            if 'creatinine' in str(correction_col).lower():
-                correction_type = 'Creatinine'
-            else:
-                correction_type = 'Normalization_adduct'
-            
-            print(f"✓ 偵測到校正欄位: {correction_col} (類型: {correction_type})")
-            return correction_col, correction_type
-    
-    # 如果第 F 欄不可用，嘗試找其他可用的數值欄位
-    for col in df.columns[6:]:
-        valid_values = df[col].dropna()
-        if len(valid_values) > 0:
-            numeric_count = valid_values.apply(lambda x: str(x).replace('.','').replace('-','').replace('e','').replace('E','').replace('+','').isnumeric()).sum()
-            if numeric_count / len(valid_values) > 0.5:
-                if 'creatinine' in str(col).lower():
-                    correction_type = 'Creatinine'
-                else:
-                    correction_type = 'Normalization_adduct'
-                
-                print(f"✓ 偵測到校正欄位: {col} (類型: {correction_type})")
-                return col, correction_type
-    
-    print("錯誤：找不到可用於校正的欄位")
     return None, None
 
 def clean_dataframe_for_excel(df):
@@ -2150,24 +2061,24 @@ from metabolomics.utils.excel_format import copy_cell_style  # noqa: E302
 
 # ==================== 主要處理函數 ====================
 
-def perform_normalization(data_df, sample_info_df, correction_col, file_path, plots_dir=None, source_sheet_name=None):
+def perform_normalization(data_df, sample_info_df, file_path, plots_dir=None, source_sheet_name=None):
     """
-    執行 PQN + Sample-specific 混合標準化處理（增強版）
+    執行 PQN 標準化處理
     """
     print(f"\n" + "="*70)
-    print("開始執行標準化處理...")
+    print("開始執行 PQN 標準化處理...")
     print("="*70)
-    
-    method_name = "PQN_SampleSpecific"
-    
+
+    method_name = "PQN"
+
     # 獲取純樣本欄位（排除統計欄位）
-    sample_columns = get_all_sample_columns(data_df, sample_info_df)  # ← 改用新函數
+    sample_columns = get_all_sample_columns(data_df, sample_info_df)
     print(f"✓ 樣本數量（含QC）: {len(sample_columns)}")
-    
+
     if len(sample_columns) == 0:
         print("錯誤：未找到有效的樣本欄位")
         return None
-    
+
     # 準備數據矩陣 (特徵 x 樣本) - Vectorized (much faster than iterrows)
     feature_ids = data_df[data_df.columns[0]].tolist()
 
@@ -2175,53 +2086,20 @@ def perform_normalization(data_df, sample_info_df, correction_col, file_path, pl
     valid_sample_cols = [c for c in sample_columns if c in data_df.columns]
     data_matrix = data_df[valid_sample_cols].apply(pd.to_numeric, errors='coerce').values
     print(f"✓ 數據矩陣形狀: {data_matrix.shape} (特徵 x 樣本)")
-    
+
     # 保存原始數據用於對比
     original_data = data_matrix.copy()
-    
-    # 獲取參考值（肌酐/DNA 濃度）
+
+    # 建立樣本名稱映射
     col_to_info_row = build_sample_info_mapping(sample_columns, sample_info_df)
-    print(f"  名稱匹配: 標準化優先匹配 {len(col_to_info_row)}/{len(sample_columns)}")
+    print(f"  名稱匹配: {len(col_to_info_row)}/{len(sample_columns)}")
 
-    reference_values = []
-    for sample in sample_columns:
-        info_row = col_to_info_row.get(sample)
-        if info_row is not None and pd.notna(info_row.get(correction_col)):
-            try:
-                ref_val = float(info_row[correction_col])
-                if ref_val > 0:
-                    reference_values.append(ref_val)
-                else:
-                    reference_values.append(np.nan)
-            except (ValueError, TypeError, KeyError):
-                reference_values.append(np.nan)
-        else:
-            reference_values.append(np.nan)
-
-    reference_values = np.array(reference_values)
-
-    # 計算有效參考值（排除 QC 樣本，因為 QC 不需要濃度校正）
-    non_qc_mask = np.array([
-        not (str(col_to_info_row[s].get('Sample_Type', '')).upper() == 'QC')
-        if s in col_to_info_row else
-        not any(kw in str(s).upper() for kw in ['QC', 'POOLED'])
-        for s in sample_columns
-    ])
-    non_qc_count = np.sum(non_qc_mask)
-    valid_count = np.sum(~np.isnan(reference_values) & (reference_values > 0))
-    print(f"✓ 有效參考值數量: {valid_count}/{non_qc_count} (排除 {len(sample_columns) - non_qc_count} 個 QC 樣本)")
-
-    if non_qc_count > 0 and valid_count < non_qc_count * 0.3:
-        print("警告：有效參考值不足30%")
-        return None
-    
-    # ========== 🔧 關鍵修正：正確呼叫 enhanced_pqn_normalization ==========
+    # 執行 PQN 標準化
     normalized_data, pqn_info = enhanced_pqn_normalization(
-        data_matrix,           # 完整的數據矩陣
-        sample_info_df,        # 樣本資訊表
-        sample_columns,        # 樣本名稱列表
-        reference_values,      # 參考值（肌酐濃度）
-        col_to_info_row=col_to_info_row  # 名稱映射
+        data_matrix,
+        sample_info_df,
+        sample_columns,
+        col_to_info_row=col_to_info_row
     )
     
     print(f"✓ 標準化完成")
@@ -2515,11 +2393,9 @@ def main(input_file=None, session_dir=None):
         - dict: 執行成功，包含統計資訊
     """
     print("=" * 80)
-    print("  代謝體學標準化程式 v3.0")
-    print("  標準化方法: PQN + Sample-specific (肌酐校正)")
-    print("  - 步驟1: Sample-specific Normalization (肌酐校正)")
-    print("  - 步驟2: Probabilistic Quotient Normalization (PQN)")
-    print("  - 視覺化評估工具（密度圖、盒鬚圖、PCA、CV%分佈等）")
+    print("  代謝體學標準化程式 v4.0")
+    print("  標準化方法: Probabilistic Quotient Normalization (PQN)")
+    print("  - 視覺化評估工具（盒鬚圖、PCA、CV%分佈、RLE 等）")
     print("=" * 80)
     
     # 🔧 關鍵修正：如果沒有提供 input_file，則顯示對話框
@@ -2556,13 +2432,7 @@ def main(input_file=None, session_dir=None):
         raise Exception("找不到樣本資訊工作表")
     
     print(f"✓ 使用樣本資訊工作表: {sample_info_sheet_name}")
-    
-    # 尋找校正欄位（肌酐濃度）
-    correction_col, correction_type = find_correction_column(sample_info_df)
-    if not correction_col:
-        print("❌ 錯誤：找不到校正用的欄位")
-        raise Exception("找不到校正欄位")
-    
+
     # 確定要標準化的資料工作表
     data_df, data_sheet_name = determine_correction_sheet(sheets)
     if data_df is None:
@@ -2589,7 +2459,6 @@ def main(input_file=None, session_dir=None):
     result = perform_normalization(
         data_df,
         sample_info_df,
-        correction_col,
         input_file,
         plots_dir=_session_plots,
         source_sheet_name=data_sheet_name,

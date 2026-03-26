@@ -23,11 +23,11 @@ class TestOutputRootInference:
         plots_dir = file_io.build_plots_dir(
             "Normalization_Figures",
             timestamp="20260307_010203",
-            session_prefix="PQN_SampleSpecific",
+            session_prefix="PQN",
             input_file=str(input_file),
         )
 
-        expected = upstream_output / "Normalization_Figures" / "PQN_SampleSpecific_20260307_010203"
+        expected = upstream_output / "Normalization_Figures" / "PQN_20260307_010203"
         assert plots_dir == expected
         assert plots_dir.exists()
 
