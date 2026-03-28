@@ -9,7 +9,9 @@ These tests verify:
 """
 import pytest
 import os
+import warnings
 from importlib import import_module
+import numpy as np
 import pandas as pd
 
 
@@ -122,6 +124,78 @@ class TestConcentrationNormHelpers:
         assert mapping["NormalBC2257_DNA"]["Sample_Type"] == "Normal"
         assert mapping["Breast_Cancer_Tissue_pooled_QC_1"]["Sample_Type"] == "QC"
 
+    def test_clean_dataframe_for_excel_avoids_future_warnings_and_preserves_mixed_columns(
+        self,
+        conc_norm_module,
+    ):
+        df = pd.DataFrame(
+            {
+                "Mz/RT": ["Sample_Type", "100.1/1.0", "200.2/2.0"],
+                "Sample_A": ["QC", 123.4, "=SUM(A1:A2)"],
+                "Sample_B": ["Exposure", "#REF!", 456.7],
+                "Metric": [None, 3.2, 4.1],
+            }
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", FutureWarning)
+            cleaned = conc_norm_module.clean_dataframe_for_excel(df)
+
+        assert cleaned.loc[2, "Sample_A"] == ""
+        assert cleaned.loc[1, "Sample_B"] == ""
+        assert cleaned.loc[0, "Sample_A"] == "QC"
+        assert cleaned.loc[0, "Sample_B"] == "Exposure"
+        assert cleaned["Metric"].dtype.kind in {"f", "i"}
+        assert cleaned.loc[1, "Metric"] == pytest.approx(3.2)
+
+    def test_sample_specific_normalization_handles_pathological_reference_values(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "Sample_A", "Sample_B", "Sample_C"],
+                "Sample_Type": ["QC", "Exposure", "Control", "Exposure"],
+                "Batch": ["A", "A", "B", "B"],
+            }
+        )
+        sample_columns = ["QC_1", "Sample_A", "Sample_B", "Sample_C"]
+        data_matrix = np.array(
+            [
+                [100.0, 200.0, 300.0, 400.0],
+                [50.0, 100.0, 150.0, 200.0],
+            ]
+        )
+
+        corrected, info = conc_norm_module.sample_specific_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            np.array([np.nan, 50.0, 0.0, 5000.0], dtype=float),
+            correction_col_name="Creatinine_mg_dL",
+        )
+
+        assert np.allclose(corrected[:, 0], data_matrix[:, 0], equal_nan=True)
+        assert corrected[0, 1] == pytest.approx((200.0 / 50.0) * 2525.0)
+        assert corrected[1, 1] == pytest.approx((100.0 / 50.0) * 2525.0)
+        assert np.allclose(corrected[:, 2], data_matrix[:, 2], equal_nan=True)
+        assert corrected[0, 3] == pytest.approx((400.0 / 5000.0) * 2525.0)
+        assert corrected[1, 3] == pytest.approx((200.0 / 5000.0) * 2525.0)
+        assert info["ref_valid_count"] == 2
+        assert info["ref_median"] == pytest.approx(2525.0)
+
+        corrected_no_valid, info_no_valid = conc_norm_module.sample_specific_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            np.array([np.nan, 0.0, np.nan, -5.0], dtype=float),
+            correction_col_name="Creatinine_mg_dL",
+        )
+
+        assert np.allclose(corrected_no_valid, data_matrix, equal_nan=True)
+        assert info_no_valid["ref_valid_count"] == 0
+        assert np.isnan(info_no_valid["ref_median"])
+
 
 
 class TestConcentrationNormOutput:
@@ -203,10 +277,10 @@ class TestConcentrationNormOutput:
 
         plot_files = os.listdir(plots_dir)
 
-        # Step4 generates: Boxplot, CV, RLE, Density, Dratio (no PCA — NaN incompatible)
-        assert any("Boxplot" in name for name in plot_files), f"Missing Boxplot in {plot_files}"
+        # Step4 generates: CV, RLE (with Total Intensity), Density, Dratio
         assert any("CV" in name for name in plot_files), f"Missing CV in {plot_files}"
         assert any("RLE" in name for name in plot_files), f"Missing RLE in {plot_files}"
+        assert not any("Boxplot" in name for name in plot_files), f"Unexpected Boxplot in {plot_files}"
         assert not any("PCA" in name or "pca" in name.lower() for name in plot_files), f"Unexpected PCA in {plot_files}"
         # Scatter plot only for SampleSpecific mode — should NOT appear in default PQN
         assert not any("Scatter" in name for name in plot_files), f"Unexpected Scatter in PQN mode: {plot_files}"

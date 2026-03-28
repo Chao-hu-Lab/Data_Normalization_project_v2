@@ -6,12 +6,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 import statsmodels.api as sm
 from scipy.stats import levene, kendalltau, wilcoxon
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-from scipy.stats import chi2
-import scipy.stats as stats
 import matplotlib.pyplot as plt
-from matplotlib.patches import Ellipse
 import warnings
 from collections import Counter
 
@@ -19,12 +14,7 @@ warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
 from metabolomics.utils.data_helpers import get_valid_values
-from metabolomics.utils.plotting import (
-    setup_matplotlib,
-    plot_pca_comparison_qc_style,
-    build_pca_comparison_filename,
-    build_pca_comparison_suptitle,
-)
+from metabolomics.utils.plotting import setup_matplotlib
 from metabolomics.utils.constants import (
     NON_SAMPLE_COLUMNS,
     SHEET_NAMES,
@@ -48,10 +38,6 @@ setup_matplotlib()
 # Sheet name constant
 QC_LOWESS_ADVANCED_SHEET = SHEET_NAMES.get('qc_lowess_advanced', "QC_LOWESS_Advanced Statistics")
 RED_FONT_RGBS = {'FFFF0000', 'FF0000'}
-STEP2_SOURCE_LABELS = {
-    SHEET_NAMES['raw_intensity']: 'RawIntensity',
-    SHEET_NAMES['istd_correction']: 'ISTD Correction result',
-}
 
 # For backward compatibility, alias the old constant names
 DEFAULT_NON_SAMPLE_COLUMNS = NON_SAMPLE_COLUMNS
@@ -119,9 +105,6 @@ def exclude_fallback_istd_rows(data_df, file_path, source_sheet_name):
     return filtered_df
 
 
-def get_step2_source_label(source_sheet_name):
-    """Return a stable PCA/plot label for the selected Step 2 input sheet."""
-    return STEP2_SOURCE_LABELS.get(source_sheet_name, str(source_sheet_name))
 
 
 def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensities, debug_flag=None, global_qc_median=None):
@@ -1188,7 +1171,108 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
     return cv_results_df
 
 
-# ========== ✅ 修正：P 值分佈圖（只繪製 Levene's test）==========
+def plot_qc_cv_overview(cv_results_df, decision_stats, plots_dir, timestamp):
+    """繪製 QC CV% 校正效果總覽圖（三面板）。
+
+    Panel 1: Before/After QC CV% scatter（對角線以下 = 改善）
+    Panel 2: CV% Improvement 分佈直方圖
+    Panel 3: Per-batch correction success rate bar chart
+    """
+    if cv_results_df is None or cv_results_df.empty:
+        print("  ⚠ cv_results_df 為空，跳過 QC CV Overview")
+        return
+
+    cv_before = cv_results_df['Original_QC_CV%'].dropna().values
+    cv_after = cv_results_df['Corrected_QC_CV%'].dropna().values
+    cv_improvement = cv_results_df['CV_Improvement%'].dropna().values
+
+    if len(cv_before) < 3:
+        print("  ⚠ 有效特徵不足，跳過 QC CV Overview")
+        return
+
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 6.5))
+
+    # ===== Panel 1: Before vs After scatter =====
+    min_len = min(len(cv_before), len(cv_after))
+    cv_b, cv_a = cv_before[:min_len], cv_after[:min_len]
+
+    ax1.scatter(cv_b, cv_a, alpha=0.5, s=25, color='steelblue', edgecolors='none')
+    lim = max(np.max(cv_b), np.max(cv_a)) * 1.05
+    ax1.plot([0, lim], [0, lim], 'r--', linewidth=1.5, label='No change')
+    ax1.set_xlim(0, lim)
+    ax1.set_ylim(0, lim)
+    ax1.set_xlabel('QC CV% Before LOWESS', fontsize=11, fontweight='bold')
+    ax1.set_ylabel('QC CV% After LOWESS', fontsize=11, fontweight='bold')
+    ax1.set_title('Feature-wise QC CV% Change', fontsize=13, fontweight='bold')
+    improved = np.sum(cv_a < cv_b)
+    ax1.text(
+        0.05, 0.95,
+        f'Improved: {improved}/{min_len} ({improved/min_len*100:.0f}%)',
+        transform=ax1.transAxes, fontsize=10, va='top',
+        bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8),
+    )
+    ax1.legend(fontsize=9, loc='lower right')
+    ax1.grid(True, alpha=0.3)
+    ax1.set_aspect('equal', adjustable='box')
+
+    # ===== Panel 2: Improvement histogram =====
+    ax2.hist(cv_improvement, bins=30, color='#4C72B0', edgecolor='black', alpha=0.75)
+    median_imp = np.median(cv_improvement)
+    ax2.axvline(x=median_imp, color='red', linestyle='--', linewidth=2,
+                label=f'Median: {median_imp:.1f}%')
+    ax2.axvline(x=0, color='gray', linestyle=':', linewidth=1.5, label='No change')
+    ax2.set_xlabel('CV% Improvement (Before − After)', fontsize=11, fontweight='bold')
+    ax2.set_ylabel('Frequency', fontsize=11, fontweight='bold')
+    ax2.set_title('QC CV% Improvement Distribution', fontsize=13, fontweight='bold')
+    ax2.legend(fontsize=9)
+    ax2.grid(True, alpha=0.3, axis='y')
+
+    # ===== Panel 3: Per-batch correction rate =====
+    per_batch = decision_stats.get('per_batch', {})
+    if per_batch:
+        batch_names = sorted(per_batch.keys())
+        success_counts = []
+        other_counts = []
+        for bn in batch_names:
+            stats = per_batch[bn]
+            total = sum(stats.values())
+            s = stats.get('success', 0)
+            success_counts.append(s)
+            other_counts.append(total - s)
+
+        x = np.arange(len(batch_names))
+        bar_w = 0.5
+        ax3.bar(x, success_counts, bar_w, label='Success', color='#2ca02c', alpha=0.85)
+        ax3.bar(x, other_counts, bar_w, bottom=success_counts,
+                label='Insufficient / Skipped', color='#d62728', alpha=0.6)
+
+        for i, (s, o) in enumerate(zip(success_counts, other_counts)):
+            total = s + o
+            if total > 0:
+                ax3.text(i, total + 0.5, f'{s/total*100:.0f}%', ha='center', fontsize=10, fontweight='bold')
+
+        ax3.set_xticks(x)
+        ax3.set_xticklabels([f'Batch {bn}' for bn in batch_names], fontsize=10)
+        ax3.set_ylabel('Feature Count', fontsize=11, fontweight='bold')
+        ax3.set_title('Per-Batch Correction Success Rate', fontsize=13, fontweight='bold')
+        ax3.legend(fontsize=9)
+        ax3.grid(True, alpha=0.3, axis='y')
+    else:
+        ax3.text(0.5, 0.5, 'No per-batch data available',
+                 ha='center', va='center', transform=ax3.transAxes, fontsize=12)
+        ax3.set_title('Per-Batch Correction Rate', fontsize=13, fontweight='bold')
+
+    plt.tight_layout()
+
+    os.makedirs(plots_dir, exist_ok=True)
+    output_path = os.path.join(plots_dir, f'Step2_QC_CV_Overview_{timestamp}.png')
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print(f"  ✓ QC CV Overview 圖已儲存")
+
+
+# ========== P 值分佈圖（只繪製 Levene's test，目前停用）==========
 def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
     """繪製 Levene's test p 值分佈圖（含防呆檢查）"""
     try:
@@ -1783,9 +1867,13 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         print(f"  - 整體評估: Wilcoxon test 已在終端機顯示")
         print(f"\n{'='*70}\n")
         
-        # P 值分佈圖 (disabled: provides limited diagnostic value)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-        # plot_pvalue_distribution(cv_results_df, plots_dir, timestamp)
+
+        # QC CV% 校正效果總覽圖
+        try:
+            plot_qc_cv_overview(cv_results_df, decision_stats, plots_dir, timestamp)
+        except Exception as e:
+            print(f"  ⚠ QC CV Overview 圖生成失敗: {e}")
 
         # LOWESS 擬合趨勢圖（僅限 debug 特徵）
         if trend_plot_data:
@@ -1800,330 +1888,6 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         return False
 
 
-# ========== Hotelling T² 異常值檢測 ==========
-def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
-    """
-    使用 Hotelling T² 檢測 QC 樣本中的異常值
-    
-    ✅ 正確邏輯：計算每個 QC 樣本與 QC 群組中心的偏離
-    """
-    n_qc, p = qc_scores.shape
-    
-    if n_qc < 3:
-        print(f"   ⚠️ QC 樣本數不足 ({n_qc} < 3)，無法進行異常值檢測")
-        return np.zeros(n_qc), 0, np.zeros(n_qc, dtype=bool)
-    
-    # ✅ 只使用 QC 群組的統計量
-    qc_mean = np.mean(qc_scores, axis=0)
-    qc_cov = np.cov(qc_scores, rowvar=False)
-    
-    # 正則化協方差矩陣
-    qc_cov_reg = qc_cov + np.eye(p) * 1e-6
-    
-    try:
-        qc_cov_inv = np.linalg.inv(qc_cov_reg)
-    except np.linalg.LinAlgError:
-        print("   ⚠️ 警告：QC 協方差矩陣奇異，使用偽逆矩陣")
-        qc_cov_inv = np.linalg.pinv(qc_cov_reg)
-    
-    # ✅ 計算每個 QC 樣本與 QC 中心的 Hotelling T² 值
-    t2_values = np.zeros(n_qc)
-    for i in range(n_qc):
-        diff = qc_scores[i] - qc_mean
-        t2_values[i] = np.dot(np.dot(diff, qc_cov_inv), diff.T)
-    
-    # 計算閾值
-    if n_qc - p - 1 > 0:
-        f_critical = stats.f.ppf(1 - alpha, p, n_qc - p - 1)
-        threshold = (p * (n_qc + 1) * (n_qc - 1)) / (n_qc * (n_qc - p - 1)) * f_critical
-    else:
-        threshold = chi2.ppf(1 - alpha, p)
-    
-    outliers = t2_values > threshold
-    
-    return t2_values, threshold, outliers
-
-
-# ========== Hotelling T² 橢圓繪製 ==========
-def draw_hotelling_t2_ellipse(ax, scores, alpha=0.05, label=None, edgecolor='black', linestyle='-', linewidth=2.5):
-    """在 2D PCA 圖上繪製 Hotelling T² 橢圓"""
-    n, p = scores.shape
-    
-    if n < 3:
-        print(f"   ⚠️ 樣本數不足 ({n})，無法繪製 Hotelling T² 橢圓")
-        return None
-    
-    mean = np.mean(scores, axis=0)
-    cov = np.cov(scores, rowvar=False)
-    
-    eigenvalues, eigenvectors = np.linalg.eigh(cov)
-    
-    idx = eigenvalues.argsort()[::-1]
-    eigenvalues = eigenvalues[idx]
-    eigenvectors = eigenvectors[:, idx]
-    
-    eigenvalues = np.maximum(eigenvalues, 1e-10)
-    
-    f_critical = stats.f.ppf(1 - alpha, p, n - p)
-    scale_factor = np.sqrt((p * (n - 1) * (n + 1)) / (n * (n - p)) * f_critical)
-    
-    width = 2 * scale_factor * np.sqrt(eigenvalues[0])
-    height = 2 * scale_factor * np.sqrt(eigenvalues[1])
-    
-    angle = np.degrees(np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0]))
-    
-    ellipse = Ellipse(mean, width, height, angle=angle,
-                     facecolor='none', edgecolor=edgecolor,
-                     linewidth=linewidth, linestyle=linestyle, label=label)
-    ax.add_patch(ellipse)
-    
-    t = np.linspace(0, 2*np.pi, 100)
-    ellipse_x = (width/2) * np.cos(t)
-    ellipse_y = (height/2) * np.sin(t)
-    
-    cos_angle = np.cos(np.radians(angle))
-    sin_angle = np.sin(np.radians(angle))
-    x_rot = ellipse_x * cos_angle - ellipse_y * sin_angle + mean[0]
-    y_rot = ellipse_x * sin_angle + ellipse_y * cos_angle + mean[1]
-    
-    bounds = (np.min(x_rot), np.max(x_rot), np.min(y_rot), np.max(y_rot))
-    
-    return bounds
-
-
-# ========== PCA 分析 ==========
-def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
-                         plots_dir=None, grouping='batch'):
-    """繪製與 Batch_Effect 相同風格的 PCA 比較圖 (ISTD vs QC-LOWESS)。"""
-    try:
-        # ===== 防呆1: 輸入數據有效性檢查 =====
-        if istd_df is None or istd_df.empty:
-            print(f"❌ 錯誤：ISTD_Correction 數據為空，無法進行 PCA 分析")
-            return
-
-        if lowess_df is None or lowess_df.empty:
-            print(f"❌ 錯誤：LOWESS 校正結果為空，無法進行 PCA 分析")
-            return
-
-        if sample_info_df is None or sample_info_df.empty:
-            print(f"❌ 錯誤：SampleInfo 數據為空，無法進行 PCA 分析")
-            return
-
-        if not sample_columns or len(sample_columns) == 0:
-            print(f"❌ 錯誤：樣本欄位為空，無法進行 PCA 分析")
-            return
-        # ===== 防呆2: 輸出目錄設置和檢查 =====
-        if plots_dir is None:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            base_dir = os.path.join(script_dir, "output", "QC_LOWESS_plots")
-            os.makedirs(base_dir, exist_ok=True)
-            plots_dir = os.path.join(base_dir, f"QC_LOWESS_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-
-        try:
-            os.makedirs(plots_dir, exist_ok=True)
-        except Exception as e:
-            print(f"❌ 錯誤：無法創建輸出目錄: {e}")
-            return
-
-        if not os.access(plots_dir, os.W_OK):
-            print(f"❌ 錯誤：沒有寫入權限到目錄: {plots_dir}")
-            return
-
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-        sample_info_norm = sample_info_df.copy()
-        sample_info_norm['_norm_name'] = sample_info_norm['Sample_Name'].map(normalize_sample_name)
-        sample_info_norm = sample_info_norm[sample_info_norm['_norm_name'].astype(bool)]
-        sample_meta = sample_info_norm.drop_duplicates('_norm_name').set_index('_norm_name')
-
-        sample_columns_attr = istd_df.attrs.get('sample_columns')
-        if not sample_columns_attr:
-            sample_columns_attr, _ = identify_sample_columns(istd_df, sample_info_df)
-
-        sample_columns_clean = [col for col in sample_columns_attr
-                                if col in istd_df.columns and col in lowess_df.columns]
-        
-        print(f"\n📊 PCA 數據準備:")
-        print(f"   - 用於 PCA 的樣本數: {len(sample_columns_clean)}")
-        
-        if len(sample_columns_clean) < 3:
-            print("❌ 錯誤：可用樣本數不足 (<3)，無法進行 PCA 分析")
-            return
-
-        # 識別樣本類型與批次（使用 normalize_sample_type 統一分類）
-        qc_columns = []
-        control_columns = []
-        exposed_columns = []
-        sample_batches = {}
-        sample_type_map = {}
-
-        for col in sample_columns_clean:
-            meta_key = normalize_sample_name(col)
-            if meta_key in sample_meta.index:
-                raw_type = str(sample_meta.loc[meta_key].get('Sample_Type', 'Unknown'))
-                batch_value = str(sample_meta.loc[meta_key].get('Batch', 'Unknown'))
-            else:
-                raw_type = 'Unknown'
-                batch_value = 'Unknown'
-
-            norm_type = normalize_sample_type(raw_type)
-            sample_type_map[col] = norm_type
-            sample_batches[col] = batch_value
-
-            if norm_type == 'QC':
-                qc_columns.append(col)
-            elif norm_type == 'Exposure':
-                exposed_columns.append(col)
-            elif norm_type in ('Control', 'Normal'):
-                control_columns.append(col)
-        
-
-        
-        print(f"\n📋 樣本分類:")
-        print(f"   - QC: {len(qc_columns)}")
-        print(f"   - Control: {len(control_columns)}")
-        print(f"   - Exposed: {len(exposed_columns)}")
-
-        if len(qc_columns) < 3:
-            print("⚠️ 警告：QC 樣本不足 (<3)，跳過 PCA 分析")
-            return
-
-        # 準備數據矩陣
-        def prepare_data_matrix(df, columns):
-            data_matrix = df[columns].T.values
-            data_matrix = np.where(np.isnan(data_matrix), 0, data_matrix)
-            data_matrix = np.where(np.isinf(data_matrix), 0, data_matrix)
-            data_matrix = np.where(data_matrix < 0, 0, data_matrix)
-            non_zero_features = np.any(data_matrix != 0, axis=0)
-            data_matrix = data_matrix[:, non_zero_features]
-            data_matrix = np.log2(data_matrix + 1)
-            return data_matrix
-
-        istd_matrix = prepare_data_matrix(istd_df, sample_columns_clean)
-        lowess_matrix = prepare_data_matrix(lowess_df, sample_columns_clean)
-        
-        if istd_matrix.shape[1] < 2 or lowess_matrix.shape[1] < 2:
-            print("❌ 錯誤：有效特徵數不足 (<2)，無法進行 PCA 分析")
-            return
-
-        # PCA
-        scaler_istd = StandardScaler()
-        scaler_lowess = StandardScaler()
-        
-        istd_scaled = scaler_istd.fit_transform(istd_matrix)
-        lowess_scaled = scaler_lowess.fit_transform(lowess_matrix)
-
-        pca_istd = PCA(n_components=2)
-        pca_lowess = PCA(n_components=2)
-        
-        scores_istd = pca_istd.fit_transform(istd_scaled)
-        scores_lowess = pca_lowess.fit_transform(lowess_scaled)
-
-        var_istd = pca_istd.explained_variance_ratio_
-        var_lowess = pca_lowess.explained_variance_ratio_
-
-        # Hotelling T² 異常值檢測
-        source_sheet_name = istd_df.attrs.get('source_sheet_name', SHEET_NAMES['istd_correction'])
-        source_label = get_step2_source_label(source_sheet_name)
-        result_label = 'QC LOWESS result'
-        qc_indices = [i for i, col in enumerate(sample_columns_clean) if col in qc_columns]
-        qc_scores_istd = scores_istd[qc_indices]
-        qc_scores_lowess = scores_lowess[qc_indices]
-
-        t2_istd, t2_threshold_istd, outliers_istd = calculate_hotelling_t2_outliers(
-            qc_scores_istd, scores_istd, alpha=0.05
-        )
-        t2_lowess, t2_threshold_lowess, outliers_lowess = calculate_hotelling_t2_outliers(
-            qc_scores_lowess, scores_lowess, alpha=0.05
-        )
-
-        qc_outlier_map_istd = {qc_columns[i]: bool(outliers_istd[i]) for i in range(len(qc_columns))}
-        qc_outlier_map_lowess = {qc_columns[i]: bool(outliers_lowess[i]) for i in range(len(qc_columns))}
-
-        print("\n🔍 Hotelling T² 異常值檢測：")
-        print(f"   {source_label}: {np.sum(outliers_istd)}/{len(qc_columns)} QC 被標記為異常")
-        print(f"   QC-LOWESS: {np.sum(outliers_lowess)}/{len(qc_columns)} QC 被標記為異常")
-
-        # 繪製 2D PCA 圖（統一為 QC 子程式風格的共用函式）
-        print("\n🎨 繪製 2D PCA Score Plot...")
-        grouping_tag = 'batch' if grouping == 'batch' else 'sample_type'
-        pca_plot_path = os.path.join(
-            plots_dir,
-            build_pca_comparison_filename(
-                "Step2",
-                source_label,
-                result_label,
-                grouping=grouping_tag,
-                timestamp=timestamp,
-            ),
-        )
-
-        sample_types = [sample_type_map.get(col, 'Unknown') for col in sample_columns_clean]
-        batch_memberships = [
-            tuple(parse_batch_labels(sample_batches.get(col, 'Unknown')) or ['Unknown'])
-            for col in sample_columns_clean
-        ]
-        unique_batch_labels = sorted({batch for memberships in batch_memberships for batch in memberships if batch})
-
-        if grouping == 'batch' and len(unique_batch_labels) < 2:
-            return None
-
-        qc_outliers_left = {name for name, is_out in qc_outlier_map_istd.items() if is_out}
-        qc_outliers_right = {name for name, is_out in qc_outlier_map_lowess.items() if is_out}
-
-        plot_pca_comparison_qc_style(
-            scores_istd,
-            scores_lowess,
-            var_istd,
-            var_lowess,
-            sample_columns_clean,
-            sample_types,
-            batch_memberships=batch_memberships,
-            grouping=grouping_tag,
-            suptitle=build_pca_comparison_suptitle(source_label, result_label, grouping=grouping_tag),
-            left_title=source_label,
-            right_title=result_label,
-            left_threshold_text=f'Hotelling T² Threshold: {t2_threshold_istd:.2f}',
-            right_threshold_text=f'Hotelling T² Threshold: {t2_threshold_lowess:.2f}',
-            qc_outlier_names_left=qc_outliers_left,
-            qc_outlier_names_right=qc_outliers_right,
-            output_path=pca_plot_path,
-            dpi=300,
-        )
-
-        # ===== 防呆3: 圖表保存檢查 =====
-        try:
-            print(f"   ✓ 2D PCA 圖表已保存 ({grouping_tag} 分類): {pca_plot_path}")
-
-            # 驗證文件是否成功保存
-            if not os.path.exists(pca_plot_path):
-                print(f"   ⚠️  警告：PCA 圖表保存失敗，找不到輸出檔案")
-            else:
-                plot_size = os.path.getsize(pca_plot_path)
-                if plot_size == 0:
-                    print(f"   ⚠️  警告：PCA 圖表大小為 0 bytes")
-                else:
-                    print(f"   ✓ PCA 圖表大小: {plot_size / 1024:.2f} KB")
-
-        except Exception as e:
-            print(f"   ⚠️  警告：保存 PCA 圖表時發生錯誤: {e}")
-
-        # 統計摘要
-        print(f"\n{'='*70}")
-        print(f"📊 PCA 分析完成")
-        print(f"{'='*70}")
-        print(f"  解釋變異量:")
-        print(f"    {source_label}: PC1={var_istd[0]*100:.2f}%, PC2={var_istd[1]*100:.2f}%")
-        print(f"    QC-LOWESS: PC1={var_lowess[0]*100:.2f}%, PC2={var_lowess[1]*100:.2f}%")
-        print(f"  QC outliers: {source_label}={np.sum(outliers_istd)}, QC-LOWESS={np.sum(outliers_lowess)}")
-        return pca_plot_path
-
-    except Exception as e:
-        print(f"❌ PCA 分析失敗: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-
 # ========== 主程式 ==========
 def main(input_file=None, session_dir=None):
     """主程式入口"""
@@ -2132,7 +1896,7 @@ def main(input_file=None, session_dir=None):
     if input_file is None:
         raise ValueError("input_file is required; GUI must provide the file path.")
 
-    output_dir = get_output_root()
+    output_dir = get_output_root(input_file=input_file)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
         print(f"\n✓ 已建立 'output' 資料夾: {output_dir}")
@@ -2167,9 +1931,10 @@ def main(input_file=None, session_dir=None):
         output_file = session_output_path(session_dir, step=2, prefix="QC_LOWESS")
         _plots_dir = session_plots_dir(session_dir)
     else:
-        output_file = build_output_path("QC_LOWESS", timestamp=timestamp)
+        output_file = build_output_path("QC_LOWESS", input_file=input_file, timestamp=timestamp)
         _plots_dir = build_plots_dir(
             "QC_LOWESS_plots",
+            input_file=input_file,
             timestamp=timestamp,
             session_prefix="QC_LOWESS"
         )
