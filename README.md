@@ -138,6 +138,8 @@ Sample test files are provided in `data/`:
 - `feature_matrix_control_exposed_AfterVBA.xlsx`
 - `feature_matrix_with_qc_AfterVBA.xlsx`
 
+For the current regression workflow and scenario-based smoke tests, see [docs/TESTING.md](docs/TESTING.md).
+
 ## Troubleshooting
 
 | Issue | Solution |
