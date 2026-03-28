@@ -305,8 +305,8 @@ class TestQCBatchScalingOutput:
         )
 
         plot_names = {path.name for path in Path(plots_dir).glob("*.png")}
-        assert "Step3_PCA_QC_LOWESS_result_vs_QC_Batch_Scaling_result_grouped_by_batch_20260323_120000.png" not in plot_names
-        assert "Step3_PCA_QC_LOWESS_result_vs_QC_Batch_Scaling_result_grouped_by_sample_type_20260323_120000.png" in plot_names
+        # PCA removed — no PCA plots should be generated
+        assert not any("PCA" in name for name in plot_names), f"Unexpected PCA plot: {plot_names}"
 
     def test_generate_pca_plots_also_writes_residual_analysis(self, tmp_path):
         module = load_qc_batch_scaling_module()
@@ -350,8 +350,8 @@ class TestQCBatchScalingOutput:
 
         plot_names = {path.name for path in Path(plots_dir).glob("*.png")}
 
-        assert "Step3_PCA_QC_LOWESS_result_vs_QC_Batch_Scaling_result_grouped_by_batch_20260308_130000.png" in plot_names
-        assert "Step3_PCA_QC_LOWESS_result_vs_QC_Batch_Scaling_result_grouped_by_sample_type_20260308_130000.png" in plot_names
+        # PCA removed — only residual analysis should be generated
+        assert not any("PCA" in name for name in plot_names), f"Unexpected PCA plot: {plot_names}"
         assert "Step3_Residual_Analysis_20260308_130000.png" in plot_names
 
         residual_plots = list(Path(plots_dir).glob("Step3_Residual_Analysis_*.png"))
@@ -397,7 +397,7 @@ class TestQCBatchScalingOutput:
         assert "QC_Batch_Scaling_plots" in plots_dir
 
         plot_files = sorted(Path(plots_dir).glob("*.png"))
-        assert len(plot_files) >= 2, "QC Batch Scaling should generate PCA PNG files"
+        assert len(plot_files) >= 1, "QC Batch Scaling should generate plot PNG files"
 
     @pytest.mark.slow
     @pytest.mark.integration
@@ -459,8 +459,7 @@ class TestQCBatchScalingOutput:
         module.main(input_file=step2_output)
 
         captured = capsys.readouterr().out
-        assert "開始執行 Step 3: QC Batch Scaling" in captured
-        assert "建立 batch membership" in captured
-        assert "執行 QC batch median scaling" in captured
-        assert "生成 PCA / residual 圖" in captured
-        assert "Step 3 完成" in captured
+        assert "QC Batch Scaling" in captured
+        assert "batch membership" in captured
+        assert "QC batch median scaling" in captured
+        assert "residual" in captured

@@ -74,7 +74,6 @@ def load_and_process_data(file_path):
         elif file_size < 1024:  # 小于 1KB
             print(f"警告：檔案大小僅 {file_size} bytes，可能不是有效的 Excel 檔案")
 
-        print(f"檔案大小: {file_size / 1024:.2f} KB")
 
         # ===== 防呆4: Excel 文件有效性检查 =====
         try:
@@ -84,7 +83,6 @@ def load_and_process_data(file_path):
         
         # 讀取所有工作表，儲存為字典 {sheet_name: df}
         all_sheets = {sheet: pd.read_excel(excel_file, sheet_name=sheet) for sheet in excel_file.sheet_names}
-        print(f"讀取輸入檔案的所有工作表: {list(all_sheets.keys())}")
         
         # ===== 防呆5: 必要工作表检查 =====
         required_sheets = [SHEET_NAMES['raw_intensity'], SHEET_NAMES['sample_info']]
@@ -271,8 +269,6 @@ def load_and_process_data(file_path):
         for col in zero_cols:
             print(f"警告：樣本 '{col}' 的所有數值都是 0 或 NaN")
 
-        raw_df = raw_df.fillna(0)  # 填充 NaN 為 0
-        print(f"RawIntensity 數據類型檢查：樣本欄位已轉換為數值型")
 
         # ===== 防呆16: 数值范围检查 (向量化) =====
         # Check for negative values across all columns at once
@@ -821,8 +817,6 @@ def calculate_corrected_ratios(df, sample_info_df):
     valid_sample_cols = [col for col in sample_columns if col in results_df.columns]
     if valid_sample_cols:
         results_df[valid_sample_cols] = results_df[valid_sample_cols].apply(pd.to_numeric, errors='coerce')
-    results_df = results_df.fillna(0)
-    print(f"ISTD Correction 數據類型檢查：{results_df.dtypes}")
     
     return results_df, sample_columns
 
@@ -910,6 +904,9 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
                 'Original_QC_CV%': np.nan,
                 'Corrected_QC_CV%': np.nan,
                 'CV_Improvement%': np.nan,
+                'Original_Robust_CV%': np.nan,
+                'Corrected_Robust_CV%': np.nan,
+                'Robust_CV_Improvement%': np.nan,
                 'Wilcoxon_pvalue': np.nan,
                 'Variance_Test_pvalue': np.nan,
                 'Significant_Improvement': 'N/A'
@@ -925,6 +922,15 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
         original_cv = safe_divide(np.std(qc_values_original, ddof=1), orig_mean, np.nan) * 100
         corrected_cv = safe_divide(np.std(qc_values_corrected, ddof=1), corr_mean, np.nan) * 100
         cv_improvement = original_cv - corrected_cv
+
+        # Robust CV (MAD/median) — 不受極端值影響，適用於非常態質譜數據
+        orig_median = np.nanmedian(qc_values_original)
+        corr_median = np.nanmedian(qc_values_corrected)
+        orig_mad = np.nanmedian(np.abs(qc_values_original - orig_median))
+        corr_mad = np.nanmedian(np.abs(qc_values_corrected - corr_median))
+        original_robust_cv = safe_divide(orig_mad, orig_median, np.nan) * 100
+        corrected_robust_cv = safe_divide(corr_mad, corr_median, np.nan) * 100
+        robust_cv_improvement = original_robust_cv - corrected_robust_cv
 
         # ✅ 1. Wilcoxon 配對符號等級檢定（檢驗中位數是否改變）
         try:
@@ -967,6 +973,9 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
             'Original_QC_CV%': original_cv,
             'Corrected_QC_CV%': corrected_cv,
             'CV_Improvement%': cv_improvement,
+            'Original_Robust_CV%': original_robust_cv,
+            'Corrected_Robust_CV%': corrected_robust_cv,
+            'Robust_CV_Improvement%': robust_cv_improvement,
             'Wilcoxon_pvalue': wilcoxon_pvalue,
             'Variance_Test_pvalue': variance_test_pvalue,
             'Significant_Improvement': significant
@@ -1333,7 +1342,7 @@ def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sam
             control_columns.append(col)
 
     if len(qc_columns) < 3:
-        print("警告：QC 樣本不足 (<3)，跳過 PCA 分析")
+        print("警告：QC 樣本不足 (<3)，跳過品質分析")
         return
 
     type_counts = {}
@@ -1753,9 +1762,17 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
     # plot_pvalue_distribution(cv_results_df, plot_output_dir, timestamp)
 
 def save_skipped_istd_results_to_excel(output_file, all_sheets, original_workbook):
-    """Save a minimal Step 1 workbook when ISTD correction is skipped."""
+    """Save a minimal Step 1 workbook when ISTD correction is skipped.
+
+    Even when ISTD correction is skipped, ISTD rows must be removed from
+    RawIntensity — they are exogenous spiked-in compounds, not biological
+    features, and would pollute downstream statistical analyses.
+    """
+    raw_df = all_sheets[SHEET_NAMES['raw_intensity']].copy()
+    if 'is_ISTD' in raw_df.columns:
+        raw_df = raw_df[~raw_df['is_ISTD']].drop(columns=['is_ISTD'])
     retained_sheets = {
-        SHEET_NAMES['raw_intensity']: all_sheets[SHEET_NAMES['raw_intensity']],
+        SHEET_NAMES['raw_intensity']: raw_df,
         SHEET_NAMES['sample_info']: all_sheets[SHEET_NAMES['sample_info']],
     }
 
@@ -1912,23 +1929,7 @@ def main(input_file=None, session_dir=None):
         plots_dir=_plots_dir, col_to_info=col_to_info
     )
     
-    # ✅ 執行 2D PCA 分析（傳入 output_dir）
-    print("\n" + "="*70)
-    print("📊 開始 2D PCA 分析（Hotelling T² 異常值檢測 + 橢圓 + 固定原點）")
-    print("="*70 + "\n")
-    perform_pca_analysis_2d(
-        original_df, results_df, None,
-        sample_columns, sample_info_df, _plots_dir,
-        col_to_info=col_to_info
-    )
-    
-    print("\n" + "="*70)
-    print("✅ ISTD Correction 完成！")
-    print("="*70)
-    print("\n📁 輸出檔案:")
-    print(f"  1. Excel 結果: output/{os.path.basename(output_file)}")
-    print(f"  2. PCA 圖表: {_plots_dir}")
-    print("\n💡 請使用輸出的檔案進行後續 QC LOWESS 處理。\n")
+    print(f"\n  ✓ ISTD Correction 完成 → {os.path.basename(output_file)}")
     
     # 🎯 返回統計資訊給 GUI
     return ProcessingResult(

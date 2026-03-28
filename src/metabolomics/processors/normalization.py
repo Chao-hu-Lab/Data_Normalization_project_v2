@@ -10,13 +10,13 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
 from copy import copy
-from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from scipy.stats import gaussian_kde, spearmanr, levene, wilcoxon, f as f_dist
+from scipy.spatial.distance import pdist, squareform
 
 from metabolomics.utils.plotting import (
     plot_pca_comparison_real_sample_style,
     setup_matplotlib,
-    build_pca_comparison_filename,
     build_pca_comparison_suptitle,
 )
 from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS
@@ -49,6 +49,14 @@ NORMALIZATION_SOURCE_LABELS = {
     SHEET_NAMES['qc_lowess']: 'QC LOWESS result',
     SHEET_NAMES['istd_correction']: 'ISTD Correction result',
     SHEET_NAMES['raw_intensity']: 'RawIntensity',
+}
+
+# Unified color scheme for sample type grouping across all plots
+SAMPLE_TYPE_COLORS = {
+    'CONTROL': '#3498DB',
+    'EXPOSURE': '#E74C3C',
+    'QC': '#F39C12',
+    'UNKNOWN': '#95A5A6',
 }
 
 def _lookup_sample_type(sample, sample_info_df, col_to_info_row=None, default='UNKNOWN'):
@@ -173,11 +181,7 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns,
         Mapping from data column name to SampleInfo row (Series).
         Used when column names don't match SampleInfo names.
     """
-    print("\n執行 PQN 標準化方法：")
-
-    # ========== 除錯輸出 ==========
-    print(f"\n【除錯資訊】")
-    print(f"  總樣本數: {len(sample_columns)}")
+    print(f"\n執行 PQN 標準化（樣本數: {len(sample_columns)}）：")
 
     # ========== Step 1: 分離 QC 和真實樣本 ==========
     sample_types = {}
@@ -202,19 +206,12 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns,
     qc_indices = [i for i, s in enumerate(sample_columns) if sample_types[s] == 'QC']
     real_indices = [i for i, s in enumerate(sample_columns) if sample_types[s] != 'QC']
 
-    # 除錯：顯示樣本類型分佈
     from collections import Counter
     type_counts = Counter(sample_types.values())
-    print(f"  樣本類型統計:")
-    for stype, count in type_counts.items():
-        print(f"    - {stype}: {count}")
 
     qc_count = len(qc_indices)
     real_count = len(real_indices)
-
-    print(f"  樣本分類:")
-    print(f"    - QC 樣本數量: {qc_count}")
-    print(f"    - 真實樣本數量: {real_count}")
+    print(f"  樣本分類: QC={qc_count}, 真實={real_count}")
 
     # ========== Step 2: 評估 QC 樣本質量 ==========
     qc_cv_median = np.nan
@@ -225,33 +222,22 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns,
         qc_cv = calculate_rsd(qc_data)
         qc_cv_median = np.nanmedian(qc_cv)
 
-        print(f"  QC 質量評估:")
-        print(f"    - QC 中位數 CV%: {qc_cv_median:.2f}%")
-
         if qc_count >= VALIDATION_THRESHOLDS['min_qc_samples'] and qc_cv_median < CV_QUALITY_THRESHOLDS['acceptable']:
             reference_strategy = 'QC'
-            print(f"    - ✓ QC 樣本質量良好，使用 QC 作為 PQN 參考")
         elif qc_count >= 1:
             reference_strategy = 'QC_LIMITED'
-            print(f"    - ⚠ QC 樣本數量有限（{qc_count}），但仍使用 QC 作為參考")
         else:
             reference_strategy = 'ROBUST_MEDIAN'
-            print(f"    - ⚠ QC 樣本不足，使用全樣本中位數作為參考")
     else:
         reference_strategy = 'ROBUST_MEDIAN'
-        print(f"  ⚠ 無 QC 樣本，使用全樣本中位數作為參考")
-
-    # ========== Step 3: PQN 標準化 ==========
-    print("\n  Probabilistic Quotient Normalization (PQN)")
 
     # 決定參考譜
     if reference_strategy in ('QC', 'QC_LIMITED'):
         reference_sample = np.nanmedian(data_matrix[:, qc_indices], axis=1)
-        print(f"    - 使用 QC 樣本中位數作為參考")
+        print(f"  參考策略: {reference_strategy}（QC median CV%={qc_cv_median:.1f}%）")
     else:
-        # 使用所有樣本的中位數譜作為參考
         reference_sample = np.nanmedian(data_matrix, axis=1)
-        print(f"    - 使用全樣本中位數譜作為參考")
+        print(f"  參考策略: {reference_strategy}（全樣本中位數）")
 
     # 對所有樣本計算 quotient 並正規化
     quotients = data_matrix / reference_sample[:, np.newaxis]
@@ -264,12 +250,8 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns,
     normalization_factors_real = normalization_factors[real_indices] if real_count > 0 else np.array([])
     normalization_factors_qc = normalization_factors[qc_indices] if qc_count > 0 else None
 
-    if real_count > 0:
-        print(f"    - 真實樣本標準化因子範圍: {np.nanmin(normalization_factors_real):.4f} - {np.nanmax(normalization_factors_real):.4f}")
-    if qc_count > 0:
-        print(f"    - QC 樣本標準化因子範圍: {np.nanmin(normalization_factors_qc):.4f} - {np.nanmax(normalization_factors_qc):.4f}")
-
-    print("  ✓ PQN 標準化完成")
+    factor_range = f"{np.nanmin(normalization_factors_real):.4f}–{np.nanmax(normalization_factors_real):.4f}" if real_count > 0 else "N/A"
+    print(f"  ✓ PQN 完成（因子範圍: {factor_range}）")
 
     # 返回資訊
     pqn_info = {
@@ -282,6 +264,85 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns,
     }
 
     return final_data, pqn_info
+
+
+def sample_specific_normalization(data_matrix, sample_info_df, sample_columns,
+                                  reference_values, col_to_info_row=None,
+                                  correction_col_name=None):
+    """
+    Sample-Specific Normalization
+
+    以每個樣本附帶的參考量值（如肌酐濃度、DNA 質量、蛋白質濃度等）
+    做除法，再乘以全體中位數，使不同稀釋倍率的樣本回到可比較的尺度。
+    僅校正真實樣本；QC 樣本保留原值。
+
+    Parameters:
+    -----------
+    data_matrix : np.ndarray
+        Feature × Sample intensity matrix.
+    sample_info_df : pd.DataFrame
+        Sample metadata.
+    sample_columns : list[str]
+        Sample column names matching data_matrix columns.
+    reference_values : np.ndarray
+        Per-sample reference values (e.g. creatinine, DNA mass, protein conc.).
+    col_to_info_row : dict, optional
+        Mapping from data column name to SampleInfo row.
+    correction_col_name : str, optional
+        校正欄位名稱，用於 log 顯示。
+    """
+    ref_label = correction_col_name or "reference"
+    print(f"\n執行 Sample-Specific Normalization（校正依據: {ref_label}）：")
+
+    # ========== Step 1: 分離 QC 和真實樣本 ==========
+    sample_types = {}
+    for sample in sample_columns:
+        sample_types[sample] = _lookup_sample_type(
+            sample, sample_info_df, col_to_info_row, default='UNKNOWN'
+        )
+
+    qc_indices = [i for i, s in enumerate(sample_columns) if sample_types[s] == 'QC']
+    real_indices = [i for i, s in enumerate(sample_columns) if sample_types[s] != 'QC']
+
+    qc_count = len(qc_indices)
+    real_count = len(real_indices)
+    print(f"  樣本分類: QC={qc_count}, 真實={real_count}")
+
+    # ========== Step 2: 參考物質校正（僅針對真實樣本）==========
+    real_data = data_matrix[:, real_indices]
+    real_reference_values = reference_values[real_indices]
+
+    valid_ref_mask = ~np.isnan(real_reference_values) & (real_reference_values > 0)
+
+    if np.sum(valid_ref_mask) < len(real_reference_values) * 0.5:
+        print(f"    ⚠ 警告：有效 {ref_label} 值不足 50% ({np.sum(valid_ref_mask)}/{len(real_reference_values)})")
+
+    median_ref = np.nanmedian(real_reference_values[valid_ref_mask])
+    real_data_corrected = real_data.copy()
+    real_data_corrected[:, valid_ref_mask] = (
+        real_data[:, valid_ref_mask] / real_reference_values[valid_ref_mask]
+    ) * median_ref
+
+    # ========== Step 3: 合併結果 ==========
+    final_data = data_matrix.copy()
+    final_data[:, real_indices] = real_data_corrected
+
+    print(f"  ✓ Sample-Specific 完成（{ref_label} median={median_ref:.2f}, 校正={np.sum(valid_ref_mask)}/{len(real_reference_values)}）")
+
+    spec_info = {
+        'reference_strategy': 'SampleSpecific',
+        'qc_count': qc_count,
+        'qc_cv': np.nan,
+        'real_count': real_count,
+        'normalization_factors_real': real_reference_values,
+        'normalization_factors_qc': None,
+        'ref_col_name': ref_label,
+        'ref_median': float(median_ref),
+        'ref_valid_count': int(np.sum(valid_ref_mask)),
+    }
+
+    return final_data, spec_info
+
 
 def get_all_sample_columns(df, sample_info_df):
     """
@@ -440,8 +501,6 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
     # 檢查是否有足夠的有效特徵進行統計檢驗
     if total >= 3:
         try:
-            from scipy.stats import wilcoxon
-
             # Wilcoxon signed-rank test (配對雙尾檢驗)
             # 檢驗標準化前後 Cohen's d 絕對值是否有顯著差異
             try:
@@ -682,13 +741,15 @@ def plot_qc_reproducibility(original_qc, normalized_qc, qc_names, output_path):
     # === 子圖 3: QC 相關性熱圖（標準化前）===
     ax3 = fig.add_subplot(gs[0, 1])
 
-    corr_before = np.corrcoef(original_qc.T)
+    corr_before, _ = spearmanr(original_qc, axis=0)
+    if corr_before.ndim == 0:
+        corr_before = np.array([[1.0]])
     im3 = ax3.imshow(corr_before, cmap='coolwarm', vmin=0.9, vmax=1, aspect='auto')
     ax3.set_xticks(range(len(qc_names)))
     ax3.set_yticks(range(len(qc_names)))
     ax3.set_xticklabels(qc_names, rotation=45, fontsize=8, ha='right')
     ax3.set_yticklabels(qc_names, fontsize=8)
-    ax3.set_title('QC Correlation (Before)', fontsize=12, fontweight='bold')
+    ax3.set_title('QC Rank Correlation (Before)', fontsize=12, fontweight='bold')
     plt.colorbar(im3, ax=ax3, label='Correlation', fraction=0.046)
 
     # 在格子中顯示數值
@@ -700,13 +761,15 @@ def plot_qc_reproducibility(original_qc, normalized_qc, qc_names, output_path):
     # === 子圖 4: QC 相關性熱圖（標準化後）===
     ax4 = fig.add_subplot(gs[0, 2])
 
-    corr_after = np.corrcoef(normalized_qc.T)
+    corr_after, _ = spearmanr(normalized_qc, axis=0)
+    if corr_after.ndim == 0:
+        corr_after = np.array([[1.0]])
     im4 = ax4.imshow(corr_after, cmap='coolwarm', vmin=0.9, vmax=1, aspect='auto')
     ax4.set_xticks(range(len(qc_names)))
     ax4.set_yticks(range(len(qc_names)))
     ax4.set_xticklabels(qc_names, rotation=45, fontsize=8, ha='right')
     ax4.set_yticklabels(qc_names, fontsize=8)
-    ax4.set_title('QC Correlation (After)', fontsize=12, fontweight='bold')
+    ax4.set_title('QC Rank Correlation (After)', fontsize=12, fontweight='bold')
     plt.colorbar(im4, ax=ax4, label='Correlation', fraction=0.046)
 
     for i in range(len(qc_names)):
@@ -815,54 +878,244 @@ def calculate_rsd(data_matrix):
     return rsd.flatten()
 
 def calculate_sample_correlation(data_matrix):
-    """計算樣本間的相關性"""
+    """計算樣本間的 Spearman rank 相關性（適用於非常態質譜數據）"""
     # 移除含有NaN的特徵
     valid_features = ~np.isnan(data_matrix).any(axis=1)
     clean_data = data_matrix[valid_features, :]
-    
+
     if clean_data.shape[0] < 3:
         return np.nan, np.nan
-    
-    corr_matrix = np.corrcoef(clean_data.T)
+
+    corr_matrix, _ = spearmanr(clean_data, axis=0)
+    if corr_matrix.ndim == 0:
+        return float(corr_matrix), 0.0
     mask = ~np.eye(corr_matrix.shape[0], dtype=bool)
     correlations = corr_matrix[mask]
     return np.mean(correlations), np.std(correlations)
 
 # ==================== 視覺化函數 ====================
 
-def plot_density_comparison(original_data, normalized_data, sample_names, output_path, method_name):
-    """繪製標準化前後的密度圖對比"""
+
+def plot_intensity_vs_reference(original_data, normalized_data, sample_columns,
+                                reference_values, output_path, ref_col_name,
+                                sample_info_df=None, col_to_info_row=None):
+    """
+    散點圖：樣本總強度 vs 參考物質量值（校正前後對比）
+
+    校正前應呈正相關斜線，校正後應變水平。
+    僅適用於 SampleSpecific 模式。
+    """
+    print("  繪製 Total Intensity vs Reference 散點圖...")
+
+    # 計算每個樣本的非缺失特徵中位強度
+    def sample_median_intensity(data):
+        medians = []
+        for j in range(data.shape[1]):
+            col = data[:, j]
+            valid = col[np.isfinite(col) & (col > 0)]
+            medians.append(np.median(valid) if valid.size > 0 else np.nan)
+        return np.array(medians)
+
+    med_before = sample_median_intensity(original_data)
+    med_after = sample_median_intensity(normalized_data)
+
+    # 辨識樣本類型（著色用）
+    sample_types = []
+    for s in sample_columns:
+        st = _lookup_sample_type(s, sample_info_df, col_to_info_row) if sample_info_df is not None else 'UNKNOWN'
+        sample_types.append(st)
+
+    # 只畫有有效參考值的真實樣本（排除 QC）
+    mask = np.isfinite(reference_values) & (reference_values > 0) & np.array([t != 'QC' for t in sample_types])
+
+    if np.sum(mask) < 3:
+        print("    ⚠ 有效樣本不足，跳過散點圖")
+        return
+
+    ref_valid = reference_values[mask]
+    med_before_valid = med_before[mask]
+    med_after_valid = med_after[mask]
+    types_valid = [sample_types[i] for i in range(len(sample_types)) if mask[i]]
+
+    # 分組著色
+    unique_types = sorted(set(types_valid))
+
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-    
-    # 標準化前
-    for i in range(min(original_data.shape[1], 30)):  # 最多顯示30個樣本
-        sample_data = original_data[:, i]
-        sample_data = sample_data[sample_data > 0]
-        if len(sample_data) > 0:
-            ax1.hist(np.log10(sample_data), bins=50, alpha=0.3, density=True)
-    
-    ax1.set_xlabel('Log10(Intensity)', fontsize=12, fontweight='bold')
-    ax1.set_ylabel('Density', fontsize=12, fontweight='bold')
-    ax1.set_title('Before Normalization', fontsize=14, fontweight='bold')
-    ax1.grid(True, alpha=0.3)
-    
-    # 標準化後
-    for i in range(min(normalized_data.shape[1], 30)):
-        sample_data = normalized_data[:, i]
-        sample_data = sample_data[sample_data > 0]
-        if len(sample_data) > 0:
-            ax2.hist(np.log10(sample_data), bins=50, alpha=0.3, density=True)
-    
-    ax2.set_xlabel('Log10(Intensity)', fontsize=12, fontweight='bold')
-    ax2.set_ylabel('Density', fontsize=12, fontweight='bold')
-    ax2.set_title(f'After Normalization ({method_name})', fontsize=14, fontweight='bold')
-    ax2.grid(True, alpha=0.3)
-    
+
+    for ax, med_vals, title in [
+        (ax1, med_before_valid, f'Before Correction'),
+        (ax2, med_after_valid, f'After Correction (SampleSpecific)'),
+    ]:
+        for t in unique_types:
+            t_mask = np.array([tt == t for tt in types_valid])
+            color = SAMPLE_TYPE_COLORS.get(t, SAMPLE_TYPE_COLORS['UNKNOWN'])
+            ax.scatter(ref_valid[t_mask], med_vals[t_mask],
+                       c=color, label=t, alpha=0.7, s=50, edgecolors='k', linewidth=0.5)
+
+        # 趨勢線
+        finite_mask = np.isfinite(med_vals)
+        if np.sum(finite_mask) >= 3:
+            z = np.polyfit(ref_valid[finite_mask], med_vals[finite_mask], 1)
+            p = np.poly1d(z)
+            x_line = np.linspace(ref_valid.min(), ref_valid.max(), 100)
+            ax.plot(x_line, p(x_line), 'r--', linewidth=2, alpha=0.8)
+            # Pearson r
+            r, pval = spearmanr(ref_valid[finite_mask], med_vals[finite_mask])
+            ax.text(0.05, 0.95, f'ρ = {r:.3f} (p = {pval:.2e})',
+                    transform=ax.transAxes, fontsize=10, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+        ax.set_xlabel(ref_col_name, fontsize=12, fontweight='bold')
+        ax.set_ylabel('Median Intensity (non-NA features)', fontsize=12, fontweight='bold')
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+    fig.suptitle(f'Sample Intensity vs {ref_col_name}', fontsize=16, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"  ✓ 散點圖已儲存: {Path(output_path).name}")
+
+
+def plot_dratio_density(original_data, normalized_data, sample_columns,
+                        sample_info_df, output_path, col_to_info_row=None):
+    """
+    D-ratio 密度圖：MAD_QC / MAD_Bio
+
+    D-ratio < 1 表示技術雜訊小於生物變異（好）。
+    < 0.5 為良好，< 0.3 為優秀。
+    """
+    print("  繪製 D-ratio 密度圖...")
+
+    sample_types = np.array([
+        _lookup_sample_type(s, sample_info_df, col_to_info_row)
+        for s in sample_columns
+    ])
+    qc_mask = sample_types == 'QC'
+    bio_mask = ~qc_mask
+
+    if np.sum(qc_mask) < 2 or np.sum(bio_mask) < 3:
+        print("    ⚠ QC 或生物樣本不足，跳過 D-ratio")
+        return
+
+    def compute_dratio(data):
+        qc_data = data[:, qc_mask]
+        bio_data = data[:, bio_mask]
+        ratios = []
+        for i in range(data.shape[0]):
+            qc_vals = qc_data[i, :][np.isfinite(qc_data[i, :])]
+            bio_vals = bio_data[i, :][np.isfinite(bio_data[i, :])]
+            if qc_vals.size < 2 or bio_vals.size < 3:
+                ratios.append(np.nan)
+                continue
+            mad_qc = np.median(np.abs(qc_vals - np.median(qc_vals)))
+            mad_bio = np.median(np.abs(bio_vals - np.median(bio_vals)))
+            if mad_bio == 0:
+                ratios.append(np.nan)
+            else:
+                ratios.append(mad_qc / mad_bio)
+        return np.array(ratios)
+
+    dr_before = compute_dratio(original_data)
+    dr_after = compute_dratio(normalized_data)
+
+    # 過濾有效值
+    dr_before_valid = dr_before[np.isfinite(dr_before)]
+    dr_after_valid = dr_after[np.isfinite(dr_after)]
+
+    if dr_before_valid.size < 10 or dr_after_valid.size < 10:
+        print("    ⚠ 有效 D-ratio 值不足，跳過繪圖")
+        return
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    for vals, label, color in [
+        (dr_before_valid, 'Before', '#ea4335'),
+        (dr_after_valid, 'After', '#4285f4'),
+    ]:
+        vals_clipped = vals[vals < 3]  # 截斷極端值方便顯示
+        if vals_clipped.size < 5:
+            continue
+        kde = gaussian_kde(vals_clipped, bw_method=0.3)
+        x = np.linspace(0, 3, 300)
+        ax.plot(x, kde(x), linewidth=2, label=label, color=color)
+        ax.fill_between(x, kde(x), alpha=0.15, color=color)
+
+    ax.axvline(x=0.5, color='orange', linestyle='--', linewidth=1.5, label='Good threshold (0.5)')
+    ax.axvline(x=1.0, color='red', linestyle='--', linewidth=1.5, label='D-ratio = 1.0')
+
+    pct_before = 100 * np.sum(dr_before_valid < 0.5) / dr_before_valid.size
+    pct_after = 100 * np.sum(dr_after_valid < 0.5) / dr_after_valid.size
+    ax.text(0.95, 0.95,
+            f'D-ratio < 0.5:\n  Before: {pct_before:.1f}%\n  After: {pct_after:.1f}%',
+            transform=ax.transAxes, fontsize=11, verticalalignment='top',
+            horizontalalignment='right',
+            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+
+    ax.set_xlabel('D-ratio (MAD_QC / MAD_Bio)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Density', fontsize=12, fontweight='bold')
+    ax.set_title('D-ratio Distribution: Technical Noise vs Biological Variance', fontsize=14, fontweight='bold')
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
-    
-    print(f"  ✓ 密度圖已儲存")
+    print(f"  ✓ D-ratio 圖已儲存: {Path(output_path).name}")
+
+
+def plot_density_comparison(original_data, normalized_data, sample_columns, output_path,
+                            method_name, sample_info_df=None, col_to_info_row=None):
+    """
+    NaN-aware KDE 密度圖：按樣本類型分組著色，排除 NaN 後繪製核密度。
+
+    每個樣本類型（Control / Exposure / QC）匯聚成一條 KDE 曲線，
+    而非逐樣本疊加直方圖，大幅提升可讀性。
+    """
+    # 辨識樣本類型
+    sample_types = []
+    for s in sample_columns:
+        st = _lookup_sample_type(s, sample_info_df, col_to_info_row) if sample_info_df is not None else 'UNKNOWN'
+        sample_types.append(st)
+
+    unique_types = sorted(set(sample_types))
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+
+    for ax, data, title in [
+        (ax1, original_data, 'Before Normalization'),
+        (ax2, normalized_data, f'After Normalization ({method_name})'),
+    ]:
+        for grp in unique_types:
+            col_indices = [i for i, t in enumerate(sample_types) if t == grp]
+            # 匯集該組所有有效值
+            pooled = []
+            for idx in col_indices:
+                col = data[:, idx]
+                valid = col[np.isfinite(col) & (col > 0)]
+                pooled.append(valid)
+            pooled = np.concatenate(pooled) if pooled else np.array([])
+            if pooled.size < 10:
+                continue
+            log_vals = np.log10(pooled)
+            kde = gaussian_kde(log_vals, bw_method=0.3)
+            x = np.linspace(np.nanmin(log_vals), np.nanmax(log_vals), 300)
+            color = SAMPLE_TYPE_COLORS.get(grp, SAMPLE_TYPE_COLORS['UNKNOWN'])
+            ax.plot(x, kde(x), linewidth=2, label=f'{grp} (n={len(col_indices)})', color=color)
+            ax.fill_between(x, kde(x), alpha=0.12, color=color)
+
+        ax.set_xlabel('Log10(Intensity)', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Density', fontsize=12, fontweight='bold')
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print(f"  ✓ 密度圖已儲存: {Path(output_path).name}")
 
 def plot_boxplot_comparison(original_data, normalized_data, sample_names, output_path, method_name, sample_info_df, col_to_info_row=None):
     """
@@ -874,17 +1127,8 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
     - 統計摘要框加入總強度指標
     - 同一圖表內整合樣本總強度長條圖（取代舊 Fig2）
     """
-    from scipy.stats import levene
-
-    COLOR_SCHEME = {
-        'CONTROL': '#3498DB',
-        'EXPOSURE': '#E74C3C',
-        'QC': '#F39C12',
-        'Unknown': '#95A5A6'
-    }
-
     sample_groups = [
-        _lookup_sample_type(s, sample_info_df, col_to_info_row, default='Unknown')
+        _lookup_sample_type(s, sample_info_df, col_to_info_row)
         for s in sample_names
     ]
 
@@ -897,11 +1141,11 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
     original_log = np.log10(original_data + 1)
     normalized_log = np.log10(normalized_data + 1)
 
-    median_before = np.median([np.median(original_log[:, i]) for i in range(len(sample_names))])
-    median_after = np.median([np.median(normalized_log[:, i]) for i in range(len(sample_names))])
+    median_before = np.nanmedian([np.nanmedian(original_log[:, i]) for i in range(len(sample_names))])
+    median_after = np.nanmedian([np.nanmedian(normalized_log[:, i]) for i in range(len(sample_names))])
 
-    sample_medians_before = np.array([np.median(original_log[:, i]) for i in range(len(sample_names))])
-    sample_medians_after = np.array([np.median(normalized_log[:, i]) for i in range(len(sample_names))])
+    sample_medians_before = np.array([np.nanmedian(original_log[:, i]) for i in range(len(sample_names))])
+    sample_medians_after = np.array([np.nanmedian(normalized_log[:, i]) for i in range(len(sample_names))])
 
     rsd_before = (np.std(sample_medians_before, ddof=1) / np.mean(sample_medians_before)) * 100
     rsd_after = (np.std(sample_medians_after, ddof=1) / np.mean(sample_medians_after)) * 100
@@ -959,7 +1203,7 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
                       showfliers=False)
 
     for patch, group in zip(bp1['boxes'], sample_groups):
-        patch.set_facecolor(COLOR_SCHEME.get(group, '#95A5A6'))
+        patch.set_facecolor(SAMPLE_TYPE_COLORS.get(group, SAMPLE_TYPE_COLORS['UNKNOWN']))
         patch.set_alpha(0.7)
 
     ax1.axhline(y=median_before, color='red', linestyle='--', linewidth=2,
@@ -972,7 +1216,7 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
     ax1.set_xticks(positions)
     ax1.set_xticklabels(sample_names, rotation=90, fontsize=8)
     for tick_label, group in zip(ax1.get_xticklabels(), sample_groups):
-        tick_label.set_color(COLOR_SCHEME.get(group, '#95A5A6'))
+        tick_label.set_color(SAMPLE_TYPE_COLORS.get(group, SAMPLE_TYPE_COLORS['UNKNOWN']))
         tick_label.set_fontweight('bold')
 
     ax1.grid(True, alpha=0.3, axis='y')
@@ -985,7 +1229,7 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
                       showfliers=False)
 
     for patch, group in zip(bp2['boxes'], sample_groups):
-        patch.set_facecolor(COLOR_SCHEME.get(group, '#95A5A6'))
+        patch.set_facecolor(SAMPLE_TYPE_COLORS.get(group, SAMPLE_TYPE_COLORS['UNKNOWN']))
         patch.set_alpha(0.7)
 
     ax2.axhline(y=median_after, color='red', linestyle='--', linewidth=2,
@@ -996,7 +1240,7 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
     ax2.set_xticks(positions)
     ax2.set_xticklabels(sample_names, rotation=90, fontsize=8)
     for tick_label, group in zip(ax2.get_xticklabels(), sample_groups):
-        tick_label.set_color(COLOR_SCHEME.get(group, '#95A5A6'))
+        tick_label.set_color(SAMPLE_TYPE_COLORS.get(group, SAMPLE_TYPE_COLORS['UNKNOWN']))
         tick_label.set_fontweight('bold')
 
     ax2.grid(True, alpha=0.3, axis='y')
@@ -1018,7 +1262,7 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
     ax3.set_xticks(positions)
     ax3.set_xticklabels(sample_names, rotation=90, fontsize=8)
     for tick_label, group in zip(ax3.get_xticklabels(), sample_groups):
-        tick_label.set_color(COLOR_SCHEME.get(group, '#95A5A6'))
+        tick_label.set_color(SAMPLE_TYPE_COLORS.get(group, SAMPLE_TYPE_COLORS['UNKNOWN']))
         tick_label.set_fontweight('bold')
 
     ax3.grid(True, alpha=0.25, axis='y')
@@ -1068,7 +1312,7 @@ def plot_boxplot_comparison(original_data, normalized_data, sample_names, output
         side3.add_artist(legend3)
 
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300)
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 
     print(f"  ✓ 盒鬚圖已儲存 (Fig 1 - Integrated)")
@@ -1096,6 +1340,7 @@ def plot_rle(original_data, normalized_data, sample_names, output_path, method_n
         計算 Relative Log Expression
 
         對每個 feature，計算 log2(sample_intensity / median_intensity)
+        NaN 值不參與中位數計算，RLE 結果中保持為 NaN。
         """
         # 移除全為 0 或 NaN 的 features
         valid_features = ~np.all((data == 0) | np.isnan(data), axis=1)
@@ -1105,11 +1350,12 @@ def plot_rle(original_data, normalized_data, sample_names, output_path, method_n
             print("    ⚠️  警告：沒有有效的 features，無法計算 RLE")
             return None
 
-        # 對數據進行 log2 轉換（加 1 避免 log(0)）
-        data_log = np.log2(data_valid + 1)
+        # 將 0 和負值視為缺失，不參與 log 計算
+        data_masked = np.where(data_valid > 0, data_valid, np.nan)
+        data_log = np.log2(data_masked)
 
-        # 計算每個 feature 的中位數（跨所有樣本）
-        median_per_feature = np.median(data_log, axis=1, keepdims=True)
+        # 計算每個 feature 的中位數（忽略 NaN）
+        median_per_feature = np.nanmedian(data_log, axis=1, keepdims=True)
 
         # 計算 RLE：log2(sample) - log2(median)
         rle = data_log - median_per_feature
@@ -1127,7 +1373,7 @@ def plot_rle(original_data, normalized_data, sample_names, output_path, method_n
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(max(20, len(sample_names) * 0.6), 16))
 
     # ===== 上圖：Original RLE =====
-    bp1 = ax1.boxplot([original_rle[:, i] for i in range(original_rle.shape[1])],
+    bp1 = ax1.boxplot([original_rle[:, i][~np.isnan(original_rle[:, i])] for i in range(original_rle.shape[1])],
                        labels=sample_names, patch_artist=True,
                        widths=0.6, showfliers=False)
 
@@ -1160,13 +1406,13 @@ def plot_rle(original_data, normalized_data, sample_names, output_path, method_n
     ax1.grid(True, alpha=0.3, linestyle='--', axis='y')
 
     # 計算 RLE 中位數絕對偏差 (MAD) - 品質指標
-    original_mad = np.median([np.median(np.abs(original_rle[:, i])) for i in range(original_rle.shape[1])])
+    original_mad = np.nanmedian([np.nanmedian(np.abs(original_rle[:, i])) for i in range(original_rle.shape[1])])
     ax1.text(0.02, 0.98, f'Median Absolute Deviation: {original_mad:.4f}',
              transform=ax1.transAxes, fontsize=12, verticalalignment='top',
              bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
     # ===== 下圖：Normalized RLE =====
-    bp2 = ax2.boxplot([normalized_rle[:, i] for i in range(normalized_rle.shape[1])],
+    bp2 = ax2.boxplot([normalized_rle[:, i][~np.isnan(normalized_rle[:, i])] for i in range(normalized_rle.shape[1])],
                        labels=sample_names, patch_artist=True,
                        widths=0.6, showfliers=False)
 
@@ -1199,7 +1445,7 @@ def plot_rle(original_data, normalized_data, sample_names, output_path, method_n
     ax2.grid(True, alpha=0.3, linestyle='--', axis='y')
 
     # 計算 Normalized RLE 的 MAD
-    normalized_mad = np.median([np.median(np.abs(normalized_rle[:, i])) for i in range(normalized_rle.shape[1])])
+    normalized_mad = np.nanmedian([np.nanmedian(np.abs(normalized_rle[:, i])) for i in range(normalized_rle.shape[1])])
     improvement = ((original_mad - normalized_mad) / original_mad * 100) if original_mad > 0 else 0
 
     ax2.text(0.02, 0.98, f'Median Absolute Deviation: {normalized_mad:.4f}\n'
@@ -1226,8 +1472,6 @@ def plot_cv_comparison(original_cv, normalized_cv, output_path, method_name):
     - 增加閾值線 (20%, 30%, 50%)
     - 圖中只保留讀圖必要元素，統計摘要留在 console / Excel
     """
-    from scipy.stats import wilcoxon
-
     # Keep a normal presentation size now that statistical summaries live outside the PNG.
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18.5, 5.6))
 
@@ -1340,7 +1584,7 @@ def plot_cv_comparison(original_cv, normalized_cv, output_path, method_name):
         fontweight='bold',
     )
     plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.savefig(output_path, dpi=300)
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
 
     print(f"  ✓ CV%分佈圖已儲存 (Fig 2 - Improved)")
@@ -1366,7 +1610,6 @@ def plot_pca_with_confidence_ellipse(
     - 增加 QC 聚集度指標
     - QC 樣本標記加粗、增大
     """
-    from scipy.stats import f as f_dist
     from matplotlib.patches import Ellipse
 
     # 數據預處理（轉置：樣本 x 特徵）
@@ -1435,8 +1678,6 @@ def plot_pca_with_confidence_ellipse(
     # === 計算 PERMANOVA (簡化版 - 使用歐氏距離) ===
     def simple_permanova(X, groups, n_permutations=999):
         """簡化版 PERMANOVA"""
-        from scipy.spatial.distance import pdist, squareform
-
         # 計算距離矩陣
         dist_matrix = squareform(pdist(X, metric='euclidean'))
 
@@ -1573,9 +1814,8 @@ def plot_confidence_ellipse(points, ax, color='blue', label=None, n_std=2.447,
     linewidth : float
         線條寬度
     """
-    from scipy.stats import f as f_dist
     from matplotlib.patches import Ellipse
-    
+
     if len(points) < 3:
         return
     
@@ -1616,25 +1856,16 @@ def plot_confidence_ellipse(points, ax, color='blue', label=None, n_std=2.447,
     ax.add_patch(ellipse)
     
 
-def plot_oplsda_comparison(original_data, normalized_data, sample_names,
-                           sample_info_df, output_path, method_name):
-    """
-    佔位函式：OPLS-DA/PLS-DA 功能已停用，僅保留 PCA 提示。
-    """
-    print("  ℹ OPLS-DA/PLS-DA 視覺化已停用；此版本專注於 PCA 分析。")
-    print("    若需此功能，請於版本控管中啟用對應模組。")
-
-
-def _plot_simple_plsda_fallback(*args, **kwargs):
-    """保留函式簽名，提供簡短提示以維持相容性。"""
-    print("  ℹ PLS-DA 備援邏輯已停用，請參考 PCA 圖以評估組間差異。")
 
 
 def plot_correlation_heatmap(original_data, normalized_data, sample_names, output_path, method_name):
-    """繪製樣本相關性熱圖（標準化前後）"""
-    # 計算相關性矩陣
-    corr_original = np.corrcoef(original_data.T)
-    corr_normalized = np.corrcoef(normalized_data.T)
+    """繪製樣本 Spearman rank 相關性熱圖（標準化前後）"""
+    corr_original, _ = spearmanr(original_data, axis=0)
+    corr_normalized, _ = spearmanr(normalized_data, axis=0)
+    if corr_original.ndim == 0:
+        corr_original = np.array([[1.0]])
+    if corr_normalized.ndim == 0:
+        corr_normalized = np.array([[1.0]])
     
     # 繪圖
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
@@ -1745,22 +1976,31 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
     report.append(f"特徵數量: {n_features}")
     report.append(f"樣本數量: {n_samples}")
     
-    # ========== PQN 參考樣本資訊（新增）==========
+    # ========== 標準化參考資訊 ==========
     if pqn_info:
         report.append("")
-        report.append("【PQN 參考樣本資訊】")
-        report.append(f"參考策略: {pqn_info['reference_strategy']}")
-        report.append(f"QC 樣本數量: {pqn_info['qc_count']}")
-        report.append(f"真實樣本數量: {pqn_info['real_count']}")
-        
-        if pqn_info['qc_count'] > 0 and not np.isnan(pqn_info['qc_cv']):
-            report.append(f"QC 中位數 CV%: {pqn_info['qc_cv']:.2f}%")
-            if pqn_info['qc_cv'] < CV_QUALITY_THRESHOLDS['excellent']:
-                report.append("QC 質量評估: ✓✓ 優秀")
-            elif pqn_info['qc_cv'] < CV_QUALITY_THRESHOLDS['acceptable']:
-                report.append("QC 質量評估: ✓ 良好")
-            else:
-                report.append("QC 質量評估: ⚠ 需改進")
+        strategy = pqn_info['reference_strategy']
+        if strategy == 'SampleSpecific':
+            ref_label = pqn_info.get('ref_col_name', 'reference')
+            report.append(f"【Sample-Specific 校正資訊（{ref_label}）】")
+            report.append(f"真實樣本數量: {pqn_info['real_count']}")
+            report.append(f"QC 樣本數量: {pqn_info['qc_count']}（不參與校正）")
+            report.append(f"{ref_label} 中位數: {pqn_info['ref_median']:.2f}")
+            report.append(f"有效樣本數: {pqn_info['ref_valid_count']}/{pqn_info['real_count']}")
+        else:
+            report.append("【PQN 參考樣本資訊】")
+            report.append(f"參考策略: {strategy}")
+            report.append(f"QC 樣本數量: {pqn_info['qc_count']}")
+            report.append(f"真實樣本數量: {pqn_info['real_count']}")
+
+            if pqn_info['qc_count'] > 0 and not np.isnan(pqn_info['qc_cv']):
+                report.append(f"QC 中位數 CV%: {pqn_info['qc_cv']:.2f}%")
+                if pqn_info['qc_cv'] < CV_QUALITY_THRESHOLDS['excellent']:
+                    report.append("QC 質量評估: ✓✓ 優秀")
+                elif pqn_info['qc_cv'] < CV_QUALITY_THRESHOLDS['acceptable']:
+                    report.append("QC 質量評估: ✓ 良好")
+                else:
+                    report.append("QC 質量評估: ⚠ 需改進")
     
     # ========== CV% 評估 ==========
     report.append("")
@@ -1932,13 +2172,18 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
     report.append("")
     report.append("【建議與注意事項】")
     
-    # QC 相關建議
+    # 方法相關建議
     if pqn_info:
-        if pqn_info['qc_count'] < 3:
-            report.append("⚠ 建議：QC 樣本數量較少，建議至少使用 3 個 QC 樣本以提高標準化穩定性")
-        
-        if not np.isnan(pqn_info['qc_cv']) and pqn_info['qc_cv'] > 25:
-            report.append("⚠ 建議：QC CV% 較高，可能需要檢查實驗技術重現性")
+        if pqn_info['reference_strategy'] == 'SampleSpecific':
+            ref_label = pqn_info.get('ref_col_name', 'reference')
+            if pqn_info['ref_valid_count'] < pqn_info['real_count'] * 0.9:
+                missing = pqn_info['real_count'] - pqn_info['ref_valid_count']
+                report.append(f"⚠ 注意：有 {missing} 個樣本缺少有效 {ref_label} 值，未被校正")
+        else:
+            if pqn_info['qc_count'] < 3:
+                report.append("⚠ 建議：QC 樣本數量較少，建議至少使用 3 個 QC 樣本以提高標準化穩定性")
+            if not np.isnan(pqn_info['qc_cv']) and pqn_info['qc_cv'] > 25:
+                report.append("⚠ 建議：QC CV% 較高，可能需要檢查實驗技術重現性")
 
     # 組間差異相關建議
     if group_diff_results:
@@ -2032,8 +2277,52 @@ def find_sample_info_sheet(sheets):
     for sheet_name, df in sheets.items():
         if any(col for col in df.columns if 'normalization' in str(col).lower() or 'sample_type' in str(col).lower()):
             return df, sheet_name
-    
+
     return None, None
+
+
+def find_correction_column(df):
+    """在樣本資訊工作表尋找可用於校正的欄位（肌酐濃度等）"""
+    if df.shape[1] < 6:
+        print("警告：樣本資訊工作表欄位不足")
+        return None, None
+
+    # 預設使用第 F 欄（索引 5）
+    correction_col = df.columns[5]
+    valid_values = df[correction_col].dropna()
+
+    if len(valid_values) > 0:
+        numeric_count = valid_values.apply(
+            lambda x: str(x).replace('.', '').replace('-', '').replace('e', '')
+            .replace('E', '').replace('+', '').isnumeric()
+        ).sum()
+        if numeric_count / len(valid_values) > 0.5:
+            if 'creatinine' in str(correction_col).lower():
+                correction_type = 'Creatinine'
+            else:
+                correction_type = 'Normalization_adduct'
+            print(f"✓ 偵測到校正欄位: {correction_col} (類型: {correction_type})")
+            return correction_col, correction_type
+
+    # 如果第 F 欄不可用，嘗試找其他數值欄位
+    for col in df.columns[6:]:
+        valid_values = df[col].dropna()
+        if len(valid_values) > 0:
+            numeric_count = valid_values.apply(
+                lambda x: str(x).replace('.', '').replace('-', '').replace('e', '')
+                .replace('E', '').replace('+', '').isnumeric()
+            ).sum()
+            if numeric_count / len(valid_values) > 0.5:
+                if 'creatinine' in str(col).lower():
+                    correction_type = 'Creatinine'
+                else:
+                    correction_type = 'Normalization_adduct'
+                print(f"✓ 偵測到校正欄位: {col} (類型: {correction_type})")
+                return col, correction_type
+
+    print("錯誤：找不到可用於校正的欄位")
+    return None, None
+
 
 def clean_dataframe_for_excel(df):
     """清理DataFrame以避免Excel格式問題"""
@@ -2061,15 +2350,59 @@ from metabolomics.utils.excel_format import copy_cell_style  # noqa: E302
 
 # ==================== 主要處理函數 ====================
 
-def perform_normalization(data_df, sample_info_df, file_path, plots_dir=None, source_sheet_name=None):
-    """
-    執行 PQN 標準化處理
-    """
-    print(f"\n" + "="*70)
-    print("開始執行 PQN 標準化處理...")
-    print("="*70)
 
-    method_name = "PQN"
+def _extract_reference_values(sample_columns, col_to_info_row, correction_col):
+    """從 SampleInfo 中提取每個樣本的參考物質濃度。"""
+    reference_values = []
+    for sample in sample_columns:
+        info_row = col_to_info_row.get(sample)
+        if info_row is not None and pd.notna(info_row.get(correction_col)):
+            try:
+                ref_val = float(info_row[correction_col])
+                reference_values.append(ref_val if ref_val > 0 else np.nan)
+            except (ValueError, TypeError, KeyError):
+                reference_values.append(np.nan)
+        else:
+            reference_values.append(np.nan)
+
+    reference_values = np.array(reference_values)
+
+    # 排除 QC 樣本後統計有效比例
+    non_qc_mask = np.array([
+        not (str(col_to_info_row[s].get('Sample_Type', '')).upper() == 'QC')
+        if s in col_to_info_row else
+        not any(kw in str(s).upper() for kw in ['QC', 'POOLED'])
+        for s in sample_columns
+    ])
+    non_qc_count = int(np.sum(non_qc_mask))
+    valid_count = int(np.sum(~np.isnan(reference_values) & (reference_values > 0)))
+    print(f"✓ 有效參考值數量: {valid_count}/{non_qc_count} (排除 {len(sample_columns) - non_qc_count} 個 QC 樣本)")
+
+    if non_qc_count > 0 and valid_count < non_qc_count * 0.3:
+        print("❌ 警告：有效參考值不足 30%，無法執行 SampleSpecific 標準化")
+        return None
+
+    return reference_values
+
+
+def perform_normalization(data_df, sample_info_df, file_path,
+                          plots_dir=None, source_sheet_name=None,
+                          normalization_method='PQN', correction_col=None):
+    """
+    執行標準化處理
+
+    Parameters:
+    -----------
+    normalization_method : str
+        'PQN' or 'SampleSpecific'
+    correction_col : str, optional
+        SampleSpecific 模式下使用的校正欄位名稱
+    """
+    method_name = normalization_method
+
+    print(f"\n" + "="*70)
+    print(f"開始執行 {method_name} 標準化處理...")
+    print("="*70)
 
     # 獲取純樣本欄位（排除統計欄位）
     sample_columns = get_all_sample_columns(data_df, sample_info_df)
@@ -2094,13 +2427,27 @@ def perform_normalization(data_df, sample_info_df, file_path, plots_dir=None, so
     col_to_info_row = build_sample_info_mapping(sample_columns, sample_info_df)
     print(f"  名稱匹配: {len(col_to_info_row)}/{len(sample_columns)}")
 
-    # 執行 PQN 標準化
-    normalized_data, pqn_info = enhanced_pqn_normalization(
-        data_matrix,
-        sample_info_df,
-        sample_columns,
-        col_to_info_row=col_to_info_row
-    )
+    # ========== 根據方法分流 ==========
+    reference_values = None  # only set for SampleSpecific
+    if normalization_method == 'SampleSpecific':
+        # 提取參考值
+        reference_values = _extract_reference_values(
+            sample_columns, col_to_info_row, correction_col
+        )
+        if reference_values is None:
+            return None
+
+        normalized_data, pqn_info = sample_specific_normalization(
+            data_matrix, sample_info_df, sample_columns,
+            reference_values, col_to_info_row=col_to_info_row,
+            correction_col_name=correction_col,
+        )
+    else:
+        # PQN（預設）
+        normalized_data, pqn_info = enhanced_pqn_normalization(
+            data_matrix, sample_info_df, sample_columns,
+            col_to_info_row=col_to_info_row
+        )
     
     print(f"✓ 標準化完成")
     
@@ -2108,8 +2455,6 @@ def perform_normalization(data_df, sample_info_df, file_path, plots_dir=None, so
     output_dir = get_output_root(input_file=file_path)
     run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
     method_slug = method_name.replace(' ', '_')
-    source_label = get_normalization_source_label(source_sheet_name or SHEET_NAMES['qc_batch_scaling'])
-    result_label = f"{method_name} Result"
 
     if plots_dir is not None:
         figures_dir = plots_dir
@@ -2117,13 +2462,11 @@ def perform_normalization(data_df, sample_info_df, file_path, plots_dir=None, so
             "boxplot": Path(figures_dir) / f"Step4_Boxplot_{method_slug}.png",
             "cv": Path(figures_dir) / f"Step4_CV_{method_slug}.png",
             "rle": Path(figures_dir) / f"Step4_RLE_{method_slug}.png",
-            "pca": Path(figures_dir) / build_pca_comparison_filename(
-                "Step4",
-                source_label,
-                result_label,
-                grouping="sample_type",
-            ),
+            "density": Path(figures_dir) / f"Step4_Density_{method_slug}.png",
+            "dratio": Path(figures_dir) / f"Step4_Dratio_{method_slug}.png",
         }
+        if normalization_method == 'SampleSpecific':
+            figure_paths["scatter"] = Path(figures_dir) / f"Step4_Scatter_{method_slug}.png"
     else:
         figures_dir = build_plots_dir(
             "Normalization_Figures",
@@ -2141,14 +2484,17 @@ def perform_normalization(data_df, sample_info_df, file_path, plots_dir=None, so
             "rle": figures_dir / generate_output_filename(
                 f"Step4_RLE_{method_slug}", timestamp=run_timestamp, extension=".png"
             ),
-            "pca": figures_dir / build_pca_comparison_filename(
-                "Step4",
-                source_label,
-                result_label,
-                grouping="sample_type",
-                timestamp=run_timestamp,
+            "density": figures_dir / generate_output_filename(
+                f"Step4_Density_{method_slug}", timestamp=run_timestamp, extension=".png"
+            ),
+            "dratio": figures_dir / generate_output_filename(
+                f"Step4_Dratio_{method_slug}", timestamp=run_timestamp, extension=".png"
             ),
         }
+        if normalization_method == 'SampleSpecific':
+            figure_paths["scatter"] = figures_dir / generate_output_filename(
+                f"Step4_Scatter_{method_slug}", timestamp=run_timestamp, extension=".png"
+            )
     print(f"✓ Excel 將輸出到: {output_dir}")
     print(f"✓ 本次圖表輸出目錄: {figures_dir}")
     # 分離有效樣本用於評估
@@ -2204,21 +2550,41 @@ def perform_normalization(data_df, sample_info_df, file_path, plots_dir=None, so
     except Exception as e:
         print(f"  ⚠ RLE Plot 生成失敗: {e}")
 
-    # 4. PCA對比圖（改進版：加入信賴橢圓）
+    # 4. NaN-aware KDE 密度圖
     try:
-        plot_pca_with_confidence_ellipse(
-            original_data_valid, normalized_data_valid, sample_columns_valid, sample_info_df,
-            figure_paths["pca"],
+        plot_density_comparison(
+            original_data_valid, normalized_data_valid, sample_columns_valid,
+            figure_paths["density"],
             method_name,
-            exclude_qc=True,
+            sample_info_df=sample_info_df,
             col_to_info_row=col_to_info_row,
-            source_label=source_label,
-            result_label=result_label,
         )
     except Exception as e:
-        print(f"  ⚠ PCA對比圖生成失敗: {e}")
-    
-    
+        print(f"  ⚠ 密度圖生成失敗: {e}")
+
+    # 6. D-ratio 密度圖（技術雜訊 vs 生物變異）
+    try:
+        plot_dratio_density(
+            original_data_valid, normalized_data_valid, sample_columns_valid,
+            sample_info_df, figure_paths["dratio"],
+            col_to_info_row=col_to_info_row,
+        )
+    except Exception as e:
+        print(f"  ⚠ D-ratio 圖生成失敗: {e}")
+
+    # 7. Total Intensity vs Reference 散點圖（僅 SampleSpecific）
+    if reference_values is not None and "scatter" in figure_paths:
+        try:
+            plot_intensity_vs_reference(
+                original_data_valid, normalized_data_valid, sample_columns_valid,
+                reference_values[valid_sample_mask],
+                figure_paths["scatter"],
+                correction_col or 'Reference',
+                sample_info_df=sample_info_df,
+                col_to_info_row=col_to_info_row,
+            )
+        except Exception as e:
+            print(f"  ⚠ 散點圖生成失敗: {e}")
 
     # 創建結果DataFrame（只包含樣本數據和CV%）
     normalized_df = pd.DataFrame()
@@ -2373,7 +2739,7 @@ def save_normalization_results(
 
 # ==================== 主程式 ====================
 
-def main(input_file=None, session_dir=None):
+def main(input_file=None, session_dir=None, normalization_method='PQN'):
     """
     主函數 - 支援 GUI 和獨立運行
 
@@ -2381,24 +2747,21 @@ def main(input_file=None, session_dir=None):
     -----------
     input_file : str, optional
         輸入檔案路徑（由 GUI 傳入）
-        如果為 None，則顯示檔案選擇對話框
     session_dir : str or Path, optional
         Session directory for pipeline-aware output.
-        When provided, outputs are written into this directory.
+    normalization_method : str
+        'PQN' or 'SampleSpecific'（由 GUI 傳入）
 
     Returns:
     --------
-    dict or None
-        - None: 用戶取消檔案選擇
-        - dict: 執行成功，包含統計資訊
+    ProcessingResult
     """
     print("=" * 80)
-    print("  代謝體學標準化程式 v4.0")
-    print("  標準化方法: Probabilistic Quotient Normalization (PQN)")
+    print("  代謝體學標準化程式 v4.1")
+    print(f"  標準化方法: {normalization_method}")
     print("  - 視覺化評估工具（盒鬚圖、PCA、CV%分佈、RLE 等）")
     print("=" * 80)
-    
-    # 🔧 關鍵修正：如果沒有提供 input_file，則顯示對話框
+
     if input_file is None:
         raise ValueError("input_file is required; GUI must provide the file path.")
 
@@ -2433,12 +2796,21 @@ def main(input_file=None, session_dir=None):
     
     print(f"✓ 使用樣本資訊工作表: {sample_info_sheet_name}")
 
+    # SampleSpecific 模式需要校正欄位
+    correction_col = None
+    if normalization_method == 'SampleSpecific':
+        correction_col, correction_type = find_correction_column(sample_info_df)
+        if not correction_col:
+            print("❌ 錯誤：SampleSpecific 模式需要校正欄位，但找不到")
+            raise Exception("找不到校正欄位（SampleInfo 中需要數值型參考欄位）")
+        print(f"✓ 校正欄位: {correction_col} (類型: {correction_type})")
+
     # 確定要標準化的資料工作表
     data_df, data_sheet_name = determine_correction_sheet(sheets)
     if data_df is None:
         print("❌ 錯誤：找不到要標準化的資料工作表")
         raise Exception("找不到資料工作表")
-    
+
     print(f"✓ 使用資料工作表: {data_sheet_name}")
 
     # 提取 Sample_Type 資訊行（不參與數值計算，保存時回插）
@@ -2462,6 +2834,8 @@ def main(input_file=None, session_dir=None):
         input_file,
         plots_dir=_session_plots,
         source_sheet_name=data_sheet_name,
+        normalization_method=normalization_method,
+        correction_col=correction_col,
     )
     
     if result is None:
@@ -2499,27 +2873,6 @@ def main(input_file=None, session_dir=None):
     if not output_path:
         raise Exception("儲存結果失敗")
     
-    print("\n" + "=" * 80)
-    print("✅ 標準化完成！")
-    print("=" * 80)
-    print(f"\n📁 輸出資料夾: {output_dir}")
-    print(f"📄 Excel檔案: {Path(output_path).name}")
-    
-    print("\n📊 生成的視覺化圖表:")
-    print(f"  - 儲存路徑: {figures_dir}")
-    print("  - 圖檔: Step4_Boxplot_*.png, Step4_CV_*.png, Step4_RLE_*.png, Step4_PCA_*_vs_*_grouped_by_sample_type_*.png")
-    
-    print("\n" + "=" * 80)
-    print("📈 標準化質量評估摘要:")
-    print("=" * 80)
-    print(f"  中位數CV%改善: {quality_metrics['median_cv_before']:.2f}% → {quality_metrics['median_cv_after']:.2f}%")
-    print(f"  CV%降低: {quality_metrics['cv_improvement']:.2f}% ({quality_metrics['cv_improvement_pct']:.1f}%)")
-    print(f"  改善特徵比例: {quality_metrics['cv_improved_ratio']:.1f}%")
-    print(f"  樣本總強度CV%: {quality_metrics['total_cv_before']:.2f}% → {quality_metrics['total_cv_after']:.2f}%")
-    
-    if not np.isnan(quality_metrics['sample_corr_mean_before']):
-        print(f"  樣本間平均相關性: {quality_metrics['sample_corr_mean_before']:.4f} → {quality_metrics['sample_corr_mean_after']:.4f}")
-    
     # 計算整體評分
     score = 0
     if quality_metrics['cv_improvement'] > 0:
@@ -2530,21 +2883,11 @@ def main(input_file=None, session_dir=None):
         score += 25
     if quality_metrics['cv_improved_ratio'] > 50:
         score += 25
-    
-    print(f"\n  整體評分: {score}/100", end=" ")
-    if score >= 75:
-        print("★★★★★ (優秀)")
-    elif score >= 50:
-        print("★★★★ (良好)")
-    elif score >= 25:
-        print("★★★ (尚可)")
-    else:
-        print("★★ (需改進)")
-    
-    print("=" * 80)
-    
-    print("\n✅ 所有檔案已成功儲存！")
-    print(f"✅ 完整路徑: {output_path}")
+
+    print(f"\n  ✓ Step 4 完成 → {Path(output_path).name}")
+    print(f"    CV%: {quality_metrics['median_cv_before']:.1f}% → {quality_metrics['median_cv_after']:.1f}%"
+          f" (改善 {quality_metrics['cv_improvement_pct']:.0f}%, {quality_metrics['cv_improved_ratio']:.0f}% features)")
+    print(f"    品質評分: {score}/100")
     
     # 🎯 返回統計資訊給 GUI
     # 從 normalized_df 中提取樣本數量（排除第一列 FeatureID）

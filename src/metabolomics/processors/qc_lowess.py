@@ -110,7 +110,7 @@ def exclude_fallback_istd_rows(data_df, file_path, source_sheet_name):
     filtered_df.attrs['excluded_fallback_istd_count'] = excluded_count
     filtered_df.attrs['fallback_istd_feature_ids'] = sorted(red_marked_feature_ids)
 
-    print(f"   - 偵測到 {excluded_count} 個紅字 ISTD；它們會保留在 'RawIntensity'，但不會進入 'QC LOWESS result' 與 PCA。")
+    print(f"   - 偵測到 {excluded_count} 個紅字 ISTD；它們會保留在 'RawIntensity'，但不會進入 'QC LOWESS result'。")
     print(f"   - QC-LOWESS 實際處理特徵數: {len(filtered_df)}")
 
     if filtered_df.empty:
@@ -225,11 +225,14 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
     corrected = []
     factors = []
     for order, intensity in zip(all_orders_arr, all_intensities_arr):
-        if not np.isfinite(intensity) or intensity <= 0:
-            corrected.append(0.0)
+        if not np.isfinite(intensity):
+            corrected.append(np.nan)
+            continue
+        if intensity <= 0:
+            corrected.append(float(intensity))
             continue
         fitted = predict(order)
-        if not np.isfinite(fitted) or fitted <= 0:
+        if not np.isfinite(fitted) or fitted <= 0 or fitted < median_qc * 0.01:
             corrected.append(float(intensity))
             continue
         factor = median_qc / fitted
@@ -480,10 +483,12 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             batch_data = []
             for sample in valid_samples:
                 order = injection_orders[sample]
-                intensity = feature_row.get(sample, 0)
-                if pd.isna(intensity) or intensity <= 0:
-                    intensity = 0
-                batch_data.append((sample, order, float(intensity)))
+                intensity = feature_row.get(sample, np.nan)
+                if pd.isna(intensity):
+                    intensity = np.nan
+                else:
+                    intensity = float(intensity)
+                batch_data.append((sample, order, intensity))
 
             batch_data.sort(key=lambda x: x[1])
             all_sample_names = [d[0] for d in batch_data]
@@ -962,8 +967,6 @@ def load_and_process_data(file_path):
             if len(empty_columns) > 5:
                 print(f"     ... 還有 {len(empty_columns) - 5} 個樣本")
 
-        # 填充 NaN 為 0
-        istd_df = istd_df.fillna(0)
         print(f"✓ {source_sheet_name} 數據類型檢查：樣本欄位已轉換為數值型")
 
         # ===== 防呆16: 數值範圍檢查 =====
@@ -1086,33 +1089,48 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
                     'Original_QC_CV%': np.nan,
                     'Corrected_QC_CV%': np.nan,
                     'CV_Improvement%': np.nan,
+                    'Original_Robust_CV%': np.nan,
+                    'Corrected_Robust_CV%': np.nan,
+                    'Robust_CV_Improvement%': np.nan,
                     'Variance_Test_pvalue': np.nan
                 })
                 continue
-            
+
             qc_values_istd = np.array(qc_values_istd[:min_len])
             qc_values_lowess = np.array(qc_values_lowess[:min_len])
-            
+
             # ========== 計算 CV% ==========
             original_cv = (np.std(qc_values_istd, ddof=1) / np.mean(qc_values_istd)) * 100
             corrected_cv = (np.std(qc_values_lowess, ddof=1) / np.mean(qc_values_lowess)) * 100
             cv_improvement = original_cv - corrected_cv
-            
+
+            # Robust CV (MAD/median) — 適用於非常態質譜數據
+            orig_med = np.nanmedian(qc_values_istd)
+            corr_med = np.nanmedian(qc_values_lowess)
+            orig_mad = np.nanmedian(np.abs(qc_values_istd - orig_med))
+            corr_mad = np.nanmedian(np.abs(qc_values_lowess - corr_med))
+            original_robust_cv = (orig_mad / orig_med * 100) if orig_med > 0 else np.nan
+            corrected_robust_cv = (corr_mad / corr_med * 100) if corr_med > 0 else np.nan
+            robust_cv_improvement = original_robust_cv - corrected_robust_cv if np.isfinite(original_robust_cv) and np.isfinite(corrected_robust_cv) else np.nan
+
             # ✅ 收集 CV% 改善值（用於整體評估）
             if not np.isnan(cv_improvement):
                 all_cv_improvements.append(cv_improvement)
-            
+
             # ========== ✅ Levene's test（單一特徵）==========
             try:
                 levene_stat, levene_pvalue = levene(qc_values_istd, qc_values_lowess)
             except Exception:
                 levene_pvalue = np.nan
-            
+
             cv_results.append({
                 'FeatureID': feature_id,
                 'Original_QC_CV%': original_cv,
                 'Corrected_QC_CV%': corrected_cv,
                 'CV_Improvement%': cv_improvement,
+                'Original_Robust_CV%': original_robust_cv,
+                'Corrected_Robust_CV%': corrected_robust_cv,
+                'Robust_CV_Improvement%': robust_cv_improvement,
                 'Variance_Test_pvalue': levene_pvalue
             })
             
@@ -2047,12 +2065,6 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
         unique_batch_labels = sorted({batch for memberships in batch_memberships for batch in memberships if batch})
 
         if grouping == 'batch' and len(unique_batch_labels) < 2:
-            """
-            legacy skip log retained to neutralize malformed historical line
-            print(f"只有 {len(unique_batch_labels)} 個 batch，跳過依 batch 分組的 PCA 圖。")
-            print(f"⚠️  只有 {len(unique_batch_labels)} 個 batch，跳過依 batch 分組的 PCA 圖。")
-            """
-            print(f"只有 {len(unique_batch_labels)} 個 batch，跳過依 batch 分組的 PCA 圖。")
             return None
 
         qc_outliers_left = {name for name, is_out in qc_outlier_map_istd.items() if is_out}
@@ -2115,12 +2127,7 @@ def perform_pca_analysis(istd_df, lowess_df, sample_columns, sample_info_df,
 # ========== 主程式 ==========
 def main(input_file=None, session_dir=None):
     """主程式入口"""
-    print("="*70)
-    print("🔬 QC-LOWESS 批次效應校正工具 v3")
-    print("   ✅ 簡化校正邏輯：CV% 改善 ≥ 2%")
-    print("   ✅ 統計方法：Levene's test（單一特徵）+ Wilcoxon test（整體評估）")
-    print("   ✅ 進階統計：Mann-Kendall + R²/RMSE（副表）")
-    print("="*70)
+    print("QC-LOWESS 批次效應校正")
     
     if input_file is None:
         raise ValueError("input_file is required; GUI must provide the file path.")
@@ -2132,40 +2139,27 @@ def main(input_file=None, session_dir=None):
     
     if input_file:
         file_path = input_file
-        print(f"\n📂 使用傳入的檔案: {os.path.basename(file_path)}")
     else:
         root = tk.Tk()
         root.withdraw()
-        
+
         file_path = filedialog.askopenfilename(
             title="選擇 Excel 檔案",
             filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
         )
-        
+
         if not file_path:
-            print("❌ 未選擇檔案，程式結束")
+            print("未選擇檔案，程式結束")
             return
-        
-        print(f"\n📂 選擇的檔案: {os.path.basename(file_path)}")
-    
-    print(f"\n{'='*70}")
-    print(f"📥 載入數據...")
-    print(f"{'='*70}")
+
+    print(f"  輸入: {os.path.basename(file_path)}")
     
     raw_df, istd_df, sample_info_df, sample_type_row = load_and_process_data(file_path)
     source_sheet_name = istd_df.attrs.get('source_sheet_name', SHEET_NAMES['istd_correction'])
 
-    print(f"\n{'='*70}")
-    print(f"🔧 執行 QC-LOWESS 校正...")
-    print(f"{'='*70}")
-
     lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats, trend_plot_data = (
         perform_lowess_normalization(istd_df, sample_info_df)
     )
-
-    print(f"\n{'='*70}")
-    print(f"💾 保存結果...")
-    print(f"{'='*70}")
 
     timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
     if session_dir is not None:
@@ -2192,36 +2186,7 @@ def main(input_file=None, session_dir=None):
         print("❌ 結果保存失敗")
         return
     
-    print(f"\n{'='*70}")
-    print(f"📊 執行 PCA 分析...")
-    print(f"{'='*70}")
-    
-    batch_pca_path = perform_pca_analysis(
-        istd_df, lowess_df, sample_columns, sample_info_df,
-        _plots_dir, grouping='batch'
-    )
-    sample_type_pca_path = perform_pca_analysis(
-        istd_df, lowess_df, sample_columns, sample_info_df,
-        _plots_dir, grouping='sample_type'
-    )
-    
-    print(f"\n{'='*70}")
-    print(f"✅ 所有分析完成！")
-    print(f"{'='*70}")
-    print(f"\n📁 輸出內容:")
-    print(f"  - Excel 結果: output/{os.path.basename(output_file)}")
-    print(f"    ├── {source_sheet_name}（保留原格式）")
-    print(f"    ├── QC LOWESS result（主表：Levene's test + CV%）")
-    print(f"    ├── {QC_LOWESS_ADVANCED_SHEET}（副表：Mann-Kendall + R²/RMSE）")
-    print(f"    └── SampleInfo")
-    print(f"\n  - 圖表輸出: {_plots_dir}")
-    print(f"    ├── Step2_PCA_*_vs_QC_LOWESS_result_*.png")
-    print(f"    ├── Step2_Pvalue_Distribution_Levene_*.png")
-    print(f"    └── Step2_Trend_Fitting_Feature_*.png")
-    print(f"\n  💡 統計方法:")
-    print(f"    - Levene's test: 檢測單一特徵方差變化")
-    print(f"    - Wilcoxon test: 檢測整體 CV% 是否顯著降低（終端機顯示）")
-    print(f"\n{'='*70}\n")
+    print(f"\n  ✓ QC-LOWESS 完成 → {os.path.basename(output_file)}")
     
     metabolites_count = len(lowess_df)
     samples_count = len(sample_columns)

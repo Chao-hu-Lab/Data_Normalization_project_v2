@@ -122,59 +122,6 @@ class TestConcentrationNormHelpers:
         assert mapping["NormalBC2257_DNA"]["Sample_Type"] == "Normal"
         assert mapping["Breast_Cancer_Tissue_pooled_QC_1"]["Sample_Type"] == "QC"
 
-    def test_plot_pca_with_confidence_ellipse_excludes_qc_and_uses_dynamic_groups(
-        self,
-        conc_norm_module,
-        tmp_path,
-        monkeypatch,
-    ):
-        captured = {}
-
-        def fake_plotter(*args, **kwargs):
-            captured["sample_names"] = args[4]
-            captured["sample_types"] = args[5]
-            output_path = kwargs.get("output_path")
-            if output_path:
-                with open(output_path, "wb") as handle:
-                    handle.write(b"png")
-            return None, (None, None)
-
-        monkeypatch.setattr(conc_norm_module, "plot_pca_comparison_real_sample_style", fake_plotter)
-
-        original_data = pd.DataFrame(
-            {
-                "QC_1": [10.0, 11.0, 12.0],
-                "Normal_A": [20.0, 21.0, 22.0],
-                "Benign_A": [30.0, 31.0, 32.0],
-                "Exposure_A": [40.0, 41.0, 42.0],
-            }
-        ).to_numpy()
-        normalized_data = original_data * 1.1
-        sample_names = ["QC_1", "Normal_A", "Benign_A", "Exposure_A"]
-        sample_info_df = pd.DataFrame(
-            {
-                "Sample_Name": ["QC_1", "Normal_A", "Benign_A", "Exposure_A"],
-                "Sample_Type": ["QC", "Normal", "Benign", "Exposure"],
-            }
-        )
-        col_to_info_row = {
-            name: sample_info_df.iloc[index]
-            for index, name in enumerate(sample_names)
-        }
-
-        conc_norm_module.plot_pca_with_confidence_ellipse(
-            original_data,
-            normalized_data,
-            sample_names,
-            sample_info_df,
-            tmp_path / "step4_pca.png",
-            "PQN",
-            exclude_qc=True,
-            col_to_info_row=col_to_info_row,
-        )
-
-        assert captured["sample_names"] == ["Normal_A", "Benign_A", "Exposure_A"]
-        assert captured["sample_types"] == ["Normal", "Control", "Exposure"]
 
 
 class TestConcentrationNormOutput:
@@ -243,7 +190,7 @@ class TestConcentrationNormOutput:
         conc_norm_module,
         sample_input_file,
     ):
-        """Step 4 should only emit Fig1-Fig4 in the plots directory."""
+        """Step 4 (PQN) should generate expected figure set in plots directory."""
         step1_result = istd_module.main(input_file=sample_input_file)
         step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
         step2_result = qc_lowess_module.main(input_file=step1_output)
@@ -256,13 +203,13 @@ class TestConcentrationNormOutput:
 
         plot_files = os.listdir(plots_dir)
 
-        assert any(name.startswith("Fig1_") for name in plot_files)
-        assert any(name.startswith("Fig2_") for name in plot_files)
-        assert any(name.startswith("Fig3_") for name in plot_files)
-        assert any(name.startswith("Fig4_") for name in plot_files)
-        assert not any(name.startswith("Fig5_") for name in plot_files)
-        assert not any(name.startswith("Fig6_") for name in plot_files)
-        assert not any(name.startswith("Fig7_") for name in plot_files)
+        # Step4 generates: Boxplot, CV, RLE, Density, Dratio (no PCA — NaN incompatible)
+        assert any("Boxplot" in name for name in plot_files), f"Missing Boxplot in {plot_files}"
+        assert any("CV" in name for name in plot_files), f"Missing CV in {plot_files}"
+        assert any("RLE" in name for name in plot_files), f"Missing RLE in {plot_files}"
+        assert not any("PCA" in name or "pca" in name.lower() for name in plot_files), f"Unexpected PCA in {plot_files}"
+        # Scatter plot only for SampleSpecific mode — should NOT appear in default PQN
+        assert not any("Scatter" in name for name in plot_files), f"Unexpected Scatter in PQN mode: {plot_files}"
 
     @pytest.mark.slow
     @pytest.mark.integration

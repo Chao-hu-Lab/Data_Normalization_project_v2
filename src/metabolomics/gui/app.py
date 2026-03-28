@@ -221,6 +221,9 @@ class DataNormalizationApp:
         self.auto_run_mode = False
         self._split_ratio_applied = False
         self.current_step_index = -1  # 追蹤當前步驟索引
+
+        # Step 4 方法選擇
+        self.normalization_method_var = tk.StringVar(value='PQN')
         
         # 統計資訊
         self.current_stats = {
@@ -1126,7 +1129,27 @@ class DataNormalizationApp:
             )
             input_source_label.pack(side=tk.LEFT)
             self.step_input_labels.append(input_source_label)
-            
+
+            # Step 4 專用：方法選擇 RadioButton
+            if i == 3:
+                method_frame = tk.Frame(info_section, bg=self.color_scheme['panel_bg'])
+                method_frame.pack(anchor='w', pady=(4, 0))
+                tk.Label(
+                    method_frame, text="Method:",
+                    font=(FONTS['sans'], 10),
+                    fg=self.color_scheme['text_light'],
+                    bg=self.color_scheme['panel_bg'],
+                ).pack(side=tk.LEFT)
+                for val, label in [('PQN', 'PQN'), ('SampleSpecific', 'Sample-Specific')]:
+                    tk.Radiobutton(
+                        method_frame, text=label, value=val,
+                        variable=self.normalization_method_var,
+                        font=(FONTS['sans'], 10),
+                        bg=self.color_scheme['panel_bg'],
+                        activebackground=self.color_scheme['panel_bg'],
+                        selectcolor=self.color_scheme['panel_bg'],
+                    ).pack(side=tk.LEFT, padx=(6, 0))
+
             # === 右側：控制按鈕區 ===
             control_section = tk.Frame(
                 card_inner,
@@ -1873,10 +1896,16 @@ class DataNormalizationApp:
             sys.stderr = StreamToLogger(self.logger, logging.ERROR)
             
             try:
+                # Build kwargs — Step 4 gets normalization_method
+                extra_kwargs = {}
+                if step['name'] == 'Step 4: Conc. Normalization':
+                    extra_kwargs['normalization_method'] = self.normalization_method_var.get()
+
                 # Execute subprocess
                 result = script_module.main(
                     input_file=current_input,
                     session_dir=self.current_session_dir,
+                    **extra_kwargs,
                 )
                 
             finally:
@@ -1984,6 +2013,11 @@ class DataNormalizationApp:
                 "Step 2 will use 'RawIntensity' as input. "
                 "Red-marked ISTD rows stay in 'RawIntensity' and will be excluded "
                 "from downstream corrected result sheets."
+            )
+        if step_name == 'Step 3: QC Batch Scaling' and skip_reason == 'single_batch':
+            return (
+                "Only one batch detected — cross-batch scaling is not applicable. "
+                "Step 4 will use the Step 2 output directly."
             )
         return "Downstream steps will use the best available upstream sheet."
 
