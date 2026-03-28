@@ -244,6 +244,42 @@ class TestQCBatchScalingHelpers:
 
         assert mean_abs_after < mean_abs_before
 
+    def test_scale_dataframe_by_qc_medians_leaves_sparse_qc_batch_unchanged(self):
+        module = load_qc_batch_scaling_module()
+
+        data_df = pd.DataFrame(
+            {
+                "FeatureID": ["F1", "F2"],
+                "QC_A1": [10.0, 20.0],
+                "QC_A2": [12.0, 24.0],
+                "QC_B1": [np.nan, 0.0],
+                "Sample_A1": [30.0, 60.0],
+                "Sample_B1": [90.0, 180.0],
+            }
+        )
+        sample_columns = ["QC_A1", "QC_A2", "QC_B1", "Sample_A1", "Sample_B1"]
+        batch_to_qc = {
+            "A": ["QC_A1", "QC_A2"],
+            "B": ["QC_B1"],
+        }
+        batch_to_samples = {
+            "A": ["QC_A1", "QC_A2", "Sample_A1"],
+            "B": ["QC_B1", "Sample_B1"],
+        }
+
+        result_df, invalid_median_counts = module.scale_dataframe_by_qc_medians(
+            data_df,
+            sample_columns,
+            batch_to_qc,
+            batch_to_samples,
+        )
+
+        assert result_df.loc[0, "Sample_A1"] == pytest.approx(30.0 / 11.0)
+        assert result_df.loc[1, "Sample_A1"] == pytest.approx(60.0 / 22.0)
+        assert result_df["Sample_B1"].tolist() == pytest.approx([90.0, 180.0])
+        assert invalid_median_counts["A"] == 0
+        assert invalid_median_counts["B"] == 2
+
     def test_plot_batch_residual_analysis_uses_single_batch_labels(self, tmp_path):
         module = load_qc_batch_scaling_module()
 
@@ -273,7 +309,7 @@ class TestQCBatchScalingHelpers:
 
 
 class TestQCBatchScalingOutput:
-    def test_generate_pca_plots_skips_batch_plot_when_only_one_batch(self, tmp_path):
+    def test_generate_step3_plots_skips_batch_diagnostics_when_only_one_batch(self, tmp_path):
         module = load_qc_batch_scaling_module()
 
         source_df = pd.DataFrame(
@@ -295,7 +331,7 @@ class TestQCBatchScalingOutput:
             }
         )
 
-        plots_dir = module.generate_pca_plots(
+        plots_dir = module.generate_step3_plots(
             source_df,
             result_df,
             ["QC_1", "QC_2", "QC_3", "Sample_A1", "Sample_A2"],
@@ -306,9 +342,9 @@ class TestQCBatchScalingOutput:
 
         plot_names = {path.name for path in Path(plots_dir).glob("*.png")}
         # PCA removed — no PCA plots should be generated
-        assert not any("PCA" in name for name in plot_names), f"Unexpected PCA plot: {plot_names}"
+        assert not plot_names, f"Unexpected Step 3 plots for single batch: {plot_names}"
 
-    def test_generate_pca_plots_also_writes_residual_analysis(self, tmp_path):
+    def test_generate_step3_plots_writes_batch_diagnostics(self, tmp_path):
         module = load_qc_batch_scaling_module()
 
         source_df = pd.DataFrame(
@@ -339,7 +375,7 @@ class TestQCBatchScalingOutput:
             }
         )
 
-        plots_dir = module.generate_pca_plots(
+        plots_dir = module.generate_step3_plots(
             source_df,
             result_df,
             ["QC_1", "QC_2", "QC_3", "Sample_A1", "Sample_B1"],
@@ -351,8 +387,9 @@ class TestQCBatchScalingOutput:
         plot_names = {path.name for path in Path(plots_dir).glob("*.png")}
 
         # PCA removed — only residual analysis should be generated
-        assert not any("PCA" in name for name in plot_names), f"Unexpected PCA plot: {plot_names}"
         assert "Step3_Residual_Analysis_20260308_130000.png" in plot_names
+        assert "Step3_Batch_QC_Median_Alignment_20260308_130000.png" in plot_names
+        assert "Step3_Batch_Boxplot_20260308_130000.png" in plot_names
 
         residual_plots = list(Path(plots_dir).glob("Step3_Residual_Analysis_*.png"))
         assert residual_plots, "Residual Analysis figure should be generated"

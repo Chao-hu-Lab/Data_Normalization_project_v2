@@ -9,6 +9,9 @@ These tests verify:
 """
 import pytest
 import pandas as pd
+from pathlib import Path
+from openpyxl import load_workbook
+from openpyxl.styles import Font
 
 
 class TestISTDCorrectionInput:
@@ -57,11 +60,56 @@ class TestISTDCorrectionOutput:
     def test_skips_when_fewer_than_five_istds_have_qc_cv_below_20(
         self,
         istd_module,
-        sample_input_file,
         workbook_sheet_names,
+        tmp_path,
     ):
         """Step 1 should skip when too few ISTDs meet the QC CV gate."""
-        result = istd_module.main(input_file=sample_input_file)
+        sample_names = ["QC1", "Exposure_1", "QC2", "Control_1", "QC3", "Exposure_2"]
+        raw_df = pd.DataFrame(
+            [
+                {
+                    "FeatureID": "Sample_Type",
+                    "QC1": "QC",
+                    "Exposure_1": "Exposure",
+                    "QC2": "QC",
+                    "Control_1": "Control",
+                    "QC3": "QC",
+                    "Exposure_2": "Exposure",
+                },
+                {"FeatureID": "401.1000/5.10", "QC1": 100000, "Exposure_1": 101000, "QC2": 99500, "Control_1": 100500, "QC3": 100800, "Exposure_2": 100900},
+                {"FeatureID": "455.2000/7.20", "QC1": 120000, "Exposure_1": 119500, "QC2": 121000, "Control_1": 120500, "QC3": 119800, "Exposure_2": 120200},
+                {"FeatureID": "512.3000/9.30", "QC1": 90000, "Exposure_1": 90500, "QC2": 91000, "Control_1": 89900, "QC3": 90300, "Exposure_2": 90700},
+                {"FeatureID": "620.4000/11.40", "QC1": 150000, "Exposure_1": 149500, "QC2": 151000, "Control_1": 150500, "QC3": 149800, "Exposure_2": 150100},
+                {"FeatureID": "730.5000/13.50", "QC1": 300000, "Exposure_1": 330000, "QC2": 280000, "Control_1": 310000, "QC3": 350000, "Exposure_2": 295000},
+                {"FeatureID": "810.6000/15.60", "QC1": 50000, "Exposure_1": 60000, "QC2": 52000, "Control_1": 58000, "QC3": 48000, "Exposure_2": 61000},
+            ]
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": sample_names,
+                "Sample_Type": ["QC", "Exposure", "QC", "Control", "QC", "Exposure"],
+                "Injection_Order": [1, 2, 3, 4, 5, 6],
+                "Batch": ["A", "A", "A", "A", "A", "A"],
+                "Injection_Volume": [20] * 6,
+                "Creatinine_mg_dL": [None, 95.0, None, 88.0, None, 102.0],
+            }
+        )
+        workbook_path = tmp_path / "insufficient_istd.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            raw_df.to_excel(writer, sheet_name="RawIntensity", index=False)
+            sample_info_df.to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        workbook = load_workbook(workbook_path)
+        try:
+            sheet = workbook["RawIntensity"]
+            red_font = Font(color="FFFF0000")
+            for row_index in range(3, 7):
+                sheet.cell(row=row_index, column=1).font = red_font
+            workbook.save(workbook_path)
+        finally:
+            workbook.close()
+
+        result = istd_module.main(input_file=str(workbook_path))
 
         assert getattr(result, "extra", {}).get("skipped") is True
         assert getattr(result, "extra", {}).get("skip_reason") == "insufficient_good_istd"
@@ -246,3 +294,57 @@ class TestISTDCorrectionHelpers:
 
         assert sample_columns == ["Sample_A1", "Sample_B1"]
         assert qc_columns == []
+
+    def test_generate_step1_diagnostic_plots_writes_expected_files(self, istd_module, tmp_path):
+        sample_columns = ["QC_1", "Sample_A1", "QC_2", "Sample_B1"]
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": sample_columns,
+                "Sample_Type": ["QC", "Exposure", "QC", "Control"],
+                "Batch": ["A", "A", "B", "B"],
+                "Injection_Order": [1, 2, 3, 4],
+            }
+        )
+        original_df = pd.DataFrame(
+            {
+                "FeatureID": ["ISTD_1", "ISTD_2", "F1", "F2", "F3"],
+                "is_ISTD": [True, True, False, False, False],
+                "QC_1": [100.0, 200.0, 10.0, 12.0, 9.0],
+                "Sample_A1": [104.0, 198.0, 15.0, 18.0, 14.0],
+                "QC_2": [98.0, 205.0, 11.0, 13.0, 10.0],
+                "Sample_B1": [101.0, 202.0, 16.0, 19.0, 15.0],
+            }
+        )
+        results_df = pd.DataFrame(
+            {
+                "FeatureID": ["F1", "F2", "F3"],
+                "QC_1": [10.5, 11.5, 9.5],
+                "Sample_A1": [14.5, 17.5, 13.5],
+                "QC_2": [10.8, 12.2, 9.8],
+                "Sample_B1": [15.2, 18.2, 14.2],
+            }
+        )
+        cv_results_df = pd.DataFrame(
+            {
+                "FeatureID": [f"F{i}" for i in range(1, 13)],
+                "Original_QC_CV%": [18.0 + i for i in range(12)],
+                "Corrected_QC_CV%": [10.0 + (i * 0.5) for i in range(12)],
+                "Variance_Test_pvalue": [0.01, 0.02, 0.03, 0.04, 0.15, 0.18, 0.21, 0.32, 0.41, 0.52, 0.61, 0.74],
+            }
+        )
+
+        plots_dir = istd_module.generate_step1_diagnostic_plots(
+            original_df,
+            results_df,
+            sample_columns,
+            sample_info_df,
+            cv_results_df,
+            plots_dir=tmp_path,
+            timestamp="20260328_120000",
+        )
+
+        plot_names = {path.name for path in Path(plots_dir).glob("*.png")}
+        assert "Step1_Pvalue_Distribution_20260328_120000.png" in plot_names
+        assert "Step1_ISTD_Tracking_20260328_120000.png" in plot_names
+        assert "Step1_CV_Comparison_20260328_120000.png" in plot_names
+        assert "Step1_Density_Overlay_20260328_120000.png" in plot_names

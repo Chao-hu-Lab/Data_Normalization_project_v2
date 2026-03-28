@@ -4,24 +4,14 @@ import os
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
-from matplotlib.patches import Ellipse
-import scipy.stats as stats
-from scipy.stats import chi2
 import warnings
 
 warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
 from metabolomics.utils.data_helpers import get_valid_values
-from metabolomics.utils.plotting import (
-    setup_matplotlib,
-    plot_pca_comparison_qc_style,
-    build_pca_comparison_filename,
-    build_pca_comparison_suptitle,
-)
+from metabolomics.utils.plotting import setup_matplotlib
 from metabolomics.utils.constants import (
     FONT_SIZES,
     COLORBLIND_COLORS,
@@ -1052,72 +1042,6 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
     
     return cv_results_df
 
-# ========== ✅ 修正：基於 QC 群組內部的 Hotelling T² 異常值檢測 ==========
-def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
-    """
-    使用 Hotelling T² 檢測 QC 樣本中的異常值
-
-    ✅ 正確邏輯：計算每個 QC 樣本與 QC 群組中心的偏離
-
-    Parameters:
-    -----------
-    qc_scores : ndarray
-        QC 樣本的 PCA 分數 (n_qc, n_components)
-    all_scores : ndarray, optional
-        所有樣本的 PCA 分數（此參數保留以兼容舊代碼，但不使用）
-    alpha : float
-        顯著水平（預設 0.05）
-
-    Returns:
-    --------
-    t2_values : ndarray
-        每個 QC 樣本的 Hotelling T² 值
-    threshold : float
-        T² 閾值
-    outliers : ndarray (bool)
-        異常值標記
-    """
-    # ===== 防呆23: alpha 参数验证 =====
-    if not (0 < alpha < 1):
-        raise ValueError(f"❌ 錯誤：alpha 必須在 (0, 1) 範圍內，當前值: {alpha}")
-
-    n_qc, p = qc_scores.shape
-    
-    if n_qc < 3:
-        print(f"   ⚠️ QC 樣本數不足 ({n_qc} < 3)，無法進行異常值檢測")
-        return np.zeros(n_qc), 0, np.zeros(n_qc, dtype=bool)
-    
-    # ✅ 關鍵：使用 QC 群組的統計量
-    qc_mean = np.mean(qc_scores, axis=0)
-    qc_cov = np.cov(qc_scores, rowvar=False)
-    
-    # 正則化協方差矩陣（防止奇異矩陣）
-    qc_cov_reg = qc_cov + np.eye(p) * 1e-6
-    
-    try:
-        qc_cov_inv = np.linalg.inv(qc_cov_reg)
-    except np.linalg.LinAlgError:
-        print("   ⚠️ 警告：QC 協方差矩陣奇異，使用偽逆矩陣")
-        qc_cov_inv = np.linalg.pinv(qc_cov_reg)
-    
-    # ✅ 計算每個 QC 樣本與 QC 中心的 Hotelling T² 值
-    t2_values = np.zeros(n_qc)
-    for i in range(n_qc):
-        diff = qc_scores[i] - qc_mean  # ✅ 與 QC 中心比較
-        t2_values[i] = np.dot(np.dot(diff, qc_cov_inv), diff.T)
-    
-    # ✅ 使用 F 分佈計算閾值（考慮樣本數）
-    if n_qc - p - 1 > 0:
-        f_critical = stats.f.ppf(1 - alpha, p, n_qc - p - 1)
-        threshold = (p * (n_qc + 1) * (n_qc - 1)) / (n_qc * (n_qc - p - 1)) * f_critical
-    else:
-        # 樣本數太少，使用卡方分布
-        threshold = chi2.ppf(1 - alpha, p)
-    
-    # 識別異常值
-    outliers = t2_values > threshold
-    
-    return t2_values, threshold, outliers
 
 def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
     """繪製 p 值分佈圖（驗證統計檢定有效性）"""
@@ -1202,298 +1126,338 @@ def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
         import traceback
         traceback.print_exc()
 
-# ========== Hotelling T² 橢圓繪製函數 ==========
-def draw_hotelling_t2_ellipse(ax, scores, alpha=0.05, label=None, edgecolor='black', linestyle='-', linewidth=2.5):
-    """
-    在 2D PCA 圖上繪製 Hotelling T² 橢圓
-    
-    🔧 修正：橢圓中心使用樣本實際均值（而非強制為原點）
-    
-    Parameters:
-    -----------
-    ax : matplotlib.axes.Axes
-        繪圖軸
-    scores : ndarray
-        PCA 分數矩陣 (n_samples, 2)
-    alpha : float
-        顯著水平（預設 0.05）
-    label : str
-        圖例標籤
-    edgecolor : str
-        橢圓邊框顏色
-    linestyle : str
-        線條樣式
-    linewidth : float
-        線條寬度
-    
-    Returns:
-    --------
-    bounds : tuple
-        橢圓邊界 (x_min, x_max, y_min, y_max)
-    """
-    n, p = scores.shape
-    
-    if n < 3:
-        print(f"   ⚠ 樣本數不足 ({n})，無法繪製 Hotelling T² 橢圓")
+def build_step1_plot_sample_metadata(sample_columns, sample_info_df, col_to_info=None):
+    """Align Step 1 sample columns to sample metadata and injection order."""
+    info_df = sample_info_df.copy()
+    if 'Sample_Name' in info_df.columns:
+        info_df['_norm_name'] = info_df['Sample_Name'].map(normalize_sample_name)
+        info_df = info_df[info_df['_norm_name'].astype(bool)]
+        info_df = info_df.drop_duplicates('_norm_name').set_index('_norm_name')
+    else:
+        info_df = pd.DataFrame()
+
+    records = []
+    for position, sample_column in enumerate(sample_columns, start=1):
+        mapped_name = sample_column
+        mapped_type = 'Unknown'
+        mapped_batch = ''
+        if col_to_info and sample_column in col_to_info:
+            mapped_name = col_to_info[sample_column].get('Sample_Name', sample_column)
+            mapped_type = col_to_info[sample_column].get('Sample_Type', mapped_type)
+            mapped_batch = col_to_info[sample_column].get('Batch', mapped_batch)
+
+        meta_row = None
+        for candidate in (mapped_name, sample_column):
+            norm = normalize_sample_name(candidate)
+            if not norm or info_df.empty or norm not in info_df.index:
+                continue
+            meta_row = info_df.loc[norm]
+            break
+
+        if meta_row is not None:
+            mapped_type = meta_row.get('Sample_Type', mapped_type)
+            mapped_batch = meta_row.get('Batch', mapped_batch)
+            injection_order = pd.to_numeric(meta_row.get('Injection_Order', np.nan), errors='coerce')
+        else:
+            injection_order = np.nan
+
+        records.append(
+            {
+                'sample_column': sample_column,
+                'sample_name': mapped_name,
+                'sample_type': normalize_sample_type(mapped_type),
+                'batch': mapped_batch,
+                'injection_order': injection_order,
+                'fallback_order': position,
+            }
+        )
+
+    sample_meta = pd.DataFrame(records)
+    if sample_meta.empty:
+        return sample_meta
+
+    sample_meta['injection_order'] = pd.to_numeric(sample_meta['injection_order'], errors='coerce')
+    max_existing = sample_meta['injection_order'].dropna().max()
+    if pd.isna(max_existing):
+        max_existing = 0
+
+    missing_mask = sample_meta['injection_order'].isna()
+    if missing_mask.any():
+        filler = np.arange(1, missing_mask.sum() + 1, dtype=float) + float(max_existing)
+        sample_meta.loc[missing_mask, 'injection_order'] = filler
+
+    return sample_meta.sort_values(['injection_order', 'fallback_order']).reset_index(drop=True)
+
+
+def plot_istd_stability_tracking(
+    original_df,
+    sample_columns,
+    sample_info_df,
+    plots_dir,
+    timestamp,
+    col_to_info=None,
+    max_istds=6,
+):
+    """Plot representative ISTD intensity traces against injection order."""
+    if 'is_ISTD' not in original_df.columns:
         return None
-    
-    # 🔧 關鍵修正：使用樣本實際均值（而非強制為原點）
-    mean = np.mean(scores, axis=0)
-    
-    # 計算協方差矩陣
-    cov = np.cov(scores, rowvar=False)
-    
-    # 計算特徵值和特徵向量，並按特徵值降序排列
-    eigenvalues, eigenvectors = np.linalg.eigh(cov)
-    
-    # 按特徵值降序排序
-    idx = eigenvalues.argsort()[::-1]
-    eigenvalues = eigenvalues[idx]
-    eigenvectors = eigenvectors[:, idx]
-    
-    # 防止負值或零值
-    eigenvalues = np.maximum(eigenvalues, 1e-10)
-    
-    # 計算 F 臨界值
-    f_critical = stats.f.ppf(1 - alpha, p, n - p)
-    
-    # 計算橢圓的縮放因子
-    scale_factor = np.sqrt((p * (n - 1) * (n + 1)) / (n * (n - p)) * f_critical)
-    
-    # width 對應最大特徵值（主軸），height 對應次要軸
-    width = 2 * scale_factor * np.sqrt(eigenvalues[0])
-    height = 2 * scale_factor * np.sqrt(eigenvalues[1])
-    
-    # 旋轉角度使用第一個特徵向量
-    angle = np.degrees(np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0]))
-    
-    # 🔧 繪製橢圓（中心為實際均值）
-    ellipse = Ellipse(mean, width, height, angle=angle,
-                     facecolor='none', edgecolor=edgecolor,
-                     linewidth=linewidth, linestyle=linestyle, label=label)
-    ax.add_patch(ellipse)
-    
-    # 計算橢圓邊界
-    t = np.linspace(0, 2*np.pi, 100)
-    ellipse_x = (width/2) * np.cos(t)
-    ellipse_y = (height/2) * np.sin(t)
-    
-    # 旋轉橢圓
-    cos_angle = np.cos(np.radians(angle))
-    sin_angle = np.sin(np.radians(angle))
-    x_rot = ellipse_x * cos_angle - ellipse_y * sin_angle + mean[0]
-    y_rot = ellipse_x * sin_angle + ellipse_y * cos_angle + mean[1]
-    
-    bounds = (np.min(x_rot), np.max(x_rot), np.min(y_rot), np.max(y_rot))
-    
-    return bounds
 
+    sample_meta = build_step1_plot_sample_metadata(sample_columns, sample_info_df, col_to_info=col_to_info)
+    if sample_meta.empty:
+        return None
 
-# ========== 修改：2D PCA 分析（Hotelling T² 異常值檢測 + 橢圓）==========
-def perform_pca_analysis_2d(raw_df, corrected_df, lowess_df, sample_columns, sample_info_df, plots_dir,
-                            col_to_info=None):
-    """
-    執行 2D PCA 分析
-    - 🔧 使用 Hotelling T² 檢測異常值
-    - 使用 Hotelling T² 繪製橢圓（中心固定為原點）
-    - 🎨 不同組別使用不同形狀：控制組=方形（無邊框）、暴露組=三角形（無邊框）、QC=圓形（黑邊框）
-    """
-    # ✅ 修正：圖表儲存在 output/ISTD_Correction_plots/ 下的指定子資料夾
-    if plots_dir is None:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        base_dir = os.path.join(script_dir, "output", "ISTD_Correction_plots")
-        os.makedirs(base_dir, exist_ok=True)
-        plots_dir = os.path.join(base_dir, f"ISTD_Correction_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    ordered_sample_columns = [col for col in sample_meta['sample_column'] if col in original_df.columns]
+    if len(ordered_sample_columns) < 2:
+        return None
 
-    if not os.path.exists(plots_dir):
-        os.makedirs(plots_dir, exist_ok=True)
-        print(f"已建立 'ISTD_Correction_plots' 資料夾: {plots_dir}")
+    istd_df = original_df[original_df['is_ISTD'] == True].copy()
+    if istd_df.empty:
+        return None
 
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+    qc_columns = [
+        row.sample_column
+        for row in sample_meta.itertuples()
+        if row.sample_type == 'QC' and row.sample_column in original_df.columns
+    ]
+    ranking_columns = qc_columns if len(qc_columns) >= 2 else ordered_sample_columns
+    istd_cv = calculate_istd_cv(istd_df, ranking_columns)
+    ranked_feature_ids = sorted(
+        istd_df['FeatureID'].tolist(),
+        key=lambda feature_id: (np.inf if pd.isna(istd_cv.get(feature_id)) else istd_cv.get(feature_id), str(feature_id)),
+    )[:max_istds]
+    ranked_df = (
+        istd_df.set_index('FeatureID')
+        .loc[[feature_id for feature_id in ranked_feature_ids if feature_id in set(istd_df['FeatureID'])]]
+        .reset_index()
+    )
+    if ranked_df.empty:
+        return None
 
-    from metabolomics.utils.sample_classification import normalize_sample_type
-    from metabolomics.utils.constants import SAMPLE_TYPE_COLORS, SAMPLE_TYPE_MARKERS
+    n_panels = len(ranked_df)
+    ncols = 2 if n_panels > 1 else 1
+    nrows = int(np.ceil(n_panels / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(14, max(4.5, nrows * 3.6)), squeeze=False)
 
-    # 使用 col_to_info 識別樣本類型（精確映射，不再靠名稱比對）
-    qc_columns = []
-    control_columns = []
-    exposed_columns = []
-    sample_type_map = {}
-
-    for col in sample_columns:
-        if col_to_info and col in col_to_info:
-            raw_type = col_to_info[col].get('Sample_Type', 'Unknown')
-        else:
-            # Fallback: try direct match against sample_info_df
-            col_norm = str(col).strip().lower()
-            sample_info_norm = sample_info_df.copy()
-            sample_info_norm['_norm'] = sample_info_norm['Sample_Name'].astype(str).str.strip().str.lower()
-            match = sample_info_norm[sample_info_norm['_norm'] == col_norm]
-            raw_type = match.iloc[0]['Sample_Type'] if not match.empty else 'Unknown'
-
-        norm_type = normalize_sample_type(raw_type)
-        sample_type_map[col] = norm_type
-
-        if norm_type == 'QC':
-            qc_columns.append(col)
-        elif norm_type == 'Exposure':
-            exposed_columns.append(col)
-        elif norm_type in ('Control', 'Normal'):
-            control_columns.append(col)
-
-    if len(qc_columns) < 3:
-        print("警告：QC 樣本不足 (<3)，跳過品質分析")
-        return
-
-    type_counts = {}
-    for v in sample_type_map.values():
-        type_counts[v] = type_counts.get(v, 0) + 1
-    print(f"識別到樣本分組:")
-    for t, c in sorted(type_counts.items()):
-        print(f"  - {t}: {c} 個")
-    print(f"  - 總計: {len(sample_columns)} 個")
-
-    # 🎨 顏色和形狀映射（使用共用常數）
-    color_map = {}
-    marker_map = {}
-
-    for col in sample_columns:
-        s_type = sample_type_map.get(col, 'Unknown')
-        color_map[col] = SAMPLE_TYPE_COLORS.get(s_type, SAMPLE_TYPE_COLORS.get('Unknown', '#808080'))
-        marker_map[col] = SAMPLE_TYPE_MARKERS.get(s_type, SAMPLE_TYPE_MARKERS.get('Unknown', 'x'))
-
-    def prepare_matrix(df, cols, feature_col='FeatureID'):
-        try:
-            matrix = df.set_index(feature_col)[cols].T
-            matrix = matrix.apply(pd.to_numeric, errors='coerce').fillna(0)
-            if matrix.shape[1] < 2:
-                raise ValueError("特徵數不足 2，無法進行 PCA")
-            matrix = np.log2(matrix + 1)
-            scaler = StandardScaler()
-            matrix = scaler.fit_transform(matrix)
-            return matrix
-        except Exception as e:
-            print(f"警告：準備 PCA 矩陣失敗 ({e})")
-            return None
-
-    datasets = {
-        'RawIntensity': raw_df,
-        'ISTD Corrected': corrected_df,
-        'QC LOWESS': lowess_df
+    type_colors = {
+        'QC': '#d55e00',
+        'Control': '#0072b2',
+        'Exposure': '#009e73',
+        'Normal': '#cc79a7',
+        'Unknown': '#666666',
     }
+    orders = sample_meta['injection_order'].to_numpy(dtype=float)
+    sample_types = sample_meta['sample_type'].tolist()
 
-    comparisons = [('RawIntensity', 'ISTD Corrected')]
-    if lowess_df is not None:
-        comparisons.append(('ISTD Corrected', 'QC LOWESS'))
-
-    for left_name, right_name in comparisons:
-        left_df = datasets.get(left_name)
-        right_df = datasets.get(right_name)
-        
-        if left_df is None or right_df is None:
+    for ax, row in zip(axes.flatten(), ranked_df.itertuples()):
+        values = pd.to_numeric(pd.Series([getattr(row, col, np.nan) for col in ordered_sample_columns]), errors='coerce').to_numpy(dtype=float)
+        valid_mask = np.isfinite(values) & (values > 0)
+        if valid_mask.sum() < 2:
+            ax.text(0.5, 0.5, 'Insufficient positive data', ha='center', va='center', transform=ax.transAxes)
+            ax.set_axis_off()
             continue
 
-        # 準備所有樣本的矩陣
-        left_matrix = prepare_matrix(left_df, sample_columns)
-        right_matrix = prepare_matrix(right_df, sample_columns)
+        valid_values = values[valid_mask]
+        median_value = np.nanmedian(valid_values)
+        normalized_values = valid_values / median_value if np.isfinite(median_value) and median_value > 0 else valid_values
+        valid_orders = orders[valid_mask]
+        valid_types = [sample_types[i] for i, is_valid in enumerate(valid_mask) if is_valid]
 
-        if left_matrix is None or right_matrix is None:
-            continue
+        ax.plot(valid_orders, normalized_values, color='#4c4c4c', linewidth=1.6, alpha=0.8, zorder=1)
+        for sample_type in dict.fromkeys(valid_types):
+            mask = np.array([current_type == sample_type for current_type in valid_types], dtype=bool)
+            ax.scatter(
+                valid_orders[mask],
+                normalized_values[mask],
+                s=32,
+                color=type_colors.get(sample_type, '#666666'),
+                alpha=0.85,
+                label=sample_type,
+                zorder=2,
+            )
 
-        # 執行 PCA（2 個主成分）        
-        pca_left = PCA(n_components=2)
-        scores_left = pca_left.fit_transform(left_matrix)
-        var_left = pca_left.explained_variance_ratio_
+        cv_value = istd_cv.get(row.FeatureID)
+        cv_text = f" | QC CV={cv_value:.1f}%" if pd.notna(cv_value) else ""
+        ax.axhline(1.0, color='#999999', linestyle='--', linewidth=1)
+        ax.set_title(f"{row.FeatureID}{cv_text}", fontsize=11, fontweight='bold')
+        ax.set_xlabel('Injection Order', fontsize=10)
+        ax.set_ylabel('Relative Intensity', fontsize=10)
+        ax.grid(True, alpha=0.25)
 
-        pca_right = PCA(n_components=2)
-        scores_right = pca_right.fit_transform(right_matrix)
-        var_right = pca_right.explained_variance_ratio_
+    for ax in axes.flatten()[n_panels:]:
+        ax.set_axis_off()
 
-        # 🔧 使用 Hotelling T² 檢測 QC 異常值
-        qc_indices = [i for i, col in enumerate(sample_columns) if col in qc_columns]
-        qc_scores_left = scores_left[qc_indices]
-        qc_scores_right = scores_right[qc_indices]
+    handles = []
+    labels = []
+    for ax in axes.flatten()[:n_panels]:
+        current_handles, current_labels = ax.get_legend_handles_labels()
+        for handle, label in zip(current_handles, current_labels):
+            if label not in labels:
+                handles.append(handle)
+                labels.append(label)
 
-        t2_left, t2_threshold_left, outliers_left = calculate_hotelling_t2_outliers(
-            qc_scores_left, scores_left, alpha=0.05
-        )
-        t2_right, t2_threshold_right, outliers_right = calculate_hotelling_t2_outliers(
-            qc_scores_right, scores_right, alpha=0.05
-        )
+    fig.suptitle('ISTD Stability Tracking', fontsize=16, fontweight='bold', y=0.98)
+    if handles:
+        fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 0.92), ncol=min(4, len(labels)), frameon=True)
+        plt.tight_layout(rect=[0, 0, 1, 0.9])
+    else:
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
 
-        print(f"\n🔍 Hotelling T² 異常值檢測:")
-        print(f"   {left_name}:")
-        print(f"   - T² 閾值: {t2_threshold_left:.2f}")
-        print(f"   - 異常值數量: {np.sum(outliers_left)}/{len(qc_columns)}")
-        print(f"   {right_name}:")
-        print(f"   - T² 閾值: {t2_threshold_right:.2f}")
-        print(f"   - 異常值數量: {np.sum(outliers_right)}/{len(qc_columns)}")
+    output_path = os.path.join(plots_dir, f'Step1_ISTD_Tracking_{timestamp}.png')
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    return output_path
 
-        # 統一 PCA 圖樣式（使用 sample_type_map 保留所有類型）
-        sample_types = [sample_type_map.get(col, 'Unknown') for col in sample_columns]
 
-        qc_outliers_left = {qc_columns[i] for i in range(len(qc_columns)) if outliers_left[i]}
-        qc_outliers_right = {qc_columns[i] for i in range(len(qc_columns)) if outliers_right[i]}
+def plot_cv_comparison(cv_results_df, plots_dir, timestamp):
+    """Compare QC CV% before and after Step 1 correction."""
+    original_cv = pd.to_numeric(cv_results_df.get('Original_QC_CV%'), errors='coerce')
+    corrected_cv = pd.to_numeric(cv_results_df.get('Corrected_QC_CV%'), errors='coerce')
+    valid_mask = np.isfinite(original_cv) & np.isfinite(corrected_cv)
+    if valid_mask.sum() < 3:
+        return None
 
-        output_path = os.path.join(
-            plots_dir,
-            build_pca_comparison_filename(
-                "Step1",
-                left_name,
-                right_name,
-                grouping='sample_type',
-                timestamp=timestamp,
-            ),
-        )
-        plot_pca_comparison_qc_style(
-            scores_left,
-            scores_right,
-            var_left,
-            var_right,
-            sample_columns,
-            sample_types,
-            batch_labels=None,
-            grouping='sample_type',
-            suptitle=build_pca_comparison_suptitle(left_name, right_name, grouping='sample_type'),
-            left_title=left_name,
-            right_title=right_name,
-            left_threshold_text=f'Hotelling T² Threshold: {t2_threshold_left:.2f}',
-            right_threshold_text=f'Hotelling T² Threshold: {t2_threshold_right:.2f}',
-            qc_outlier_names_left=qc_outliers_left,
-            qc_outlier_names_right=qc_outliers_right,
-            output_path=output_path,
-            dpi=300,
-        )
+    original_values = original_cv[valid_mask].to_numpy(dtype=float)
+    corrected_values = corrected_cv[valid_mask].to_numpy(dtype=float)
+    improved_mask = corrected_values < original_values
 
-        plt.close('all')
-        print(f"✓ 2D PCA 圖已儲存: {output_path}")
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
-        # ===== 輸出異常值摘要 =====
-        print(f"\n{'='*70}")
-        print(f"📊 {left_name} - Hotelling T² 異常值檢測結果")
-        print(f"{'='*70}")
-        print(f"QC 異常值數量: {np.sum(outliers_left)}/{len(outliers_left)}")
-        if np.sum(outliers_left) > 0:
-            outlier_samples = [qc_columns[i] for i in range(len(outliers_left)) if outliers_left[i]]
-            outlier_t2_values = [t2_left[i] for i in range(len(outliers_left)) if outliers_left[i]]
-            print(f"異常樣本:")
-            for sample, t2_val in zip(outlier_samples, outlier_t2_values):
-                print(f"  - {sample}: T² = {t2_val:.2f} (閾值 = {t2_threshold_left:.2f})")
-        else:
-            print("  ✓ 無異常樣本")
-        
-        print(f"\n📊 {right_name} - Hotelling T² 異常值檢測結果")
-        print(f"{'='*70}")
-        print(f"QC 異常值數量: {np.sum(outliers_right)}/{len(outliers_right)}")
-        if np.sum(outliers_right) > 0:
-            outlier_samples = [qc_columns[i] for i in range(len(outliers_right)) if outliers_right[i]]
-            outlier_t2_values = [t2_right[i] for i in range(len(outliers_right)) if outliers_right[i]]
-            print(f"異常樣本:")
-            for sample, t2_val in zip(outlier_samples, outlier_t2_values):
-                print(f"  - {sample}: T² = {t2_val:.2f} (閾值 = {t2_threshold_right:.2f})")
-        else:
-            print("  ✓ 無異常樣本")
-        print(f"{'='*70}\n")
+    ax1.boxplot(
+        [original_values, corrected_values],
+        labels=['Before', 'After'],
+        patch_artist=True,
+        boxprops=dict(facecolor='#c9d6df', alpha=0.85),
+        medianprops=dict(color='#222222', linewidth=2),
+    )
+    for idx, values in enumerate((original_values, corrected_values), start=1):
+        jitter = np.random.uniform(-0.08, 0.08, size=len(values))
+        ax1.scatter(np.full(len(values), idx) + jitter, values, color='#4c4c4c', alpha=0.35, s=16)
+    ax1.set_ylabel('QC CV%', fontsize=11, fontweight='bold')
+    ax1.set_title('Distribution Shift', fontsize=13, fontweight='bold')
+    ax1.grid(True, axis='y', alpha=0.25)
+
+    max_value = max(np.nanmax(original_values), np.nanmax(corrected_values))
+    ax2.scatter(
+        original_values[~improved_mask],
+        corrected_values[~improved_mask],
+        color='#c44e52',
+        alpha=0.6,
+        s=28,
+        label='Worse / unchanged',
+    )
+    ax2.scatter(
+        original_values[improved_mask],
+        corrected_values[improved_mask],
+        color='#55a868',
+        alpha=0.65,
+        s=28,
+        label='Improved',
+    )
+    ax2.plot([0, max_value], [0, max_value], linestyle='--', color='#666666', linewidth=1.5, label='y = x')
+    ax2.set_xlabel('Before QC CV%', fontsize=11, fontweight='bold')
+    ax2.set_ylabel('After QC CV%', fontsize=11, fontweight='bold')
+    ax2.set_title('Feature-wise Comparison', fontsize=13, fontweight='bold')
+    ax2.grid(True, alpha=0.25)
+    ax2.legend(fontsize=9)
+
+    improved_count = int(improved_mask.sum())
+    total_count = int(valid_mask.sum())
+    fig.suptitle(
+        f'QC CV Comparison ({improved_count}/{total_count} features improved)',
+        fontsize=16,
+        fontweight='bold',
+        y=0.98,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+    output_path = os.path.join(plots_dir, f'Step1_CV_Comparison_{timestamp}.png')
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    return output_path
+
+
+def plot_density_overlay(original_df, results_df, sample_columns, plots_dir, timestamp):
+    """Overlay intensity density before and after Step 1 correction."""
+    original_source = original_df.copy()
+    if 'is_ISTD' in original_source.columns:
+        original_source = original_source[original_source['is_ISTD'] == False]
+
+    original_columns = [col for col in sample_columns if col in original_source.columns]
+    corrected_columns = [col for col in sample_columns if col in results_df.columns]
+    if not original_columns or not corrected_columns:
+        return None
+
+    original_values = pd.to_numeric(original_source[original_columns].stack(), errors='coerce')
+    corrected_values = pd.to_numeric(results_df[corrected_columns].stack(), errors='coerce')
+    original_values = original_values[np.isfinite(original_values) & (original_values > 0)].to_numpy(dtype=float)
+    corrected_values = corrected_values[np.isfinite(corrected_values) & (corrected_values > 0)].to_numpy(dtype=float)
+    if len(original_values) < 10 or len(corrected_values) < 10:
+        return None
+
+    log_original = np.log10(original_values)
+    log_corrected = np.log10(corrected_values)
+    x_grid = np.linspace(
+        min(np.min(log_original), np.min(log_corrected)),
+        max(np.max(log_original), np.max(log_corrected)),
+        256,
+    )
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    try:
+        from scipy.stats import gaussian_kde
+
+        if len(np.unique(log_original)) > 1:
+            kde_original = gaussian_kde(log_original)
+            ax.plot(x_grid, kde_original(x_grid), color='#4c72b0', linewidth=2.2, label='Before')
+            ax.fill_between(x_grid, kde_original(x_grid), color='#4c72b0', alpha=0.18)
+        if len(np.unique(log_corrected)) > 1:
+            kde_corrected = gaussian_kde(log_corrected)
+            ax.plot(x_grid, kde_corrected(x_grid), color='#dd8452', linewidth=2.2, label='After')
+            ax.fill_between(x_grid, kde_corrected(x_grid), color='#dd8452', alpha=0.18)
+    except Exception:
+        ax.hist(log_original, bins=40, density=True, histtype='step', linewidth=2, color='#4c72b0', label='Before')
+        ax.hist(log_corrected, bins=40, density=True, histtype='step', linewidth=2, color='#dd8452', label='After')
+
+    ax.axvline(np.median(log_original), color='#4c72b0', linestyle='--', linewidth=1.5)
+    ax.axvline(np.median(log_corrected), color='#dd8452', linestyle='--', linewidth=1.5)
+    ax.set_xlabel('log10(Intensity)', fontsize=11, fontweight='bold')
+    ax.set_ylabel('Density', fontsize=11, fontweight='bold')
+    ax.set_title('Intensity Density Overlay', fontsize=15, fontweight='bold')
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=10)
+    plt.tight_layout()
+
+    output_path = os.path.join(plots_dir, f'Step1_Density_Overlay_{timestamp}.png')
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    return output_path
+
+
+def generate_step1_diagnostic_plots(
+    original_df,
+    results_df,
+    sample_columns,
+    sample_info_df,
+    cv_results_df,
+    plots_dir,
+    timestamp,
+    col_to_info=None,
+):
+    """Generate the Step 1 diagnostic figure set."""
+    os.makedirs(plots_dir, exist_ok=True)
+    plot_pvalue_distribution(cv_results_df, plots_dir, timestamp)
+    plot_istd_stability_tracking(
+        original_df,
+        sample_columns,
+        sample_info_df,
+        plots_dir,
+        timestamp,
+        col_to_info=col_to_info,
+    )
+    plot_cv_comparison(cv_results_df, plots_dir, timestamp)
+    plot_density_overlay(original_df, results_df, sample_columns, plots_dir, timestamp)
+    return str(plots_dir)
+
 
 def apply_fdr_correction(pvalues):
     """
@@ -1548,7 +1512,7 @@ def apply_fdr_correction(pvalues):
 # ========== 🔧 修改：save_results_to_excel==========
 def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
                           all_sheets, sample_columns, original_workbook, plots_dir=None,
-                          col_to_info=None):
+                          col_to_info=None, cv_results_df=None):
     """
     儲存結果到 Excel，使用 Wilcoxon 配對符號等級檢定 + Levene's test
     """
@@ -1576,10 +1540,11 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
     plot_output_dir = plots_dir or os.path.dirname(output_file)
     
     # ✅ 使用新的統計檢定函數
-    cv_results_df = calculate_qc_cv_with_statistical_test(
-        results_df, sample_columns, sample_info_df, original_df,
-        col_to_info=col_to_info
-    )
+    if cv_results_df is None:
+        cv_results_df = calculate_qc_cv_with_statistical_test(
+            results_df, sample_columns, sample_info_df, original_df,
+            col_to_info=col_to_info
+        )
     
     # 合併結果
     results_with_cv = results_df.merge(cv_results_df, on='FeatureID', how='left')
@@ -1818,7 +1783,7 @@ def main(input_file=None, session_dir=None):
 
     
     # 🔧 建立 output 資料夾
-    output_dir = get_output_root()
+    output_dir = get_output_root(input_file=input_file)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
         print(f"已建立 'output' 資料夾: {output_dir}")
@@ -1863,9 +1828,10 @@ def main(input_file=None, session_dir=None):
         output_file = session_output_path(session_dir, step=1, prefix="ISTD_Results")
         _plots_dir = session_plots_dir(session_dir)
     else:
-        output_file = build_output_path("ISTD_Results", timestamp=run_timestamp)
+        output_file = build_output_path("ISTD_Results", input_file=input_file, timestamp=run_timestamp)
         _plots_dir = build_plots_dir(
             "ISTD_Correction_plots",
+            input_file=input_file,
             timestamp=run_timestamp,
             session_prefix="ISTD_Correction"
         )
@@ -1923,10 +1889,28 @@ def main(input_file=None, session_dir=None):
 
     results_df, sample_columns = calculate_corrected_ratios(original_df, sample_info_df)
 
+    cv_results_df = calculate_qc_cv_with_statistical_test(
+        results_df,
+        sample_columns,
+        sample_info_df,
+        original_df,
+        col_to_info=col_to_info,
+    )
+
     save_results_to_excel(
         original_df, results_df, sample_info_df,
         output_file, all_sheets, sample_columns, input_file,
-        plots_dir=_plots_dir, col_to_info=col_to_info
+        plots_dir=_plots_dir, col_to_info=col_to_info, cv_results_df=cv_results_df
+    )
+    generate_step1_diagnostic_plots(
+        original_df,
+        results_df,
+        sample_columns,
+        sample_info_df,
+        cv_results_df,
+        plots_dir=str(_plots_dir),
+        timestamp=run_timestamp,
+        col_to_info=col_to_info,
     )
     
     print(f"\n  ✓ ISTD Correction 完成 → {os.path.basename(output_file)}")
