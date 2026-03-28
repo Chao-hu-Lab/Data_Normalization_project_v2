@@ -181,3 +181,18 @@ class TestBatchEffectHelpers:
         assert threshold > 0, "Threshold should be positive"
         assert len(outliers) == len(qc_scores), "Should have outlier flag for each QC sample"
         assert outliers.dtype == bool, "Outliers should be boolean array"
+
+    def test_plot_permanova_comparison_handles_missing_permutation_result(self, batch_effect_module):
+        """PERMANOVA comparison plot should render even when paired permutation stats are unavailable."""
+        fig = batch_effect_module.plot_permanova_comparison(
+            {"pseudo_f": 2.4, "p_value": 0.01, "r_squared": 0.22},
+            {"pseudo_f": 1.2, "p_value": 0.18, "r_squared": 0.11},
+            None,
+        )
+
+        try:
+            assert fig is not None
+            all_text = "\n".join(text.get_text() for ax in fig.axes for text in ax.texts)
+            assert "Skipped" in all_text
+        finally:
+            batch_effect_module.plt.close(fig)

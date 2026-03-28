@@ -1549,11 +1549,21 @@ def plot_permanova_comparison(permanova_before, permanova_after, perm_test_resul
     stats_text += f"  R² reduction: {r2_reduction:.1f}%\n"
     stats_text += f"\n"
     stats_text += f"Paired Permutation Test:\n"
-    stats_text += f"  Observed improvement: {perm_test_result['observed_improvement']:.4f}\n"
-    stats_text += f"  p-value: {perm_test_result['p_value']:.4f}"
-    
-    if perm_test_result['p_value'] < 0.05:
-        stats_text += f" *"
+    perm_observed = perm_test_result.get('observed_improvement') if isinstance(perm_test_result, dict) else None
+    perm_p_value = perm_test_result.get('p_value') if isinstance(perm_test_result, dict) else None
+    has_perm_stats = (
+        perm_observed is not None
+        and perm_p_value is not None
+        and np.isfinite(perm_observed)
+        and np.isfinite(perm_p_value)
+    )
+    if has_perm_stats:
+        stats_text += f"  Observed improvement: {perm_observed:.4f}\n"
+        stats_text += f"  p-value: {perm_p_value:.4f}"
+        if perm_p_value < 0.05:
+            stats_text += f" *"
+    else:
+        stats_text += "  Skipped (insufficient finite inputs)"
     
     ax.text(0.98, 0.97, stats_text, transform=ax.transAxes,
             fontsize=10, verticalalignment='top', horizontalalignment='right',
@@ -2298,7 +2308,7 @@ def main(input_file=None, session_dir=None):
     print(f"  路徑: {input_file}")
 
     # ========== 2. 設定輸出路徑 ==========
-    output_dir = get_output_root()
+    output_dir = get_output_root(input_file=input_file)
 
     # ===== 防呆36: 輸出目錄創建與權限檢查 =====
     try:
@@ -2331,14 +2341,14 @@ def main(input_file=None, session_dir=None):
         output_file = session_output_path(session_dir, step=3, prefix="Combat_corrected")
         run_plot_dir = session_plots_dir(session_dir)
     else:
-        output_file = build_output_path("Combat_corrected", timestamp=timestamp)
+        output_file = build_output_path("Combat_corrected", input_file=input_file, timestamp=timestamp)
 
         # ===== 防呆38: 輸出文件檢查 =====
         if os.path.exists(output_file):
             print(f"⚠️ 警告：輸出檔案已存在，將被覆蓋")
             print(f"  {output_file}")
 
-        plots_dir = build_plots_dir(PLOT_FOLDER_NAME)
+        plots_dir = build_plots_dir(PLOT_FOLDER_NAME, input_file=input_file)
 
         # ===== 防呆39: 圖表目錄創建 =====
         try:
@@ -2354,6 +2364,7 @@ def main(input_file=None, session_dir=None):
 
         run_plot_dir = build_plots_dir(
             PLOT_FOLDER_NAME,
+            input_file=input_file,
             timestamp=timestamp,
             session_prefix="Batch_Effect"
         )

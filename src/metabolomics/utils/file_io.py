@@ -12,6 +12,9 @@ from pathlib import Path
 
 from .constants import VALIDATION_THRESHOLDS, DATETIME_FORMAT_FULL
 
+
+TEST_MATRIX_SUBDIRS = {"scenario_matrices", "test_matrices"}
+
 def get_project_root() -> Path:
     """
     Resolve the project root based on the package location.
@@ -49,11 +52,42 @@ def infer_output_root_from_input(input_file: Optional[str] = None) -> Optional[P
     return None
 
 
+def infer_isolated_output_root_from_input(input_file: Optional[str] = None) -> Optional[Path]:
+    """
+    Route repository test/scenario inputs to a dedicated output subtree.
+
+    This keeps synthetic validation runs separate from regular user analyses.
+    """
+    if not input_file:
+        return None
+
+    input_path = Path(input_file).resolve()
+    if not input_path.exists():
+        return None
+
+    project_root = get_project_root().resolve()
+    try:
+        relative_path = input_path.relative_to(project_root)
+    except ValueError:
+        return None
+
+    relative_parts = relative_path.parts[:-1] if input_path.is_file() else relative_path.parts
+    if len(relative_parts) >= 2 and relative_parts[0] == "data" and relative_parts[1] in TEST_MATRIX_SUBDIRS:
+        return project_root / "output" / "test_data_runs" / input_path.stem
+
+    if relative_parts and relative_parts[0] == "tests":
+        return project_root / "output" / "test_data_runs" / input_path.stem
+
+    return None
+
+
 def get_output_root(input_file: Optional[str] = None) -> Path:
     """
     Return the project-level output directory and ensure it exists.
     """
     output_root = infer_output_root_from_input(input_file)
+    if output_root is None:
+        output_root = infer_isolated_output_root_from_input(input_file)
     if output_root is None:
         output_root = get_project_root() / "output"
     output_root.mkdir(parents=True, exist_ok=True)

@@ -31,6 +31,30 @@ class TestOutputRootInference:
         assert plots_dir == expected
         assert plots_dir.exists()
 
+    def test_get_output_root_routes_scenario_matrix_to_test_data_runs(self, tmp_path, monkeypatch):
+        repo_root = tmp_path / "repo"
+        input_file = repo_root / "data" / "scenario_matrices" / "strong_batch.xlsx"
+        input_file.parent.mkdir(parents=True, exist_ok=True)
+        input_file.touch()
+        monkeypatch.setattr(file_io, "get_project_root", lambda: repo_root)
+
+        output_root = file_io.get_output_root(input_file=str(input_file))
+
+        assert output_root == repo_root / "output" / "test_data_runs" / "strong_batch"
+        assert output_root.exists()
+
+    def test_get_output_root_routes_repo_test_inputs_to_test_data_runs(self, tmp_path, monkeypatch):
+        repo_root = tmp_path / "repo"
+        input_file = repo_root / "tests" / "fixtures" / "smoke_input.xlsx"
+        input_file.parent.mkdir(parents=True, exist_ok=True)
+        input_file.touch()
+        monkeypatch.setattr(file_io, "get_project_root", lambda: repo_root)
+
+        output_root = file_io.get_output_root(input_file=str(input_file))
+
+        assert output_root == repo_root / "output" / "test_data_runs" / "smoke_input"
+        assert output_root.exists()
+
 
 from metabolomics.utils.file_io import (
     create_session_dir,
