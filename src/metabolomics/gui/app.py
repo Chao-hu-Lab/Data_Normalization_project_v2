@@ -129,9 +129,9 @@ class DataNormalizationApp:
     @staticmethod
     def _build_workspace_defaults():
         return {
-            'left_minsize': 540,
-            'right_minsize': 540,
-            'split_ratio': 0.4,
+            'left_minsize': 640,
+            'right_minsize': 460,
+            'split_ratio': 0.47,
             'initial_retry_ms': 120,
             'keep_ratio_on_resize': True,
             'card_rows': 4,
@@ -1133,22 +1133,26 @@ class DataNormalizationApp:
             # Step 4 專用：方法選擇 RadioButton
             if i == 3:
                 method_frame = tk.Frame(info_section, bg=self.color_scheme['panel_bg'])
-                method_frame.pack(anchor='w', pady=(4, 0))
+                method_frame.pack(anchor='w', pady=(2, 0))
+                step4_accent = self.color_scheme['step4_accent']
                 tk.Label(
                     method_frame, text="Method:",
-                    font=(FONTS['sans'], 10),
-                    fg=self.color_scheme['text_light'],
+                    font=(FONTS['sans'], 9, 'bold'),
+                    fg=step4_accent,
                     bg=self.color_scheme['panel_bg'],
                 ).pack(side=tk.LEFT)
                 for val, label in [('PQN', 'PQN'), ('SampleSpecific', 'Sample-Specific')]:
                     tk.Radiobutton(
                         method_frame, text=label, value=val,
                         variable=self.normalization_method_var,
-                        font=(FONTS['sans'], 10),
+                        font=(FONTS['sans'], 9),
+                        fg=self.color_scheme['text_dark'],
                         bg=self.color_scheme['panel_bg'],
                         activebackground=self.color_scheme['panel_bg'],
+                        activeforeground=step4_accent,
                         selectcolor=self.color_scheme['panel_bg'],
-                    ).pack(side=tk.LEFT, padx=(6, 0))
+                        indicatoron=True,
+                    ).pack(side=tk.LEFT, padx=(4, 0))
 
             # === 右側：控制按鈕區 ===
             control_section = tk.Frame(
