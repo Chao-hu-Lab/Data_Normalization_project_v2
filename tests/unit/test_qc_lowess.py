@@ -215,6 +215,41 @@ class TestQCLOWESSOutput:
             'SampleInfo',
         }
 
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_loess_summary_sheet_keeps_feature_table_and_adds_summary_block(
+        self,
+        qc_lowess_module,
+        sample_input_file,
+    ):
+        from openpyxl import load_workbook
+
+        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+        step2_output = (
+            step2_result.output_path
+            if hasattr(step2_result, "output_path")
+            else step2_result.get("output_path")
+        )
+
+        workbook = load_workbook(step2_output, read_only=False)
+        try:
+            worksheet = workbook[SHEET_NAMES["qc_lowess_advanced"]]
+            assert worksheet["A1"].value == "Mz/RT"
+            assert worksheet["J1"].value == "LOESS Summary"
+            summary_labels = [worksheet[f"J{row_idx}"].value for row_idx in range(1, worksheet.max_row + 1)]
+            assert "Overview" in summary_labels
+            assert "Features processed" in summary_labels
+            assert "Overall readout" in summary_labels
+
+            features_row = next(
+                row_idx
+                for row_idx, label in enumerate(summary_labels, start=1)
+                if label == "Features processed"
+            )
+            assert worksheet.cell(row=features_row, column=11).value is not None
+        finally:
+            workbook.close()
+
 
     @pytest.mark.slow
     def test_main_writes_to_session_dir(self, qc_lowess_module, sample_input_file, tmp_path):

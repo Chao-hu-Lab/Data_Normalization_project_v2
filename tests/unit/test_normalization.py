@@ -218,6 +218,99 @@ class TestConcentrationNormHelpers:
         assert info_no_valid["ref_valid_count"] == 0
         assert np.isnan(info_no_valid["ref_median"])
 
+    def test_build_step4_summary_context_detects_upstream_step_status(
+        self,
+        conc_norm_module,
+    ):
+        context_loess = conc_norm_module.build_step4_summary_context(
+            "QC LOESS result",
+            available_sheet_names=["RawIntensity", "QC LOESS result", "SampleInfo"],
+        )
+        context_batch = conc_norm_module.build_step4_summary_context(
+            "QC_Batch_Scaling_result",
+            available_sheet_names=["QC_Batch_Scaling_result", "SampleInfo"],
+        )
+
+        assert "未執行或已跳過" in context_loess["step3_status"]
+        assert "未見 ISTD_Correction" in context_loess["step1_status"]
+        assert "已執行" in context_batch["step3_status"]
+        assert "未保留" in context_batch["step1_status"]
+
+    def test_create_normalization_summary_report_uses_context_and_objective_sections(
+        self,
+        conc_norm_module,
+    ):
+        quality_metrics = {
+            "median_cv_before": 20.55,
+            "median_cv_after": 20.61,
+            "mean_cv_before": 22.3,
+            "mean_cv_after": 22.0,
+            "cv_improvement": -0.06,
+            "cv_improvement_pct": -0.3,
+            "cv_improved_ratio": 57.8,
+            "cv_wilcoxon_stat": 1107.0,
+            "cv_wilcoxon_pvalue": 0.327,
+            "total_cv_before": 43.97,
+            "total_cv_after": 26.05,
+            "total_cv_improvement": 17.92,
+            "sample_corr_mean_before": 0.9627,
+            "sample_corr_mean_after": 0.9627,
+            "sample_corr_std_before": 0.0720,
+            "sample_corr_std_after": 0.0720,
+            "data_range_before": 100.0,
+            "data_range_after": 90.0,
+        }
+        subset_metrics = {
+            "qc_median_cv_before": 20.55,
+            "qc_median_cv_after": 20.61,
+            "qc_cv_improved_ratio": 57.8,
+            "real_median_cv_before": 56.14,
+            "real_median_cv_after": 55.08,
+            "real_cv_improved_ratio": 57.8,
+            "real_total_cv_before": 43.97,
+            "real_total_cv_after": 26.05,
+            "qc_total_cv_before": 14.40,
+            "qc_total_cv_after": 14.24,
+        }
+        pqn_info = {
+            "reference_strategy": "QC",
+            "qc_count": 7,
+            "qc_cv": 18.89,
+            "real_count": 78,
+            "normalization_factors_real": np.array([0.1359, 0.8, 1.3028]),
+            "normalization_factors_qc": np.array([1.0]),
+        }
+        summary_context = {
+            "source_sheet_name": "QC LOESS result",
+            "step1_status": "目前工作簿未見 ISTD_Correction 工作表",
+            "step3_status": "未執行或已跳過（直接使用 QC-LOESS 結果）",
+        }
+
+        report = conc_norm_module.create_normalization_summary_report(
+            quality_metrics=quality_metrics,
+            method_name="PQN",
+            n_features=64,
+            n_samples=85,
+            pqn_info=pqn_info,
+            group_diff_results=None,
+            subset_metrics=subset_metrics,
+            summary_context=summary_context,
+            mapped_sample_count=85,
+        )
+
+        assert "【執行上下文】" in report
+        assert "上一步輸入工作表: QC LOESS result" in report
+        assert "樣本數量（含 QC）: 85" in report
+        assert "名稱成功映射樣本數: 85/85" in report
+        assert "PQN 因子範圍: 0.1359 – 1.3028" in report
+        assert "【QC 與真實樣本分層評估】" in report
+        assert "QC feature CV 中位數: 20.55% -> 20.61%" in report
+        assert "真實樣本總強度CV%: 43.97% -> 26.05%" in report
+        assert "【整體評分】" not in report
+        assert "標準化質量評分" not in report
+
+
+
     def test_save_normalization_results_uses_in_memory_preserved_dataframes(
         self,
         conc_norm_module,
@@ -244,7 +337,7 @@ class TestConcentrationNormHelpers:
 
         output_path = conc_norm_module.save_normalization_results(
             normalized_df=normalized_df,
-            summary_report="= Summary\n[Section]\nOK",
+            summary_report="= Summary\n【Section】\n✓ ok",
             file_path=str(tmp_path / "nonexistent_input.xlsx"),
             method_name="PQN",
             preserved_data_sheet_name=SHEET_NAMES["qc_lowess"],

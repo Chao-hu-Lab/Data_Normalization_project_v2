@@ -3,7 +3,6 @@ import numpy as np
 import os
 from datetime import datetime
 from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
 import matplotlib.pyplot as plt
 import warnings
 
@@ -36,8 +35,15 @@ from metabolomics.utils.file_io import (
     resolve_session_dir,
 )
 from metabolomics.utils.results import ProcessingResult
-from metabolomics.utils.excel_format import copy_sheet_formatting_only
 from metabolomics.utils.console import safe_print as print
+from metabolomics.utils.excel_format import (
+    apply_cv_quality_fill,
+    apply_header_fill,
+    apply_improvement_fill,
+    apply_number_format,
+    apply_significance_fill,
+    apply_status_fill,
+)
 
 import re as _re
 
@@ -120,7 +126,7 @@ def load_and_process_data(file_path):
         worksheet = workbook[SHEET_NAMES['raw_intensity']]
         istd_feature_ids = []  # 收集紅色 FeatureID 的值
         red_colors = ['FFFF0000', 'FF0000']  # 只檢查紅色變體，全大寫
-        for row in worksheet.iter_rows(min_row=2, max_col=1):  # 從第 2 行開始
+        for row in worksheet.iter_rows(min_row=2, max_col=1):  # 只讀第一欄
             cell = row[0]  # 第一欄 (FeatureID)
             if cell.font and cell.font.color and cell.font.color.rgb is not None:
                 rgb_str = str(cell.font.color.rgb).upper()  # 強制轉 str 並 upper
@@ -1666,59 +1672,54 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
             _rename_feature_col(df).to_excel(writer, sheet_name=sheet_name, index=False)
         _rename_feature_col(results_with_cv).to_excel(writer, sheet_name=SHEET_NAMES['istd_correction'], index=False)
     
-    # 格式設定
-    workbook = load_workbook(original_workbook)
+    # 統計區格式設定（直接配色，不複製原始檔格式）
     new_workbook = load_workbook(output_file)
-    
-    # 複製 RawIntensity 格式（font, border, fill, number_format, protection, alignment）
-    if SHEET_NAMES['raw_intensity'] in workbook.sheetnames and SHEET_NAMES['raw_intensity'] in new_workbook.sheetnames:
-        copy_sheet_formatting_only(workbook[SHEET_NAMES['raw_intensity']], new_workbook[SHEET_NAMES['raw_intensity']])
-    
+
     # ISTD_Correction 格式
     scientific_format = '0.00E+00'
-    orange_fill = PatternFill(start_color='FFA500', end_color='FFA500', fill_type='solid')
-    green_fill = PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')
-    yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-    light_blue_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')
-    light_pink_fill = PatternFill(start_color='FFB6C1', end_color='FFB6C1', fill_type='solid')
-    
+
     if SHEET_NAMES['istd_correction'] in new_workbook.sheetnames:
         worksheet = new_workbook[SHEET_NAMES['istd_correction']]
         header = [cell.value for cell in worksheet[1]]
-        
-        # CV% 欄位塗橙色
-        for col_name in ['Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%']:
-            if col_name in header:
-                col_idx = header.index(col_name) + 1
-                for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
-                    for cell in row:
-                        cell.fill = orange_fill
-        
-        # ✅ 統計檢定欄位塗淡藍色（包含 p-value 和 q-value）
-        for col_name in ['Wilcoxon_pvalue', 'Wilcoxon_qvalue', 'Variance_Test_pvalue', 'Variance_Test_qvalue']:
-            if col_name in header:
-                col_idx = header.index(col_name) + 1
-                for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
-                    for cell in row:
-                        cell.fill = light_blue_fill
-        
-        # ✅ 顯著性標記
-        if 'Significant_Improvement' in header:
-            col_idx = header.index('Significant_Improvement') + 1
-            for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
-                for cell in row:
-                    if cell.value == 'Yes' or cell.value == 'Yes (CV% only)':
-                        cell.fill = green_fill
-                    elif cell.value == 'Marginal':
-                        cell.fill = yellow_fill
-                    elif cell.value == 'No':
-                        cell.fill = light_pink_fill
-        
-        # 數字格式
-        for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=1, max_col=worksheet.max_column):
-            for cell in row:
-                if isinstance(cell.value, (int, float)) and cell.value is not None:
-                    cell.number_format = scientific_format
+        header_map = {name: idx + 1 for idx, name in enumerate(header) if name}
+
+        apply_header_fill(worksheet)
+
+        for col_name in ['Original_QC_CV%', 'Corrected_QC_CV%', 'Original_Robust_CV%', 'Corrected_Robust_CV%']:
+            if col_name in header_map:
+                apply_cv_quality_fill(worksheet, header_map[col_name])
+                apply_number_format(worksheet, header_map[col_name], '0.00')
+
+        for col_name in ['CV_Improvement%', 'Robust_CV_Improvement%']:
+            if col_name in header_map:
+                apply_improvement_fill(worksheet, header_map[col_name])
+                apply_number_format(worksheet, header_map[col_name], '+0.00;-0.00')
+
+        for q_col_name in ['Wilcoxon_qvalue', 'Variance_Test_qvalue']:
+            if q_col_name in header_map:
+                apply_significance_fill(worksheet, header_map[q_col_name])
+                apply_number_format(worksheet, header_map[q_col_name], '0.0000')
+
+        for p_col_name in ['Wilcoxon_pvalue', 'Variance_Test_pvalue']:
+            if p_col_name in header_map:
+                apply_number_format(worksheet, header_map[p_col_name], '0.0000')
+
+        if 'Significant_Improvement' in header_map:
+            apply_status_fill(
+                worksheet,
+                header_map['Significant_Improvement'],
+                {
+                    'Yes': 'pass',
+                    'Yes (CV% only)': 'warn',
+                    'Marginal': 'warn',
+                    'No': 'fail',
+                },
+            )
+
+        for col_name in header:
+            if not col_name or col_name in NON_SAMPLE_COLUMNS:
+                continue
+            apply_number_format(worksheet, header_map[col_name], scientific_format)
     
     new_workbook.save(output_file)
     
@@ -1749,22 +1750,6 @@ def save_skipped_istd_results_to_excel(output_file, all_sheets, original_workboo
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         for sheet_name, df in retained_sheets.items():
             df.to_excel(writer, sheet_name=sheet_name, index=False)
-
-    workbook = load_workbook(original_workbook)
-    new_workbook = load_workbook(output_file)
-    try:
-        if (
-            SHEET_NAMES['raw_intensity'] in workbook.sheetnames
-            and SHEET_NAMES['raw_intensity'] in new_workbook.sheetnames
-        ):
-            copy_sheet_formatting_only(
-                workbook[SHEET_NAMES['raw_intensity']],
-                new_workbook[SHEET_NAMES['raw_intensity']],
-            )
-        new_workbook.save(output_file)
-    finally:
-        workbook.close()
-        new_workbook.close()
 
 
 def main(input_file=None, session_dir=None):

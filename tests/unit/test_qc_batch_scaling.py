@@ -160,6 +160,22 @@ class TestQCBatchScalingHelpers:
         assert scaled["Sample_A1"] == pytest.approx(3.0)
         assert scaled["Sample_B1"] == pytest.approx(3.0)
 
+    def test_build_summary_df_emits_dedicated_invalid_feature_rows(self):
+        module = load_qc_batch_scaling_module()
+
+        summary_df = module.build_summary_df(
+            source_sheet_name=SHEET_NAMES["qc_lowess"],
+            batch_to_qc={"A": ["QC_1", "QC_2"], "B": ["QC_3"]},
+            batch_to_samples={"A": ["QC_1", "Sample_A1"], "B": ["QC_3", "Sample_B1"]},
+            invalid_median_counts={"A": 0, "B": 7},
+        )
+
+        invalid_rows = summary_df[summary_df["Item"] == "invalid_feature_medians"]
+        assert len(invalid_rows) == 2
+        assert set(invalid_rows["Section"]) == {"batch A", "batch B"}
+        assert invalid_rows.loc[invalid_rows["Section"] == "batch A", "Value"].iloc[0] == 0
+        assert invalid_rows.loc[invalid_rows["Section"] == "batch B", "Value"].iloc[0] == 7
+
     def test_calculate_batch_residuals_includes_multi_batch_memberships(self):
         module = load_qc_batch_scaling_module()
 

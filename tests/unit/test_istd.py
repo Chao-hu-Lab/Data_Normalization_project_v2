@@ -13,6 +13,8 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.styles import Font
 
+from metabolomics.utils.constants import FEATURE_ID_COLUMN
+
 
 class TestISTDCorrectionInput:
     """Tests for input validation."""
@@ -178,7 +180,9 @@ class TestISTDCorrectionOutput:
 
         # Feature count should be approximately same (non-ISTD features)
         assert len(output_df) > 0, "Output should have rows"
-        assert 'FeatureID' in output_df.columns, "Output should have FeatureID column"
+        assert FEATURE_ID_COLUMN in output_df.columns, (
+            f"Output should expose canonical feature id column {FEATURE_ID_COLUMN!r}"
+        )
 
     @pytest.mark.slow
     def test_main_writes_to_session_dir(self, istd_module, sample_input_file, tmp_path):

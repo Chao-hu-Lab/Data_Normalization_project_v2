@@ -3,8 +3,8 @@ import numpy as np
 from pathlib import Path
 import warnings
 import os
-from openpyxl import load_workbook, Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, Border
 from openpyxl.utils.dataframe import dataframe_to_rows
 from datetime import datetime
 import matplotlib.pyplot as plt
@@ -13,7 +13,7 @@ from copy import copy
 from scipy.stats import gaussian_kde, spearmanr, levene, wilcoxon
 
 from metabolomics.utils.plotting import setup_matplotlib
-from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS, resolve_sheet_name
+from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS, NON_SAMPLE_COLUMNS, resolve_sheet_name
 from metabolomics.utils.sample_classification import (
     SampleClassifier,
     identify_sample_columns,
@@ -35,8 +35,6 @@ warnings.filterwarnings('ignore')
 # Use centralized setup
 setup_matplotlib()
 
-# Legacy summary sheet name kept for historical context only.
-LEGACY_SUMMARY_SHEET_NAME = SHEET_NAMES.get('concentration', "ConcNormalization_Summary")
 NORMALIZATION_SUMMARY_SHEETS = {
     'PQN': 'PQN_summary',
     'SampleSpecific': 'SpecNorm_summary',
@@ -1222,6 +1220,23 @@ def evaluate_normalization_quality(original_data, normalized_data):
     results['mean_cv_after'] = np.nanmean(normalized_cv)
     results['cv_improvement'] = results['median_cv_before'] - results['median_cv_after']
     results['cv_improvement_pct'] = (results['cv_improvement'] / results['median_cv_before']) * 100 if results['median_cv_before'] > 0 else 0
+
+    try:
+        valid_mask = ~(np.isnan(original_cv) | np.isnan(normalized_cv))
+        if np.sum(valid_mask) >= 3:
+            cv_wilcoxon = wilcoxon(
+                original_cv[valid_mask],
+                normalized_cv[valid_mask],
+                alternative='greater',
+            )
+            results['cv_wilcoxon_stat'] = float(cv_wilcoxon.statistic)
+            results['cv_wilcoxon_pvalue'] = float(cv_wilcoxon.pvalue)
+        else:
+            results['cv_wilcoxon_stat'] = np.nan
+            results['cv_wilcoxon_pvalue'] = np.nan
+    except (ValueError, TypeError):
+        results['cv_wilcoxon_stat'] = np.nan
+        results['cv_wilcoxon_pvalue'] = np.nan
     
     # CV%改善的特徵比例
     cv_improved = np.sum((original_cv - normalized_cv) > 0)
@@ -1251,8 +1266,120 @@ def evaluate_normalization_quality(original_data, normalized_data):
     
     return results
 
-def create_normalization_summary_report(quality_metrics, method_name, n_features, n_samples,
-                                       pqn_info=None, group_diff_results=None):
+
+def evaluate_subset_quality(
+    original_data,
+    normalized_data,
+    sample_columns,
+    sample_info_df,
+    col_to_info_row=None,
+):
+    """Evaluate normalization effects separately for QC and real-sample subsets."""
+    subset_indices = {
+        'qc': [
+            i for i, sample in enumerate(sample_columns)
+            if _lookup_sample_type(sample, sample_info_df, col_to_info_row) == 'QC'
+        ],
+        'real': [
+            i for i, sample in enumerate(sample_columns)
+            if _lookup_sample_type(sample, sample_info_df, col_to_info_row) != 'QC'
+        ],
+    }
+
+    results = {}
+    for label, indices in subset_indices.items():
+        results[f'{label}_sample_count'] = len(indices)
+        if len(indices) < 2:
+            results[f'{label}_median_cv_before'] = np.nan
+            results[f'{label}_median_cv_after'] = np.nan
+            results[f'{label}_cv_improvement'] = np.nan
+            results[f'{label}_cv_improvement_pct'] = np.nan
+            results[f'{label}_cv_improved_ratio'] = np.nan
+            results[f'{label}_total_cv_before'] = np.nan
+            results[f'{label}_total_cv_after'] = np.nan
+            results[f'{label}_total_cv_improvement'] = np.nan
+            continue
+
+        before_subset = original_data[:, indices]
+        after_subset = normalized_data[:, indices]
+
+        before_cv = calculate_rsd(before_subset)
+        after_cv = calculate_rsd(after_subset)
+
+        results[f'{label}_median_cv_before'] = np.nanmedian(before_cv)
+        results[f'{label}_median_cv_after'] = np.nanmedian(after_cv)
+        results[f'{label}_cv_improvement'] = (
+            results[f'{label}_median_cv_before'] - results[f'{label}_median_cv_after']
+        )
+        results[f'{label}_cv_improvement_pct'] = (
+            results[f'{label}_cv_improvement'] / results[f'{label}_median_cv_before'] * 100
+            if results[f'{label}_median_cv_before'] > 0 else np.nan
+        )
+
+        valid_feature_count = np.sum(~np.isnan(before_cv) & ~np.isnan(after_cv))
+        improved_feature_count = np.sum((before_cv - after_cv) > 0)
+        results[f'{label}_cv_improved_ratio'] = (
+            improved_feature_count / valid_feature_count * 100
+            if valid_feature_count > 0 else np.nan
+        )
+
+        before_totals = np.nansum(before_subset, axis=0)
+        after_totals = np.nansum(after_subset, axis=0)
+        results[f'{label}_total_cv_before'] = (
+            np.std(before_totals, ddof=1) / np.mean(before_totals) * 100
+            if len(before_totals) >= 2 and np.mean(before_totals) != 0 else np.nan
+        )
+        results[f'{label}_total_cv_after'] = (
+            np.std(after_totals, ddof=1) / np.mean(after_totals) * 100
+            if len(after_totals) >= 2 and np.mean(after_totals) != 0 else np.nan
+        )
+        results[f'{label}_total_cv_improvement'] = (
+            results[f'{label}_total_cv_before'] - results[f'{label}_total_cv_after']
+        )
+
+    return results
+
+
+def build_step4_summary_context(source_sheet_name, available_sheet_names=None):
+    """Summarize the Step 4 execution context for human-readable reporting."""
+    available_sheet_names = list(available_sheet_names or [])
+
+    step3_applied = source_sheet_name == SHEET_NAMES['qc_batch_scaling']
+    resolved_qc_loess_name = resolve_sheet_name(available_sheet_names, 'qc_lowess')
+    if step3_applied:
+        step3_status = "已執行（使用 QC Batch Scaling 結果）"
+    elif source_sheet_name in {
+        SHEET_NAMES['qc_lowess'],
+        resolved_qc_loess_name,
+    }:
+        step3_status = "未執行或已跳過（直接使用 QC-LOESS 結果）"
+    else:
+        step3_status = "無法由目前輸入工作簿明確判定"
+
+    if SHEET_NAMES['istd_correction'] in available_sheet_names:
+        step1_status = "目前工作簿可見 ISTD_Correction 工作表"
+    elif SHEET_NAMES['raw_intensity'] in available_sheet_names:
+        step1_status = "目前工作簿未見 ISTD_Correction 工作表"
+    else:
+        step1_status = "目前工作簿未保留 Step 1 線索"
+
+    return {
+        'source_sheet_name': source_sheet_name,
+        'step1_status': step1_status,
+        'step3_status': step3_status,
+    }
+
+def create_normalization_summary_report(
+    quality_metrics,
+    method_name,
+    n_features,
+    n_samples,
+    pqn_info=None,
+    group_diff_results=None,
+    subset_metrics=None,
+    summary_context=None,
+    mapped_sample_count=None,
+):
     """
     建立增強版標準化摘要報告（基於非參數統計方法）
 
@@ -1281,12 +1408,31 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
     report.append(f"報告生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     report.append(SUMMARY_REPORT_SEPARATOR)
     
+    summary_context = summary_context or {}
+    subset_metrics = subset_metrics or {}
+
+    # ========== 執行上下文 ==========
+    report.append("")
+    report.append("【執行上下文】")
+    if summary_context.get('source_sheet_name'):
+        report.append(f"上一步輸入工作表: {summary_context['source_sheet_name']}")
+    report.append("本摘要的 before/after 指標 = 上一步輸入結果 vs Step 4 輸出")
+    if summary_context.get('step1_status'):
+        report.append(f"Step 1 線索: {summary_context['step1_status']}")
+    if summary_context.get('step3_status'):
+        report.append(f"Step 3 狀態: {summary_context['step3_status']}")
+
     # ========== 基本資訊 ==========
     report.append("")
     report.append("【基本資訊】")
     report.append(f"標準化方法: {method_name}")
     report.append(f"特徵數量: {n_features}")
-    report.append(f"樣本數量: {n_samples}")
+    report.append(f"樣本數量（含 QC）: {n_samples}")
+    if mapped_sample_count is not None:
+        report.append(f"名稱成功映射樣本數: {mapped_sample_count}/{n_samples}")
+    if pqn_info:
+        report.append(f"QC 樣本數量: {pqn_info['qc_count']}")
+        report.append(f"真實樣本數量: {pqn_info['real_count']}")
     
     # ========== 標準化參考資訊 ==========
     if pqn_info:
@@ -1302,8 +1448,6 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
         else:
             report.append("【PQN 參考樣本資訊】")
             report.append(f"參考策略: {strategy}")
-            report.append(f"QC 樣本數量: {pqn_info['qc_count']}")
-            report.append(f"真實樣本數量: {pqn_info['real_count']}")
 
             if pqn_info['qc_count'] > 0 and not np.isnan(pqn_info['qc_cv']):
                 report.append(f"QC 中位數 CV%: {pqn_info['qc_cv']:.2f}%")
@@ -1313,36 +1457,84 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
                     report.append("QC 質量評估: ✓ 良好")
                 else:
                     report.append("QC 質量評估: ⚠ 需改進")
+            real_factors = np.asarray(pqn_info.get('normalization_factors_real', []), dtype=float)
+            if real_factors.size > 0 and np.isfinite(real_factors).any():
+                report.append(
+                    "PQN 因子範圍: "
+                    f"{np.nanmin(real_factors):.4f} – {np.nanmax(real_factors):.4f}"
+                )
     
     # ========== CV% 評估 ==========
     report.append("")
-    report.append("【CV% 評估】")
-    report.append(f"標準化前:")
+    report.append("【Feature CV 變化（全部樣本）】")
+    report.append("上一步輸入:")
     report.append(f"  - 中位數CV%: {quality_metrics['median_cv_before']:.2f}%")
     report.append(f"  - 平均CV%: {quality_metrics['mean_cv_before']:.2f}%")
-    report.append(f"標準化後:")
+    report.append("Step 4 輸出:")
     report.append(f"  - 中位數CV%: {quality_metrics['median_cv_after']:.2f}%")
     report.append(f"  - 平均CV%: {quality_metrics['mean_cv_after']:.2f}%")
-    report.append(f"改善:")
+    report.append("變化:")
     report.append(f"  - CV%降低: {quality_metrics['cv_improvement']:.2f}%")
     report.append(f"  - 改善百分比: {quality_metrics['cv_improvement_pct']:.2f}%")
     report.append(f"  - CV%改善的特徵比例: {quality_metrics['cv_improved_ratio']:.1f}%")
+    if not np.isnan(quality_metrics.get('cv_wilcoxon_pvalue', np.nan)):
+        report.append(f"  - Wilcoxon p-value: {quality_metrics['cv_wilcoxon_pvalue']:.4g}")
+
+    if subset_metrics:
+        report.append("")
+        report.append("【QC 與真實樣本分層評估】")
+        if not np.isnan(subset_metrics.get('qc_median_cv_before', np.nan)):
+            report.append(
+                f"QC feature CV 中位數: "
+                f"{subset_metrics['qc_median_cv_before']:.2f}% -> "
+                f"{subset_metrics['qc_median_cv_after']:.2f}%"
+            )
+            report.append(
+                f"  - QC CV 改善特徵比例: {subset_metrics['qc_cv_improved_ratio']:.1f}%"
+            )
+        else:
+            report.append("QC feature CV: 樣本數不足，未提供分層統計")
+
+        if not np.isnan(subset_metrics.get('real_median_cv_before', np.nan)):
+            report.append(
+                f"真實樣本 feature CV 中位數: "
+                f"{subset_metrics['real_median_cv_before']:.2f}% -> "
+                f"{subset_metrics['real_median_cv_after']:.2f}%"
+            )
+            report.append(
+                f"  - 真實樣本 CV 改善特徵比例: {subset_metrics['real_cv_improved_ratio']:.1f}%"
+            )
+        else:
+            report.append("真實樣本 feature CV: 樣本數不足，未提供分層統計")
     
     # ========== 樣本總強度變異 ==========
     report.append("")
-    report.append("【樣本總強度變異】")
-    report.append(f"標準化前總強度CV%: {quality_metrics['total_cv_before']:.2f}%")
-    report.append(f"標準化後總強度CV%: {quality_metrics['total_cv_after']:.2f}%")
+    report.append("【樣本總強度變異（全部樣本）】")
+    report.append(f"上一步輸入總強度CV%: {quality_metrics['total_cv_before']:.2f}%")
+    report.append(f"Step 4 輸出總強度CV%: {quality_metrics['total_cv_after']:.2f}%")
     report.append(f"總強度CV%改善: {quality_metrics['total_cv_improvement']:.2f}%")
+    if subset_metrics:
+        if not np.isnan(subset_metrics.get('real_total_cv_before', np.nan)):
+            report.append(
+                f"真實樣本總強度CV%: "
+                f"{subset_metrics['real_total_cv_before']:.2f}% -> "
+                f"{subset_metrics['real_total_cv_after']:.2f}%"
+            )
+        if not np.isnan(subset_metrics.get('qc_total_cv_before', np.nan)):
+            report.append(
+                f"QC 總強度CV%: "
+                f"{subset_metrics['qc_total_cv_before']:.2f}% -> "
+                f"{subset_metrics['qc_total_cv_after']:.2f}%"
+            )
     
     # ========== 樣本間相關性 ==========
     report.append("")
-    report.append("【樣本間相關性】")
+    report.append("【樣本間相關性（全部樣本）】")
     if not np.isnan(quality_metrics['sample_corr_mean_before']):
-        report.append(f"標準化前:")
+        report.append("上一步輸入:")
         report.append(f"  - 平均相關性: {quality_metrics['sample_corr_mean_before']:.4f}")
         report.append(f"  - 相關性標準差: {quality_metrics['sample_corr_std_before']:.4f}")
-        report.append(f"標準化後:")
+        report.append("Step 4 輸出:")
         report.append(f"  - 平均相關性: {quality_metrics['sample_corr_mean_after']:.4f}")
         report.append(f"  - 相關性標準差: {quality_metrics['sample_corr_std_after']:.4f}")
     else:
@@ -1387,114 +1579,42 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
         else:
             report.append("評估: ○ 組間差異保留尚可")
     
-    # ========== 評估結論 ==========
+    # ========== 整體判讀 ==========
     report.append("")
-    report.append("【評估結論】")
-    
-    # CV%評估
-    if quality_metrics['cv_improvement'] > 0:
-        if quality_metrics['cv_improvement_pct'] > 20:
-            report.append("✓✓✓ CV%顯著降低，標準化效果極佳")
-        elif quality_metrics['cv_improvement_pct'] > 10:
-            report.append("✓✓ CV%明顯降低，標準化效果良好")
+    report.append("【整體判讀】")
+    feature_p = quality_metrics.get('cv_wilcoxon_pvalue', np.nan)
+    if quality_metrics['cv_improvement'] > 0 and quality_metrics['cv_improvement_pct'] >= 10:
+        report.append("✓ feature-level reproducibility 有明顯改善")
+    elif quality_metrics['cv_improvement'] > 0:
+        if not np.isnan(feature_p) and feature_p < 0.05:
+            report.append("✓ feature-level reproducibility 有小幅但可檢出的改善")
         else:
-            report.append("✓ CV%略有降低，標準化效果尚可")
+            report.append("○ feature-level reproducibility 僅有限改善")
     else:
-        report.append("⚠ CV%未降低，建議檢查數據或嘗試其他標準化方法")
-    
-    # 總強度變異評估
-    if quality_metrics['total_cv_improvement'] > 0:
-        if quality_metrics['total_cv_improvement'] > 10:
-            report.append("✓✓ 樣本總強度變異顯著降低")
-        else:
-            report.append("✓ 樣本總強度變異有所降低")
+        report.append("⚠ feature-level reproducibility 未見改善")
+
+    if quality_metrics['total_cv_improvement'] > 10:
+        report.append("✓✓ global intensity scaling 改善明顯")
+    elif quality_metrics['total_cv_improvement'] > 0:
+        report.append("✓ global intensity scaling 有所改善")
     else:
-        report.append("⚠ 樣本總強度變異未改善")
-    
-    # 樣本間相關性評估
+        report.append("⚠ global intensity scaling 未見改善")
+
     if not np.isnan(quality_metrics['sample_corr_std_before']):
         if quality_metrics['sample_corr_std_after'] < quality_metrics['sample_corr_std_before']:
             report.append("✓ 樣本間相關性更一致")
         else:
-            report.append("⚠ 樣本間相關性一致性未改善")
-    
-    # 特徵改善比例評估
-    if quality_metrics['cv_improved_ratio'] > 70:
-        report.append(f"✓✓ 大多數特徵({quality_metrics['cv_improved_ratio']:.1f}%)的CV%得到改善")
-    elif quality_metrics['cv_improved_ratio'] > 50:
-        report.append(f"✓ 超過半數特徵({quality_metrics['cv_improved_ratio']:.1f}%)的CV%得到改善")
-    else:
-        report.append(f"⚠ 僅{quality_metrics['cv_improved_ratio']:.1f}%的特徵CV%得到改善")
-    
-    # ========== 整體評分（更新評分邏輯）==========
-    report.append("")
-    report.append("【整體評分】")
-    score = 0
-    max_score = 100
-    
-    # CV% 改善 (25 分)
-    if quality_metrics['cv_improvement'] > 0:
-        if quality_metrics['cv_improvement_pct'] > 20:
-            score += 25
-        elif quality_metrics['cv_improvement_pct'] > 10:
-            score += 20
-        else:
-            score += 15
-    
-    # 總強度變異改善 (20 分)
-    if quality_metrics['total_cv_improvement'] > 0:
-        if quality_metrics['total_cv_improvement'] > 10:
-            score += 20
-        else:
-            score += 15
-    
-    # 樣本間相關性改善 (15 分)
-    if not np.isnan(quality_metrics['sample_corr_std_before']) and quality_metrics['sample_corr_std_after'] < quality_metrics['sample_corr_std_before']:
-        score += 15
+            report.append("○ 樣本間相關性結構大致維持不變")
 
-    # 組間差異保留 (30 分) - 包含統計檢驗評估
     if group_diff_results:
-        # 基本分：Effect Size 保留率 (20 分)
-        if group_diff_results['avg_preservation'] > 90:
-            score += 20
-        elif group_diff_results['avg_preservation'] > 80:
-            score += 15
-        elif group_diff_results['avg_preservation'] > 70:
-            score += 10
-
-        # 統計檢驗額外分 (10 分)
-        # 1. 全域 Wilcoxon 檢驗結果 (5 分)
-        if group_diff_results.get('wilcoxon_performed') and not np.isnan(group_diff_results['wilcoxon_pvalue']):
-            if group_diff_results['wilcoxon_pvalue'] >= 0.05:
-                # p >= 0.05 表示整體 effect size 分佈無顯著變化
-                score += 5
-            elif group_diff_results['avg_preservation'] > 85:
-                score += 2
-
-        # 2. 描述性標記比例 (5 分)
-        scoreable_flagged_ratio = group_diff_results.get('scoreable_flagged_ratio')
-        if scoreable_flagged_ratio is not None and not np.isnan(scoreable_flagged_ratio):
-            if scoreable_flagged_ratio < 0.05:
-                score += 5
-            elif scoreable_flagged_ratio < 0.10:
-                score += 3
-
-        # 嚴重減弱特徵的懲罰
         if group_diff_results['severe_reduction'] / group_diff_results['total'] > 0.1:
-            score -= 10
-            report.append("  ⚠ 警告：超過 10% 的特徵 Effect Size 顯著減弱（-10 分）")
+            report.append("⚠ 組間差異有明顯流失風險，建議檢查受影響特徵")
+        elif group_diff_results['avg_preservation'] > 90:
+            report.append("✓✓ 組間差異保留良好")
+        else:
+            report.append("○ 組間差異保留度尚可")
     
-    report.append(f"標準化質量評分: {score}/{max_score}")
-    if score >= 85:
-        report.append("評級: 優秀 ★★★★★")
-    elif score >= 70:
-        report.append("評級: 良好 ★★★★")
-    elif score >= 50:
-        report.append("評級: 尚可 ★★★")
-    else:
-        report.append("評級: 需改進 ★★")
-    
-    # ========== 建議與注意事項（新增）==========
+    # ========== 建議與注意事項 ==========
     report.append("")
     report.append("【建議與注意事項】")
     
@@ -1523,13 +1643,13 @@ def create_normalization_summary_report(quality_metrics, method_name, n_features
     # CV% 改善相關建議
     if quality_metrics['cv_improved_ratio'] < 50:
         report.append("⚠ 建議：僅不到一半的特徵 CV% 得到改善，可能需要考慮其他標準化方法")
-    
-    # 如果所有指標都良好
-    if (quality_metrics['cv_improvement_pct'] > 20 and
-        quality_metrics['total_cv_improvement'] > 10 and
-        (group_diff_results is None or group_diff_results['avg_preservation'] > 90)):
-        report.append("✓✓✓ 恭喜！所有評估指標均表現優異，標準化效果極佳")
-    
+
+    if (
+        quality_metrics['cv_improvement_pct'] <= 10 and
+        quality_metrics['total_cv_improvement'] > 10
+    ):
+        report.append("○ 提示：本次結果較像全域尺度穩定化，而非強烈提升 feature-level reproducibility")
+
     report.append("")
     report.append("=" * 80)
     
@@ -1685,7 +1805,13 @@ def clean_dataframe_for_excel(df):
 
     return cleaned_df
 
-from metabolomics.utils.excel_format import copy_cell_style  # noqa: E302
+from metabolomics.utils.excel_format import (  # noqa: E302
+    PASS_FONT_COLOR,
+    STRUCTURE_FONT_COLOR,
+    WARN_FONT_COLOR,
+    apply_header_fill,
+    apply_number_format,
+)
 
 # ==================== 主要處理函數 ====================
 
@@ -1726,7 +1852,8 @@ def _extract_reference_values(sample_columns, col_to_info_row, correction_col):
 
 def perform_normalization(data_df, sample_info_df, file_path,
                           plots_dir=None, source_sheet_name=None,
-                          normalization_method='PQN', correction_col=None):
+                          normalization_method='PQN', correction_col=None,
+                          available_sheet_names=None):
     """
     執行標準化處理
 
@@ -1833,7 +1960,7 @@ def perform_normalization(data_df, sample_info_df, file_path,
     print(f"✓ Excel 將輸出到: {output_dir}")
     print(f"✓ 本次圖表輸出目錄: {figures_dir}")
     # 分離有效樣本用於評估
-    valid_sample_mask = ~np.isnan(normalized_data[0, :])
+    valid_sample_mask = ~np.all(np.isnan(normalized_data), axis=0)
     original_data_valid = original_data[:, valid_sample_mask]
     normalized_data_valid = normalized_data[:, valid_sample_mask]
     sample_columns_valid = [sample_columns[i] for i in range(len(sample_columns)) if valid_sample_mask[i]]
@@ -1841,6 +1968,13 @@ def perform_normalization(data_df, sample_info_df, file_path,
     # ========== 評估標準化質量 ==========
     print("\n評估標準化質量...")
     quality_metrics = evaluate_normalization_quality(original_data_valid, normalized_data_valid)
+    subset_metrics = evaluate_subset_quality(
+        original_data_valid,
+        normalized_data_valid,
+        sample_columns_valid,
+        sample_info_df,
+        col_to_info_row=col_to_info_row,
+    )
 
     # ========== 組間差異保留評估 ==========
     try:
@@ -1941,9 +2075,15 @@ def perform_normalization(data_df, sample_info_df, file_path,
     
     # ========== 生成摘要報告 ==========
     summary_report = create_normalization_summary_report(
-        quality_metrics, method_name, len(feature_ids), len(sample_columns_valid),
+        quality_metrics, method_name, len(feature_ids), len(sample_columns),
         pqn_info=pqn_info,
-        group_diff_results=group_diff_results
+        group_diff_results=group_diff_results,
+        subset_metrics=subset_metrics,
+        summary_context=build_step4_summary_context(
+            source_sheet_name,
+            available_sheet_names=available_sheet_names,
+        ),
+        mapped_sample_count=len(col_to_info_row),
     )
     
     print(f"\n{summary_report}")
@@ -1985,8 +2125,15 @@ def save_normalization_results(
                 cell = ws_normalized.cell(row=r_idx, column=c_idx, value=value)
                 if r_idx == 1:
                     cell.font = Font(bold=True, size=11)
-                    cell.fill = PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid')
                     cell.alignment = Alignment(horizontal='center', vertical='center')
+        apply_header_fill(ws_normalized)
+
+        normalized_headers = [cell.value for cell in ws_normalized[1]]
+        normalized_header_map = {name: idx + 1 for idx, name in enumerate(normalized_headers) if name}
+        for col_name in normalized_headers:
+            if not col_name or col_name in NON_SAMPLE_COLUMNS:
+                continue
+            apply_number_format(ws_normalized, normalized_header_map[col_name], '0.00E+00')
         
         # 自動調整列寬
         for column in ws_normalized.columns:
@@ -2014,15 +2161,15 @@ def save_normalization_results(
             if '=' in row_text and r_idx <= 3:
                 cell.font = Font(bold=True, size=12)
             elif '【' in row_text:
-                cell.font = Font(bold=True, size=11, color='0000FF')
+                cell.font = Font(bold=True, size=11, color=STRUCTURE_FONT_COLOR)
             elif '✓' in row_text:
-                cell.font = Font(color='008000')
+                cell.font = Font(color=PASS_FONT_COLOR)
             elif '⚠' in row_text:
-                cell.font = Font(color='FF6600')
+                cell.font = Font(color=WARN_FONT_COLOR)
         
         ws_summary.column_dimensions['A'].width = 80
         
-        # 3. Preserve upstream sheets directly from in-memory DataFrames
+        # 3. 保留上一步資料工作表與 SampleInfo（直接使用記憶體中的 DataFrame）
         df_map = {
             preserved_data_sheet_name: preserved_data_df,
             sample_info_sheet_name: sample_info_df,
@@ -2041,6 +2188,23 @@ def save_normalization_results(
                 for c_idx, value in enumerate(row, 1):
                     ws_preserved.cell(row=r_idx, column=c_idx, value=value)
 
+            apply_header_fill(ws_preserved)
+
+            preserved_headers = [cell.value for cell in ws_preserved[1]]
+            preserved_header_map = {name: idx + 1 for idx, name in enumerate(preserved_headers) if name}
+            for col_name in preserved_headers:
+                if not col_name or col_name in NON_SAMPLE_COLUMNS:
+                    continue
+                apply_number_format(ws_preserved, preserved_header_map[col_name], '0.00E+00')
+
+            for column in ws_preserved.columns:
+                max_length = max(
+                    (len(str(cell.value)) for cell in column if cell.value is not None),
+                    default=8,
+                )
+                ws_preserved.column_dimensions[column[0].column_letter].width = min(max_length + 2, 50)
+        
+        # 儲存新工作簿
         wb_new.save(output_path)
         
         print(f"\n✓ 結果已儲存至: {output_path}")
@@ -2159,6 +2323,7 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
         source_sheet_name=data_sheet_name,
         normalization_method=normalization_method,
         correction_col=correction_col,
+        available_sheet_names=sheet_names,
     )
     
     if result is None:
@@ -2198,21 +2363,11 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
     if not output_path:
         raise Exception("儲存結果失敗")
     
-    # 計算整體評分
-    score = 0
-    if quality_metrics['cv_improvement'] > 0:
-        score += 25
-    if quality_metrics['total_cv_improvement'] > 0:
-        score += 25
-    if not np.isnan(quality_metrics['sample_corr_std_before']) and quality_metrics['sample_corr_std_after'] < quality_metrics['sample_corr_std_before']:
-        score += 25
-    if quality_metrics['cv_improved_ratio'] > 50:
-        score += 25
-
     print(f"\n  ✓ Step 4 完成 → {Path(output_path).name}")
     print(f"    CV%: {quality_metrics['median_cv_before']:.1f}% → {quality_metrics['median_cv_after']:.1f}%"
           f" (改善 {quality_metrics['cv_improvement_pct']:.0f}%, {quality_metrics['cv_improved_ratio']:.0f}% features)")
-    print(f"    品質評分: {score}/100")
+    print(f"    上游基準: {data_sheet_name}")
+    print(f"    總強度CV%: {quality_metrics['total_cv_before']:.1f}% → {quality_metrics['total_cv_after']:.1f}%")
     
     # 🎯 返回統計資訊給 GUI
     # 從 normalized_df 中提取樣本數量（排除第一列 FeatureID）

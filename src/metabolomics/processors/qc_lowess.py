@@ -3,7 +3,8 @@ import numpy as np
 import os
 from datetime import datetime
 from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
+from openpyxl.styles import Font, Alignment
+from openpyxl.utils import get_column_letter
 import statsmodels.api as sm
 from scipy.stats import levene, kendalltau, wilcoxon
 import matplotlib.pyplot as plt
@@ -34,14 +35,25 @@ from metabolomics.utils.file_io import (
     resolve_session_dir,
 )
 from metabolomics.utils.results import ProcessingResult
-from metabolomics.utils.excel_format import copy_sheet_formatting_only
 from metabolomics.utils.console import safe_print as print
+from metabolomics.utils.excel_format import (
+    SECTION_DIVIDER_FILL,
+    SECTION_LABEL_FILL,
+    SECTION_TITLE_FILL,
+    STRUCTURE_FONT_COLOR,
+    apply_band_fill,
+    apply_cv_quality_fill,
+    apply_header_fill,
+    apply_improvement_fill,
+    apply_number_format,
+    apply_significance_fill,
+)
 
 # 設定 matplotlib
 setup_matplotlib()
 
 # Sheet name constant
-QC_LOWESS_ADVANCED_SHEET = SHEET_NAMES.get('qc_lowess_advanced', "QC_LOESS_Advanced Statistics")
+QC_LOWESS_ADVANCED_SHEET = SHEET_NAMES.get('qc_lowess_advanced', "LOESS_summary")
 RED_FONT_RGBS = {'FFFF0000', 'FF0000'}
 
 # For backward compatibility, alias the old constant names
@@ -56,7 +68,11 @@ def parse_batch_labels(value):
 
 
 def collect_red_marked_feature_ids(file_path, sheet_name):
-    """Collect red-font feature IDs from the first column of a worksheet."""
+    """Collect red-font feature IDs from the first column of a worksheet.
+
+    Uses ``read_only=True`` for streaming parsing – avoids loading the
+    entire DOM tree into memory, which is critical for large matrices.
+    """
     workbook = load_workbook(file_path, read_only=True)
     try:
         if sheet_name not in workbook.sheetnames:
@@ -1600,7 +1616,6 @@ def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_pag
         traceback.print_exc()
 
 
-# copy_sheet_with_full_format 已移至 utils/excel_format.py (copy_sheet_with_style)
 
 
 # ========== ✅ 修正：保存結果到 Excel（移除 Wilcoxon_pvalue）==========
@@ -1668,6 +1683,110 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         advanced_stats_df = lowess_df[['FeatureID']].merge(
             trend_stats_df, on='FeatureID', how='left'
         )
+
+        def _fmt(value, digits=2, pct=False):
+            if value is None:
+                return "N/A"
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return str(value)
+            if not np.isfinite(value):
+                return "N/A"
+            suffix = "%" if pct else ""
+            return f"{value:.{digits}f}{suffix}"
+
+        total_count = len(cv_results_df)
+        cv_before = pd.to_numeric(cv_results_df['Original_QC_CV%'], errors='coerce')
+        cv_after = pd.to_numeric(cv_results_df['Corrected_QC_CV%'], errors='coerce')
+        cv_improvement = pd.to_numeric(cv_results_df['CV_Improvement%'], errors='coerce')
+        variance_p = pd.to_numeric(cv_results_df['Variance_Test_pvalue'], errors='coerce')
+        tau_values = pd.to_numeric(trend_stats_df.get('Kendall_Tau'), errors='coerce')
+        r2_values = pd.to_numeric(trend_stats_df.get('LOESS_R2'), errors='coerce')
+        frac_values = pd.to_numeric(trend_stats_df.get('Frac_Used'), errors='coerce')
+        frac_strategy_counts = (
+            trend_stats_df['Frac_Strategy'].fillna('unknown').value_counts().to_dict()
+            if 'Frac_Strategy' in trend_stats_df.columns else {}
+        )
+        wilcoxon_pvalue = np.nan
+        valid_cv_mask = ~(cv_before.isna() | cv_after.isna())
+        if valid_cv_mask.sum() >= 3:
+            try:
+                wilcoxon_pvalue = float(
+                    wilcoxon(
+                        cv_before[valid_cv_mask],
+                        cv_after[valid_cv_mask],
+                        alternative='greater',
+                    ).pvalue
+                )
+            except (ValueError, TypeError):
+                wilcoxon_pvalue = np.nan
+
+        frac_range_value = "N/A"
+        if np.isfinite(frac_values).any():
+            frac_range_value = (
+                f"{_fmt(np.nanmin(frac_values), digits=2)} - "
+                f"{_fmt(np.nanmax(frac_values), digits=2)}"
+            )
+
+        median_cv_improvement = float(np.nanmedian(cv_improvement)) if total_count else np.nan
+        improved_ratio = (cv_improvement > 0).mean() * 100 if total_count else np.nan
+        if (
+            np.isfinite(median_cv_improvement)
+            and median_cv_improvement >= 10
+            and np.isfinite(wilcoxon_pvalue)
+            and wilcoxon_pvalue < 0.05
+            and improved_ratio >= 70
+        ):
+            overall_readout = "Strong feature-level improvement"
+        elif np.isfinite(median_cv_improvement) and median_cv_improvement > 0 and improved_ratio >= 50:
+            overall_readout = "Moderate feature-level improvement"
+        elif np.isfinite(median_cv_improvement) and median_cv_improvement > 0:
+            overall_readout = "Limited feature-level improvement"
+        else:
+            overall_readout = "No convincing feature-level improvement"
+
+        summary_pairs = [
+            ("LOESS Summary", ""),
+            ("Overview", ""),
+            ("Report generated", datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+            ("Upstream sheet", istd_df.attrs.get('source_sheet_name', SHEET_NAMES['istd_correction'])),
+            ("Features processed", total_count),
+            ("Overall readout", overall_readout),
+            ("QC reproducibility", ""),
+            ("Median QC CV before", _fmt(np.nanmedian(cv_before), pct=True)),
+            ("Median QC CV after", _fmt(np.nanmedian(cv_after), pct=True)),
+            ("Median QC CV improvement", _fmt(median_cv_improvement, pct=True)),
+            ("Wilcoxon p-value", _fmt(wilcoxon_pvalue, digits=4)),
+            (
+                "Improved features",
+                _fmt(improved_ratio, digits=1, pct=True),
+            ),
+            (
+                "Features >5% improved",
+                _fmt((cv_improvement > 5).mean() * 100 if total_count else np.nan, digits=1, pct=True),
+            ),
+            ("Worsened features", int((cv_improvement < 0).sum()) if total_count else 0),
+            ("Batch execution", ""),
+            ("All-batch success", decision_stats.get('success', 0)),
+            ("Partial success", decision_stats.get('partial_success', 0)),
+            (
+                "No successful batch",
+                total_count - decision_stats.get('success', 0) - decision_stats.get('partial_success', 0),
+            ),
+            ("Variance and fit diagnostics", ""),
+            (
+                "Variance test p<0.05",
+                _fmt((variance_p < 0.05).mean() * 100 if total_count else np.nan, digits=1, pct=True),
+            ),
+            ("Kendall tau median", _fmt(np.nanmedian(tau_values), digits=4)),
+            ("LOESS R2 median", _fmt(np.nanmedian(r2_values), digits=4)),
+            ("Frac diagnostics", ""),
+            ("Frac median", _fmt(np.nanmedian(frac_values), digits=2)),
+            ("Frac range", frac_range_value),
+        ]
+        for strategy, count in frac_strategy_counts.items():
+            summary_pairs.append((f"Frac strategy: {strategy}", count))
         
         print(f"\n📋 開始處理 Excel 檔案...")
         print(f"  - 載入原始檔案: {os.path.basename(input_file)}")
@@ -1715,62 +1834,107 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
 
         workbook = load_workbook(output_file)
 
-        # 複製輸入檔的原始格式（保留 ISTD 紅色標記等）
-        original_wb = load_workbook(input_file)
-        for sheet_name in [source_sheet_name]:
-            if sheet_name in original_wb.sheetnames and sheet_name in workbook.sheetnames:
-                copy_sheet_formatting_only(original_wb[sheet_name], workbook[sheet_name])
-        original_wb.close()
-
         scientific_format = '0.00E+00'
-        
-        for sheet_name in [source_sheet_name, SHEET_NAMES['qc_lowess'], QC_LOWESS_ADVANCED_SHEET, SHEET_NAMES['sample_info']]:
-            if sheet_name in workbook.sheetnames:
-                worksheet = workbook[sheet_name]
-                for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=1, max_col=worksheet.max_column):
-                    for cell in row:
-                        if isinstance(cell.value, (int, float)) and not pd.isna(cell.value):
-                            if cell.number_format == 'General' or cell.number_format == '0':
-                                cell.number_format = scientific_format
+        advanced_table_width = len(advanced_export.columns)
 
-        # ✅ 顏色標記（簡化版）
-        orange_fill = PatternFill(start_color='FFA500', end_color='FFA500', fill_type='solid')
-        light_blue_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')
-        light_green_fill = PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')
+        if SHEET_NAMES['sample_info'] in workbook.sheetnames:
+            apply_header_fill(workbook[SHEET_NAMES['sample_info']])
 
         # 主表顏色標記
         if SHEET_NAMES['qc_lowess'] in workbook.sheetnames:
             worksheet = workbook[SHEET_NAMES['qc_lowess']]
             header = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1))]
-            
-            # CV% 相關欄位 - 橘色
-            for col_name in ['Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%']:
-                if col_name in header:
-                    col_idx = header.index(col_name) + 1
-                    for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
-                        for cell in row:
-                            cell.fill = orange_fill
-            
-            # Levene's test - 淺藍色
+            header_map = {name: idx + 1 for idx, name in enumerate(header) if name}
+
+            apply_header_fill(worksheet)
+
+            for col_name in header:
+                if not col_name or col_name in NON_SAMPLE_COLUMNS:
+                    continue
+                apply_number_format(worksheet, header_map[col_name], scientific_format)
+
+            for col_name in ['Original_QC_CV%', 'Corrected_QC_CV%']:
+                if col_name in header_map:
+                    apply_cv_quality_fill(worksheet, header_map[col_name])
+                    apply_number_format(worksheet, header_map[col_name], '0.00')
+
+            if 'CV_Improvement%' in header_map:
+                apply_improvement_fill(worksheet, header_map['CV_Improvement%'])
+                apply_number_format(worksheet, header_map['CV_Improvement%'], '+0.00;-0.00')
+
             if 'Variance_Test_pvalue' in header:
                 col_idx = header.index('Variance_Test_pvalue') + 1
-                for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
-                    for cell in row:
-                        cell.fill = light_blue_fill
+                apply_significance_fill(worksheet, col_idx)
+                apply_number_format(worksheet, col_idx, '0.0000')
         
         # 副表顏色標記
         if QC_LOWESS_ADVANCED_SHEET in workbook.sheetnames:
             worksheet = workbook[QC_LOWESS_ADVANCED_SHEET]
             header = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1))]
-            
-            # 所有進階指標 - 淺綠色
-            for col_name in ['Kendall_Tau', 'LOESS_R2', 'LOESS_RMSE',
-                             'Frac_Used', 'QC_CV_for_Frac', 'Frac_Strategy']:
-                if col_name in header:
-                    col_idx = header.index(col_name) + 1
-                    for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=col_idx, max_col=col_idx):
-                        for cell in row:
-                            cell.fill = light_green_fill
+            header_map = {name: idx + 1 for idx, name in enumerate(header) if name}
+
+            apply_header_fill(worksheet, max_col=advanced_table_width)
+
+            if 'Kendall_Tau' in header_map:
+                apply_band_fill(
+                    worksheet,
+                    header_map['Kendall_Tau'],
+                    excellent=0.3,
+                    acceptable=0.5,
+                    use_abs=True,
+                )
+                apply_number_format(worksheet, header_map['Kendall_Tau'], '0.000')
+
+            if 'LOESS_R2' in header_map:
+                apply_band_fill(
+                    worksheet,
+                    header_map['LOESS_R2'],
+                    excellent=0.9,
+                    acceptable=0.7,
+                    higher_is_better=True,
+                )
+                apply_number_format(worksheet, header_map['LOESS_R2'], '0.000')
+
+            if 'LOESS_RMSE' in header_map:
+                apply_number_format(worksheet, header_map['LOESS_RMSE'], '0.00')
+
+            if 'Frac_Used' in header_map:
+                apply_number_format(worksheet, header_map['Frac_Used'], '0.00')
+
+            if 'QC_CV_for_Frac' in header_map:
+                apply_cv_quality_fill(worksheet, header_map['QC_CV_for_Frac'])
+                apply_number_format(worksheet, header_map['QC_CV_for_Frac'], '0.00')
+
+            summary_col = advanced_table_width + 3
+            value_col = summary_col + 1
+
+            for row_idx, (label, value) in enumerate(summary_pairs, start=1):
+                label_cell = worksheet.cell(row=row_idx, column=summary_col, value=label)
+                value_cell = worksheet.cell(row=row_idx, column=value_col, value=value)
+                label_cell.alignment = Alignment(horizontal='left')
+                value_cell.alignment = Alignment(horizontal='left')
+                value_cell.font = Font(color=STRUCTURE_FONT_COLOR)
+
+                if row_idx == 1:
+                    label_cell.font = Font(bold=True, size=12, color=STRUCTURE_FONT_COLOR)
+                    label_cell.fill = SECTION_TITLE_FILL
+                    value_cell.value = None
+                    value_cell.fill = SECTION_TITLE_FILL
+                    value_cell.font = Font(color=STRUCTURE_FONT_COLOR, bold=True, size=12)
+                elif value == "":
+                    label_cell.font = Font(bold=True, color=STRUCTURE_FONT_COLOR)
+                    label_cell.fill = SECTION_DIVIDER_FILL
+                    value_cell.value = None
+                    value_cell.fill = SECTION_DIVIDER_FILL
+                    value_cell.font = Font(color=STRUCTURE_FONT_COLOR, bold=True)
+                else:
+                    label_cell.font = Font(bold=True, color=STRUCTURE_FONT_COLOR)
+                    label_cell.fill = SECTION_LABEL_FILL
+                    if isinstance(value, (int, float)) and not pd.isna(value):
+                        value_cell.number_format = '0.00'
+
+            worksheet.column_dimensions[get_column_letter(summary_col)].width = 28
+            worksheet.column_dimensions[get_column_letter(value_col)].width = 24
 
         # ===== 防呆5: 文件保存檢查 =====
         try:

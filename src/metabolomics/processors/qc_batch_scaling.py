@@ -1,21 +1,28 @@
 import os
+from copy import copy
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
-from matplotlib.lines import Line2D
 from openpyxl import load_workbook
+from openpyxl.styles import Font
+from matplotlib.lines import Line2D
 from sklearn.preprocessing import StandardScaler
 
 from metabolomics.utils.constants import (
     COLORBLIND_COLORS,
     DATETIME_FORMAT_FULL,
     FEATURE_ID_COLUMN,
+    NON_SAMPLE_COLUMNS,
     SHEET_NAMES,
     resolve_sheet_name,
 )
 from metabolomics.utils.data_helpers import extract_sample_type_row, insert_sample_type_row
-from metabolomics.utils.excel_format import copy_sheet_formatting_only
+from metabolomics.utils.excel_format import (
+    apply_band_fill,
+    apply_header_fill,
+    apply_number_format,
+)
 from metabolomics.utils.file_io import build_output_path, build_plots_dir, resolve_session_dir
 from metabolomics.utils.plotting import build_batch_group_indices, setup_matplotlib
 from metabolomics.utils.results import ProcessingResult
@@ -182,9 +189,16 @@ def build_summary_df(source_sheet_name, batch_to_qc, batch_to_samples, invalid_m
     for batch in sorted(batch_to_samples):
         rows.append(
             {
-                "Section": "batch",
-                "Item": batch,
-                "Value": f"qc={len(batch_to_qc.get(batch, []))}; samples={len(batch_to_samples.get(batch, []))}; invalid_feature_medians={invalid_median_counts.get(batch, 0)}",
+                "Section": f"batch {batch}",
+                "Item": "membership",
+                "Value": f"qc={len(batch_to_qc.get(batch, []))}; samples={len(batch_to_samples.get(batch, []))}",
+            }
+        )
+        rows.append(
+            {
+                "Section": f"batch {batch}",
+                "Item": "invalid_feature_medians",
+                "Value": invalid_median_counts.get(batch, 0),
             }
         )
 
@@ -679,15 +693,59 @@ def save_results_to_excel(
         result_export.to_excel(writer, sheet_name=RESULT_SHEET_NAME, index=False)
         summary_df.to_excel(writer, sheet_name=SUMMARY_SHEET_NAME, index=False)
 
-    original_wb = load_workbook(input_file)
-    new_wb = load_workbook(output_file)
-    try:
-        if source_sheet_name in original_wb.sheetnames and source_sheet_name in new_wb.sheetnames:
-            copy_sheet_formatting_only(original_wb[source_sheet_name], new_wb[source_sheet_name])
-        new_wb.save(output_file)
-    finally:
-        original_wb.close()
-        new_wb.close()
+    workbook = load_workbook(output_file)
+    scientific_format = "0.00E+00"
+
+    for sheet_name in [source_sheet_name, RESULT_SHEET_NAME]:
+        if sheet_name not in workbook.sheetnames:
+            continue
+        worksheet = workbook[sheet_name]
+        header = [cell.value for cell in worksheet[1]]
+        header_map = {name: idx + 1 for idx, name in enumerate(header) if name}
+        apply_header_fill(worksheet)
+        for col_name in header:
+            if not col_name or col_name in NON_SAMPLE_COLUMNS:
+                continue
+            apply_number_format(worksheet, header_map[col_name], scientific_format)
+
+    if SHEET_NAMES["sample_info"] in workbook.sheetnames:
+        apply_header_fill(workbook[SHEET_NAMES["sample_info"]])
+
+    if SUMMARY_SHEET_NAME in workbook.sheetnames:
+        worksheet = workbook[SUMMARY_SHEET_NAME]
+        apply_header_fill(worksheet)
+
+        header = [cell.value for cell in worksheet[1]]
+        header_map = {name: idx + 1 for idx, name in enumerate(header) if name}
+        item_col_idx = header_map.get("Item")
+        value_col_idx = header_map.get("Value")
+        section_col_idx = header_map.get("Section")
+
+        if section_col_idx:
+            for cell in worksheet.iter_cols(
+                min_col=section_col_idx,
+                max_col=section_col_idx,
+                min_row=2,
+                max_row=worksheet.max_row,
+            ):
+                for item_cell in cell:
+                    updated_font = copy(item_cell.font) if item_cell.font is not None else Font()
+                    updated_font.bold = True
+                    item_cell.font = updated_font
+
+        if item_col_idx and value_col_idx:
+            for row_idx in range(2, worksheet.max_row + 1):
+                if worksheet.cell(row=row_idx, column=item_col_idx).value == "invalid_feature_medians":
+                    apply_band_fill(
+                        worksheet,
+                        value_col_idx,
+                        excellent=0.5,
+                        acceptable=5.5,
+                        min_row=row_idx,
+                        max_row=row_idx,
+                    )
+
+    workbook.save(output_file)
 
 
 def main(input_file=None, session_dir=None):
