@@ -1,6 +1,6 @@
 import pandas as pd
 
-from metabolomics.processors.batch_effect import prepare_data_for_combat
+from metabolomics.processors.qc_batch_scaling import build_batch_membership
 from metabolomics.utils.sample_classification import identify_sample_columns, normalize_sample_name
 
 
@@ -125,7 +125,7 @@ def test_identify_sample_columns_excludes_ratio_and_cv_stat_columns():
     assert "Normalized_CV%" not in sample_columns
 
 
-def test_prepare_data_for_combat_matches_normalized_sample_names():
+def test_build_batch_membership_matches_normalized_sample_names():
     sample_info_df = pd.DataFrame(
         {
             "Sample_Name": [
@@ -147,13 +147,17 @@ def test_prepare_data_for_combat_matches_normalized_sample_names():
         }
     )
 
-    data_matrix, batch_info, sample_columns, feature_ids = prepare_data_for_combat(data, sample_info_df)
+    sample_columns, dropped_columns = identify_sample_columns(data, sample_info_df)
+    batch_to_qc, batch_to_samples = build_batch_membership(sample_info_df, sample_columns)
 
     assert sample_columns == [
         "TumorBC2257_DNA",
         "NormalBC2257_DNA",
         "Breast_Cancer_Tissue_pooled_QC_1",
     ]
-    assert batch_info == ["A", "B", "A"]
-    assert data_matrix.shape == (2, 3)
-    assert list(feature_ids) == ["100.1/1.0", "200.2/2.0"]
+    assert dropped_columns == []
+    assert batch_to_qc == {"A": ["Breast_Cancer_Tissue_pooled_QC_1"]}
+    assert batch_to_samples == {
+        "A": ["TumorBC2257_DNA", "Breast_Cancer_Tissue_pooled_QC_1"],
+        "B": ["NormalBC2257_DNA"],
+    }
