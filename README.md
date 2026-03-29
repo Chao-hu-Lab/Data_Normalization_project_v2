@@ -40,7 +40,7 @@ The pipeline consists of 4 sequential steps:
 | Step | Module | Description |
 |------|--------|-------------|
 | 1 | ISTD Correction | Internal standard correction using weighted ISTD selection |
-| 2 | QC-LOWESS | QC-based trend correction using LOWESS smoothing |
+| 2 | QC-LOESS | QC-based trend correction using LOESS smoothing |
 | 3 | Batch Effect | Batch effect correction using ComBat algorithm |
 | 4 | Concentration Normalization | PQN (Probabilistic Quotient Normalization) |
 
@@ -49,7 +49,7 @@ The pipeline consists of 4 sequential steps:
 - Applies ratio-based correction using ISTD median
 - Generates PCA plots with Hotelling T2 outlier detection
 
-### Step 2: QC-LOWESS
+### Step 2: QC-LOESS
 - Applies locally weighted scatterplot smoothing based on QC samples
 - Performs Levene's test and Wilcoxon test for improvement validation
 - Only applies correction when CV% improvement >= 2%
@@ -95,14 +95,14 @@ The pipeline consists of 4 sequential steps:
 ```
 output/
 ├── ISTD_Results_[timestamp].xlsx
-├── QC_LOWESS_[timestamp].xlsx
-├── Combat_corrected_[timestamp].xlsx
-├── Normalized_PQN_SampleSpecific_[timestamp].xlsx
+├── QC_LOESS_[timestamp].xlsx
+├── QC_Batch_Scaling_[timestamp].xlsx
+├── Normalized_PQN_[timestamp].xlsx / Normalized_SampleSpecific_[timestamp].xlsx
 ├── ISTD_Correction_plots/
 │   └── [timestamp]/
 │       └── *.png
-├── QC_LOWESS_plots/
-├── Batch_Effect_plots/
+├── QC_LOESS_plots/
+├── QC_Batch_Scaling_plots/
 └── Normalization_Figures/
 ```
 
@@ -121,15 +121,12 @@ Windows quick start: double-click `run_gui.bat`.
 
 ### CLI Mode (Individual Steps)
 ```python
-from ISTD_Correction_v2 import main as istd_main
-from QC_LOWESS_v2 import main as qc_main
-from Batch_Effect_v2 import main as batch_main
-from Concentration_Normalization_v2 import main as conc_main
+from metabolomics.processors import istd, qc_lowess, qc_batch_scaling, normalization
 
-result1 = istd_main(input_file="your_data.xlsx")
-result2 = qc_main(input_file=result1['output_path'])
-result3 = batch_main(input_file=result2['output_path'])
-result4 = conc_main(input_file=result3['output_path'])
+result1 = istd.main(input_file="your_data.xlsx")
+result2 = qc_lowess.main(input_file=result1["output_path"])
+result3 = qc_batch_scaling.main(input_file=result2["output_path"])
+result4 = normalization.main(input_file=result3["output_path"])
 ```
 
 ## Test Data

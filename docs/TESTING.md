@@ -61,7 +61,7 @@ Common validation targets:
 
 - `unstable_istd`: Step 1 diagnostics and ISTD gate behavior
 - `istd_degradation`: Step 1 order-dependent ISTD decay
-- `strong_drift`: Step 2 QC-LOWESS correction
+- `strong_drift`: Step 2 QC-LOESS correction
 - `nonlinear_drift`: Step 2 piecewise / non-linear drift behavior
 - `carryover_memory`: Step 2 local carryover tails after strong injections
 - `order_confounding`: order-biased biology risk in Step 2 / Step 4
