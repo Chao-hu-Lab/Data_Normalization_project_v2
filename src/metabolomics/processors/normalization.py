@@ -13,7 +13,7 @@ from copy import copy
 from scipy.stats import gaussian_kde, spearmanr, levene, wilcoxon
 
 from metabolomics.utils.plotting import setup_matplotlib
-from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS
+from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS, resolve_sheet_name
 from metabolomics.utils.sample_classification import (
     SampleClassifier,
     identify_sample_columns,
@@ -24,6 +24,7 @@ from metabolomics.utils.file_io import (
     build_plots_dir,
     get_output_root,
     generate_output_filename,
+    resolve_session_dir,
 )
 from metabolomics.utils.results import ProcessingResult
 from metabolomics.utils.console import safe_print as print
@@ -34,8 +35,12 @@ warnings.filterwarnings('ignore')
 # Use centralized setup
 setup_matplotlib()
 
-# Centralized summary metadata to avoid magic strings and ease maintenance
-SUMMARY_SHEET_NAME = SHEET_NAMES.get('concentration', "ConcNormalization_Summary")
+# Legacy summary sheet name kept for historical context only.
+LEGACY_SUMMARY_SHEET_NAME = SHEET_NAMES.get('concentration', "ConcNormalization_Summary")
+NORMALIZATION_SUMMARY_SHEETS = {
+    'PQN': 'PQN_summary',
+    'SampleSpecific': 'SpecNorm_summary',
+}
 SUMMARY_REPORT_SEPARATOR = "-" * 80
 
 # Unified color scheme for sample type grouping across all plots
@@ -45,6 +50,11 @@ SAMPLE_TYPE_COLORS = {
     'QC': '#F39C12',
     'UNKNOWN': '#95A5A6',
 }
+
+
+def get_summary_sheet_name(method_name):
+    """Return the Step 4 summary sheet name for the selected method."""
+    return NORMALIZATION_SUMMARY_SHEETS.get(method_name, f"{method_name}_summary")
 
 def _lookup_sample_type(sample, sample_info_df, col_to_info_row=None, default='UNKNOWN'):
     """Helper: look up sample type using col_to_info_row mapping or fallback."""
@@ -1561,16 +1571,15 @@ def load_excel_sheets(file_path):
 
 def determine_correction_sheet(sheets):
     """按指定順序確定要標準化的資料工作表"""
-    priority_sheets = [
-        SHEET_NAMES['qc_batch_scaling'],
-        SHEET_NAMES['batch_effect'],
-        SHEET_NAMES['qc_lowess'],
-        SHEET_NAMES['istd_correction'],
-        SHEET_NAMES['raw_intensity']
-    ]
-    
-    for sheet_name in priority_sheets:
-        if sheet_name in sheets:
+    for sheet_key in [
+        'qc_batch_scaling',
+        'batch_effect',
+        'qc_lowess',
+        'istd_correction',
+        'raw_intensity',
+    ]:
+        sheet_name = resolve_sheet_name(sheets.keys(), sheet_key)
+        if sheet_name is not None:
             print(f"✓ 依優先順序選擇工作表: {sheet_name}")
             return sheets[sheet_name], sheet_name
     
@@ -1953,6 +1962,7 @@ def save_normalization_results(
 ):
     """儲存標準化結果到Excel檔案"""
     try:
+        summary_sheet_name = get_summary_sheet_name(method_name)
         if output_path is None:
             timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
             output_filename = generate_output_filename(
@@ -1995,7 +2005,7 @@ def save_normalization_results(
             ws_normalized.column_dimensions[column_letter].width = adjusted_width
         
         # 2. 儲存摘要報告
-        ws_summary = wb_new.create_sheet(title=SUMMARY_SHEET_NAME)
+        ws_summary = wb_new.create_sheet(title=summary_sheet_name)
         summary_rows = summary_report.split('\n')
         for r_idx, row_text in enumerate(summary_rows, 1):
             cell_value = row_text
@@ -2042,7 +2052,7 @@ def save_normalization_results(
         print(f"\n✓ 結果已儲存至: {output_path}")
         print(f"\n包含工作表:")
         print(f"  1. {method_name}_Result (標準化後資料)")
-        print(f"  2. {SUMMARY_SHEET_NAME} (摘要報告)")
+        print(f"  2. {summary_sheet_name} (摘要報告)")
         for index, sheet_name in enumerate(preserved_sheet_names, start=3):
             print(f"  {index}. {sheet_name} (保留輸入資料)")
         
@@ -2081,6 +2091,8 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
 
     if input_file is None:
         raise ValueError("input_file is required; GUI must provide the file path.")
+
+    session_dir = resolve_session_dir(input_file=input_file, session_dir=session_dir)
 
     if input_file is None:
         file_path = select_file()

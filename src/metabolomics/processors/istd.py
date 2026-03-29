@@ -29,7 +29,12 @@ from metabolomics.utils.sample_classification import (
     normalize_sample_name,
     normalize_sample_type,
 )
-from metabolomics.utils.file_io import build_output_path, build_plots_dir, get_output_root
+from metabolomics.utils.file_io import (
+    build_output_path,
+    build_plots_dir,
+    get_output_root,
+    resolve_session_dir,
+)
 from metabolomics.utils.results import ProcessingResult
 from metabolomics.utils.excel_format import copy_sheet_formatting_only
 from metabolomics.utils.console import safe_print as print
@@ -1780,6 +1785,8 @@ def main(input_file=None, session_dir=None):
     """
     if input_file is None:
         raise ValueError("input_file is required; GUI must provide the file path.")
+
+    session_dir = resolve_session_dir(input_file=input_file, session_dir=session_dir)
 
     
     # 🔧 建立 output 資料夾

@@ -151,13 +151,6 @@ def qc_lowess_module():
 
 
 @pytest.fixture(scope="session")
-def batch_effect_module():
-    """Import and return Batch Effect processor module."""
-    from metabolomics.processors import batch_effect
-    return batch_effect
-
-
-@pytest.fixture(scope="session")
 def qc_batch_scaling_module():
     """Import and return QC batch scaling processor module."""
     from metabolomics.processors import qc_batch_scaling
@@ -293,25 +286,28 @@ def run_full_pipeline(sample_input_file, istd_module, qc_lowess_module,
     Run the full 4-step pipeline once and cache results.
     Used for integration tests.
     """
+    from metabolomics.utils.file_io import create_session_dir, get_output_root
+
     results = {}
+    session_dir = create_session_dir(output_root=get_output_root(input_file=sample_input_file))
 
     # Step 1: ISTD Correction
-    result1 = istd_module.main(input_file=sample_input_file)
+    result1 = istd_module.main(input_file=sample_input_file, session_dir=session_dir)
     results['step1'] = result1
 
     if result1 and hasattr(result1, "output_path"):
         # Step 2: QC-LOWESS
-        result2 = qc_lowess_module.main(input_file=result1.output_path)
+        result2 = qc_lowess_module.main(input_file=result1.output_path, session_dir=session_dir)
         results['step2'] = result2
 
         if result2 and hasattr(result2, "output_path"):
             # Step 3: QC Batch Scaling
-            result3 = qc_batch_scaling_module.main(input_file=result2.output_path)
+            result3 = qc_batch_scaling_module.main(input_file=result2.output_path, session_dir=session_dir)
             results['step3'] = result3
 
             if result3 and hasattr(result3, "output_path"):
                 # Step 4: Concentration Normalization
-                result4 = conc_norm_module.main(input_file=result3.output_path)
+                result4 = conc_norm_module.main(input_file=result3.output_path, session_dir=session_dir)
                 results['step4'] = result4
 
     return results

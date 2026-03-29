@@ -15,6 +15,8 @@ import pandas as pd
 import pytest
 from pathlib import Path
 
+from metabolomics.utils.constants import SHEET_NAMES
+
 
 def load_qc_batch_scaling_module():
     """Import the module only after asserting it exists."""
@@ -57,6 +59,15 @@ def build_sample_info():
 
 
 class TestQCBatchScalingHelpers:
+    def test_select_source_sheet_accepts_legacy_qc_lowess_name(self):
+        module = load_qc_batch_scaling_module()
+
+        sheet_name = module.select_source_sheet(
+            ["QC LOWESS result", SHEET_NAMES["sample_info"]]
+        )
+
+        assert sheet_name == "QC LOWESS result"
+
     def test_parse_batch_labels_trims_whitespace(self):
         module = load_qc_batch_scaling_module()
 
@@ -394,6 +405,50 @@ class TestQCBatchScalingOutput:
         residual_plots = list(Path(plots_dir).glob("Step3_Residual_Analysis_*.png"))
         assert residual_plots, "Residual Analysis figure should be generated"
 
+    def test_generate_step3_plots_closes_figures_after_saving(self, tmp_path):
+        module = load_qc_batch_scaling_module()
+
+        source_df = pd.DataFrame(
+            {
+                "FeatureID": ["F1", "F2", "F3"],
+                "QC_1": [10.0, 20.0, 30.0],
+                "QC_2": [11.0, 19.0, 29.0],
+                "QC_3": [12.0, 18.0, 28.0],
+                "Sample_A1": [13.0, 17.0, 27.0],
+                "Sample_B1": [40.0, 50.0, 60.0],
+            }
+        )
+        result_df = pd.DataFrame(
+            {
+                "FeatureID": ["F1", "F2", "F3"],
+                "QC_1": [1.0, 1.0, 1.0],
+                "QC_2": [1.1, 0.95, 0.97],
+                "QC_3": [1.2, 0.9, 0.93],
+                "Sample_A1": [1.3, 0.85, 0.9],
+                "Sample_B1": [1.4, 1.05, 1.1],
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "QC_2", "QC_3", "Sample_A1", "Sample_B1"],
+                "Sample_Type": ["QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A; B", "B", "A", "B"],
+            }
+        )
+
+        module.plt.close("all")
+        plots_dir = module.generate_step3_plots(
+            source_df,
+            result_df,
+            ["QC_1", "QC_2", "QC_3", "Sample_A1", "Sample_B1"],
+            sample_info_df,
+            str(tmp_path / "input.xlsx"),
+            "20260329_150000",
+        )
+
+        assert plots_dir
+        assert module.plt.get_fignums() == []
+
     @pytest.mark.slow
     @pytest.mark.integration
     def test_main_creates_expected_workbook_from_step2_output(
@@ -419,7 +474,7 @@ class TestQCBatchScalingOutput:
         )
 
         assert set(workbook_sheet_names(step3_output)) == {
-            "QC LOWESS result",
+            SHEET_NAMES["qc_lowess"],
             "SampleInfo",
             "QC_Batch_Scaling_result",
             "QC_Batch_Scaling_summary",
@@ -431,7 +486,10 @@ class TestQCBatchScalingOutput:
             else step3_result.get("plots_dir")
         )
         assert plots_dir, "QC Batch Scaling should report a plots directory"
-        assert "QC_Batch_Scaling_plots" in plots_dir
+        assert (
+            "QC_Batch_Scaling_plots" in plots_dir
+            or Path(plots_dir).name == "plots"
+        )
 
         plot_files = sorted(Path(plots_dir).glob("*.png"))
         assert len(plot_files) >= 1, "QC Batch Scaling should generate plot PNG files"
@@ -460,7 +518,7 @@ class TestQCBatchScalingOutput:
         )
 
         result_df = pd.read_excel(step3_output, sheet_name="QC_Batch_Scaling_result", nrows=1)
-        source_df = pd.read_excel(step3_output, sheet_name="QC LOWESS result", nrows=1)
+        source_df = pd.read_excel(step3_output, sheet_name=SHEET_NAMES["qc_lowess"], nrows=1)
 
         assert result_df.columns[0] == "Mz/RT"
         assert source_df.columns[0] == "Mz/RT"

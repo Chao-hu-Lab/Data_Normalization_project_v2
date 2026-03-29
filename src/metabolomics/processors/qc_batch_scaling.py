@@ -7,10 +7,16 @@ from matplotlib.lines import Line2D
 from openpyxl import load_workbook
 from sklearn.preprocessing import StandardScaler
 
-from metabolomics.utils.constants import COLORBLIND_COLORS, DATETIME_FORMAT_FULL, FEATURE_ID_COLUMN, SHEET_NAMES
+from metabolomics.utils.constants import (
+    COLORBLIND_COLORS,
+    DATETIME_FORMAT_FULL,
+    FEATURE_ID_COLUMN,
+    SHEET_NAMES,
+    resolve_sheet_name,
+)
 from metabolomics.utils.data_helpers import extract_sample_type_row, insert_sample_type_row
 from metabolomics.utils.excel_format import copy_sheet_formatting_only
-from metabolomics.utils.file_io import build_output_path, build_plots_dir
+from metabolomics.utils.file_io import build_output_path, build_plots_dir, resolve_session_dir
 from metabolomics.utils.plotting import build_batch_group_indices, setup_matplotlib
 from metabolomics.utils.results import ProcessingResult
 from metabolomics.utils.sample_classification import (
@@ -104,12 +110,9 @@ def scale_feature_by_batch_qc_median(feature_row, batch_to_qc, batch_to_samples)
 
 def select_source_sheet(sheet_names):
     """Pick the best upstream sheet for Step 3."""
-    for sheet_name in (
-        SHEET_NAMES["qc_lowess"],
-        SHEET_NAMES["istd_correction"],
-        SHEET_NAMES["raw_intensity"],
-    ):
-        if sheet_name in sheet_names:
+    for sheet_key in ("qc_lowess", "istd_correction", "raw_intensity"):
+        sheet_name = resolve_sheet_name(sheet_names, sheet_key)
+        if sheet_name is not None:
             return sheet_name
     raise ValueError("No supported upstream data sheet found for QC batch scaling")
 
@@ -340,10 +343,10 @@ def plot_batch_residual_analysis(
     )
 
     plt.suptitle("QC Batch Scaling Residual Analysis", fontsize=16, fontweight="bold", y=0.98)
-    fig.legend(
+    ax1.legend(
         handles=legend_handles,
         loc="upper center",
-        bbox_to_anchor=(0.5, 0.91),
+        bbox_to_anchor=(1.05, 1.22),
         ncol=min(4, len(legend_handles)),
         fontsize=9,
         frameon=True,
@@ -562,6 +565,7 @@ def generate_step3_plots(
     plots_dir=None,
 ):
     """Generate diagnostic plots for QC Batch Scaling."""
+    created_figures = []
     if plots_dir is None:
         plots_dir = build_plots_dir(
             "QC_Batch_Scaling_plots",
@@ -586,16 +590,18 @@ def generate_step3_plots(
     if len(qc_feature_medians_before) >= 2 and len(qc_feature_medians_after) >= 2:
         print("  - 生成 Fig1: Batch QC median alignment")
         alignment_plot_path = os.path.join(plots_dir, f"Step3_Batch_QC_Median_Alignment_{timestamp}.png")
-        plot_batch_qc_median_alignment(
+        fig = plot_batch_qc_median_alignment(
             qc_feature_medians_before,
             qc_feature_medians_after,
             output_path=alignment_plot_path,
             dpi=300,
         )
+        if fig is not None:
+            created_figures.append(fig)
 
     print("  - 生成 Fig2: Batch boxplot")
     batch_boxplot_path = os.path.join(plots_dir, f"Step3_Batch_Boxplot_{timestamp}.png")
-    plot_batch_boxplot(
+    fig = plot_batch_boxplot(
         source_df,
         result_df,
         sample_columns,
@@ -603,6 +609,8 @@ def generate_step3_plots(
         output_path=batch_boxplot_path,
         dpi=300,
     )
+    if fig is not None:
+        created_figures.append(fig)
 
     residual_source = prepare_residual_matrix(source_df, sample_columns)
     residual_result = prepare_residual_matrix(result_df, sample_columns)
@@ -620,12 +628,17 @@ def generate_step3_plots(
         if residuals_before and residuals_after:
             print("  - 生成 Fig3: Residual analysis")
             residual_plot_path = os.path.join(plots_dir, f"Step3_Residual_Analysis_{timestamp}.png")
-            plot_batch_residual_analysis(
+            fig = plot_batch_residual_analysis(
                 residuals_before,
                 residuals_after,
                 output_path=residual_plot_path,
                 dpi=300,
             )
+            if fig is not None:
+                created_figures.append(fig)
+
+    for fig in created_figures:
+        plt.close(fig)
     return str(plots_dir)
 
 
@@ -724,6 +737,7 @@ def main(input_file=None, session_dir=None):
         for batch in sorted(invalid_median_counts):
             print(f"  - Batch {batch}: {invalid_median_counts[batch]}")
 
+    session_dir = resolve_session_dir(input_file=input_file, session_dir=session_dir)
     timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
     if session_dir is not None:
         from metabolomics.utils.file_io import session_output_path, session_plots_dir

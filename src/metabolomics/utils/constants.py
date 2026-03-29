@@ -53,8 +53,8 @@ SHEET_NAMES = {
     'raw_intensity': 'RawIntensity',
     'sample_info': 'SampleInfo',
     'istd_correction': 'ISTD_Correction',
-    'qc_lowess': 'QC LOWESS result',
-    'qc_lowess_advanced': 'QC_LOWESS_Advanced Statistics',
+    'qc_lowess': 'QC LOESS result',
+    'qc_lowess_advanced': 'QC_LOESS_Advanced Statistics',
     'qc_batch_scaling': 'QC_Batch_Scaling_result',
     'qc_batch_scaling_summary': 'QC_Batch_Scaling_summary',
     'batch_effect': 'Batch_effect_result',
@@ -62,6 +62,32 @@ SHEET_NAMES = {
     'concentration': 'ConcNormalization_Summary',
     'pqn_result': 'PQN_Result',
 }
+
+# Legacy workbook names still accepted on read to avoid breaking old outputs.
+LEGACY_SHEET_NAMES = {
+    'qc_lowess': ('QC LOWESS result',),
+    'qc_lowess_advanced': ('QC_LOWESS_Advanced Statistics',),
+}
+
+
+def sheet_name_candidates(sheet_key):
+    """Return canonical sheet name followed by legacy aliases."""
+    canonical = SHEET_NAMES[sheet_key]
+    candidates = [canonical, *LEGACY_SHEET_NAMES.get(sheet_key, ())]
+    return tuple(dict.fromkeys(candidates))
+
+
+def resolve_sheet_name(sheet_names, sheet_key):
+    """Resolve the first matching sheet name for a canonical sheet key."""
+    for candidate in sheet_name_candidates(sheet_key):
+        if candidate in sheet_names:
+            return candidate
+    return None
+
+
+def sheet_name_matches(sheet_name, sheet_key):
+    """Return True when a sheet name matches the canonical or legacy alias."""
+    return sheet_name in sheet_name_candidates(sheet_key)
 
 # ========== Validation Thresholds ==========
 VALIDATION_THRESHOLDS = {
@@ -93,8 +119,8 @@ NON_SAMPLE_COLUMNS = {
     'Mz/RT', 'FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference', 'ISTD_Median',
     'CV%', 'QC_CV%', 'Original_CV%', 'Normalized_CV%', 'CV_Improvement%', 'Original_QC_CV%', 'Corrected_QC_CV%',
     'Variance_Test_pvalue', 'Wilcoxon_pvalue', 'Wilcoxon_qvalue',
-    'Shapiro_pvalue', 'MK_Trend_pvalue', 'Kendall_Tau',
-    'LOWESS_R2', 'LOWESS_RMSE', 'Significant_Improvement',
+    'Shapiro_pvalue', 'Kendall_Tau',
+    'LOESS_R2', 'LOESS_RMSE', 'LOWESS_R2', 'LOWESS_RMSE', 'Significant_Improvement',
     'Decision', 'Trend_Status', 'frac', 'outliers_removed',
     'median_correction_factor', 'correction_factor_cv',
     'correction_factor_std', 'correction_factor_range_low',
@@ -107,7 +133,7 @@ NON_SAMPLE_COLUMNS = {
 # Keywords that identify derived statistical columns
 STAT_COLUMN_KEYWORDS = (
     'original_qc_', 'corrected_qc_', 'cv_', 'variance_', 'levene', 'mk_',
-    'kendall', 'lowess_', 'trend_', 'wilcoxon', 'shapiro', 'significant',
+    'kendall', 'lowess_', 'loess_', 'trend_', 'wilcoxon', 'shapiro', 'significant',
     'decision', 'rmse', 'median_correction', 'correction_factor'
 )
 

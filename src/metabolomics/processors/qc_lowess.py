@@ -27,7 +27,12 @@ from metabolomics.utils.sample_classification import (
     normalize_sample_type,
     identify_sample_columns,
 )
-from metabolomics.utils.file_io import build_output_path, build_plots_dir, get_output_root
+from metabolomics.utils.file_io import (
+    build_output_path,
+    build_plots_dir,
+    get_output_root,
+    resolve_session_dir,
+)
 from metabolomics.utils.results import ProcessingResult
 from metabolomics.utils.excel_format import copy_sheet_formatting_only
 from metabolomics.utils.console import safe_print as print
@@ -36,7 +41,7 @@ from metabolomics.utils.console import safe_print as print
 setup_matplotlib()
 
 # Sheet name constant
-QC_LOWESS_ADVANCED_SHEET = SHEET_NAMES.get('qc_lowess_advanced', "QC_LOWESS_Advanced Statistics")
+QC_LOWESS_ADVANCED_SHEET = SHEET_NAMES.get('qc_lowess_advanced', "QC_LOESS_Advanced Statistics")
 RED_FONT_RGBS = {'FFFF0000', 'FF0000'}
 
 # For backward compatibility, alias the old constant names
@@ -80,14 +85,14 @@ def exclude_fallback_istd_rows(data_df, file_path, source_sheet_name):
     print("\n⚠️ Step 1 未產生 'ISTD_Correction'，Step 2 改用 'RawIntensity' 作為上游來源。")
     red_marked_feature_ids = collect_red_marked_feature_ids(file_path, source_sheet_name)
     if not red_marked_feature_ids:
-        print("   - 未偵測到紅字 ISTD 標記，QC-LOWESS 將把所有列視為一般 feature。")
+        print("   - 未偵測到紅字 ISTD 標記，QC-LOESS 將把所有列視為一般 feature。")
         data_df.attrs['excluded_fallback_istd_count'] = 0
         return data_df
 
     istd_mask = data_df['FeatureID'].astype(str).str.strip().isin(red_marked_feature_ids)
     excluded_count = int(istd_mask.sum())
     if excluded_count == 0:
-        print("   - RawIntensity 中沒有對應到紅字 ISTD 的資料列，QC-LOWESS 將把所有列視為一般 feature。")
+        print("   - RawIntensity 中沒有對應到紅字 ISTD 的資料列，QC-LOESS 將把所有列視為一般 feature。")
         data_df.attrs['excluded_fallback_istd_count'] = 0
         return data_df
 
@@ -96,13 +101,50 @@ def exclude_fallback_istd_rows(data_df, file_path, source_sheet_name):
     filtered_df.attrs['excluded_fallback_istd_count'] = excluded_count
     filtered_df.attrs['fallback_istd_feature_ids'] = sorted(red_marked_feature_ids)
 
-    print(f"   - 偵測到 {excluded_count} 個紅字 ISTD；它們會保留在 'RawIntensity'，但不會進入 'QC LOWESS result'。")
-    print(f"   - QC-LOWESS 實際處理特徵數: {len(filtered_df)}")
+    print(f"   - 偵測到 {excluded_count} 個紅字 ISTD；它們會保留在 'RawIntensity'，但不會進入 '{SHEET_NAMES['qc_lowess']}'。")
+    print(f"   - QC-LOESS 實際處理特徵數: {len(filtered_df)}")
 
     if filtered_df.empty:
-        raise ValueError("排除紅字 ISTD 後沒有可供 QC-LOWESS 的 feature")
+        raise ValueError("排除紅字 ISTD 後沒有可供 QC-LOESS 的 feature")
 
     return filtered_df
+
+
+def _frac_floor(n_valid_qc: int) -> float:
+    """Return minimum frac to prevent LOWESS overfitting for small QC counts."""
+    if n_valid_qc <= 5:
+        return 1.0
+    if n_valid_qc <= 6:
+        return 0.85
+    if n_valid_qc <= 7:
+        return 0.80
+    if n_valid_qc <= 10:
+        return 0.70
+    return 0.0
+
+
+def _loocv_rmse(x: np.ndarray, y: np.ndarray, frac: float, it: int = 2) -> float:
+    """Compute LOWESS leave-one-out RMSE for small QC sets."""
+    n_points = len(x)
+    errors = np.empty(n_points, dtype=float)
+    for i in range(n_points):
+        mask = np.ones(n_points, dtype=bool)
+        mask[i] = False
+        x_train = x[mask]
+        y_train = y[mask]
+        if x_train.size < 3:
+            errors[i] = 0.0
+            continue
+        fit = sm.nonparametric.lowess(
+            y_train,
+            x_train,
+            frac=frac,
+            it=it,
+            return_sorted=True,
+        )
+        pred = float(np.interp(x[i], fit[:, 0], fit[:, 1]))
+        errors[i] = (y[i] - pred) ** 2
+    return float(np.sqrt(np.mean(errors)))
 
 
 
@@ -133,6 +175,7 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
         'frac_used': np.nan,
         'qc_cv_for_frac': np.nan,
         'frac_strategy': 'unknown',
+        'loocv_rmse': np.nan,
         'global_median_used': global_qc_median is not None
     }
 
@@ -150,7 +193,7 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
     valid_x = qc_orders_arr[valid_mask]
     valid_y = qc_intensities_arr[valid_mask]
 
-    if valid_x.size < 3 or np.unique(valid_x).size < 2:
+    if valid_x.size < 5 or np.unique(valid_x).size < 2:
         info['status'] = 'insufficient_qc'
         info['frac_strategy'] = 'insufficient_qc'
         return all_intensities_arr.tolist(), info
@@ -183,9 +226,34 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
         frac = float(np.clip(dynamic_frac, 0.5, 0.75))
         frac_strategy = 'low_variation_dynamic'
 
+    floor = _frac_floor(valid_x.size)
+    if frac < floor:
+        frac = floor
+        frac_strategy += '_floor_applied'
+
+    if valid_x.size <= 10:
+        loocv_rmse_val = _loocv_rmse(valid_x, valid_y, frac)
+        raw_std = float(np.std(valid_y, ddof=1))
+        if raw_std > 0 and loocv_rmse_val < raw_std * 0.10:
+            original_frac = frac
+            for bump in (0.1, 0.2, 0.3):
+                candidate = min(original_frac + bump, 1.0)
+                new_rmse = _loocv_rmse(valid_x, valid_y, candidate)
+                if new_rmse >= raw_std * 0.10:
+                    frac = candidate
+                    loocv_rmse_val = new_rmse
+                    frac_strategy += '_loocv_bumped'
+                    break
+            else:
+                frac = 1.0
+                loocv_rmse_val = _loocv_rmse(valid_x, valid_y, frac)
+                frac_strategy += '_loocv_maxed'
+
     info['frac_used'] = float(frac)
     info['qc_cv_for_frac'] = float(qc_cv_for_frac)
     info['frac_strategy'] = frac_strategy
+    if valid_x.size <= 10:
+        info['loocv_rmse'] = float(loocv_rmse_val)
 
     lowess_result = sm.nonparametric.lowess(valid_y, valid_x, frac=frac, it=2, return_sorted=True)
     x_fit, y_fit = lowess_result[:, 0], lowess_result[:, 1]
@@ -244,7 +312,6 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
     factor_cv = calc_cv(factor_array) if factor_array.size >= 2 else np.nan
 
     try:
-        output_file = str(output_file)
         trend_tau, trend_pvalue = kendalltau(valid_x, valid_y)
     except Exception:
         trend_tau, trend_pvalue = (np.nan, np.nan)
@@ -524,6 +591,9 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             for key in priority:
                 if key in strategy_counter:
                     return key
+                for strategy in valid_strategies:
+                    if strategy.startswith(key):
+                        return strategy
             return strategy_counter.most_common(1)[0][0]
 
         status_categories = [
@@ -659,10 +729,9 @@ def perform_lowess_normalization(istd_df, sample_info_df):
 
             trend_stats.append({
                 'FeatureID': feature_id,
-                'MK_Trend_pvalue': safe_nanmedian([m.get('trend_pvalue', np.nan) for m in trend_metric_buffer]),
                 'Kendall_Tau': safe_nanmedian([m.get('trend_tau', np.nan) for m in trend_metric_buffer]),
-                'LOWESS_R2': safe_nanmedian([m.get('r_squared', np.nan) for m in trend_metric_buffer]),
-                'LOWESS_RMSE': safe_nanmedian([m.get('rmse', np.nan) for m in trend_metric_buffer]),
+                'LOESS_R2': safe_nanmedian([m.get('r_squared', np.nan) for m in trend_metric_buffer]),
+                'LOESS_RMSE': safe_nanmedian([m.get('rmse', np.nan) for m in trend_metric_buffer]),
                 'Frac_Used': feature_frac_used,
                 'QC_CV_for_Frac': feature_qc_cv,
                 'Frac_Strategy': feature_frac_strategy
@@ -674,7 +743,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             if (idx + 1) % 500 == 0:
                 print(f"  進度: {idx + 1}/{len(istd_df)} features")
 
-        print("\n  ✓ 批次化 LOWESS 校正完成")
+        print("\n  ✓ 批次化 LOESS 校正完成")
         print("\n  📊 特徵層級統計：")
         print(f"     ✅ 全批次均成功: {feature_all_success} ({feature_all_success/len(istd_df)*100:.1f}%)")
         print(f"     ⚠️ 部分批次成功: {feature_partial_success} ({feature_partial_success/len(istd_df)*100:.1f}%)")
@@ -719,7 +788,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         return lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats, trend_plot_data
 
     except Exception as e:
-        print(f"❌ LOWESS 校正失敗: {e}")
+        print(f"❌ LOESS 校正失敗: {e}")
         import traceback
         traceback.print_exc()
         raise
@@ -776,7 +845,7 @@ def load_and_process_data(file_path):
             raise ValueError(
                 f"輸入檔案缺少必要的工作表: {', '.join(missing_sheets)}。"
                 f" 找到的工作表: {', '.join(excel_file.sheet_names)}。"
-                f" QC-LOWESS 校正需要至少包含 RawIntensity 或 ISTD_Correction"
+                f" QC-LOESS 校正需要至少包含 RawIntensity 或 ISTD_Correction"
             )
 
         # ===== 防呆6: SampleInfo 完整性檢查 =====
@@ -828,7 +897,7 @@ def load_and_process_data(file_path):
 
         qc_count = sample_info_df[sample_info_df['Sample_Type'].str.upper().str.contains('QC', na=False)].shape[0]
         if qc_count == 0:
-            raise ValueError("未找到 QC 樣本（Sample_Type 中無 'QC' 字樣）。QC-LOWESS 校正需要至少 5 個 QC 樣本")
+            raise ValueError("未找到 QC 樣本（Sample_Type 中無 'QC' 字樣）。QC-LOESS 校正需要至少 5 個 QC 樣本")
         elif qc_count < 5:
             print(f"⚠️  警告：QC 樣本數量不足 ({qc_count} < 5)")
             print(f"   提示：建議至少有 5 個 QC 樣本以確保校正準確性")
@@ -1143,13 +1212,13 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
             print(f"     P-value: {w_pvalue:.4e}")
             
             if w_pvalue < 0.001:
-                print(f"     結論: LOWESS 校正顯著降低了 QC CV% (p < 0.001) ✅✅✅")
+                print(f"     結論: LOESS 校正顯著降低了 QC CV% (p < 0.001) ✅✅✅")
             elif w_pvalue < 0.01:
-                print(f"     結論: LOWESS 校正顯著降低了 QC CV% (p < 0.01) ✅✅")
+                print(f"     結論: LOESS 校正顯著降低了 QC CV% (p < 0.01) ✅✅")
             elif w_pvalue < 0.05:
-                print(f"     結論: LOWESS 校正顯著降低了 QC CV% (p < 0.05) ✅")
+                print(f"     結論: LOESS 校正顯著降低了 QC CV% (p < 0.05) ✅")
             else:
-                print(f"     結論: LOWESS 校正未顯著降低 QC CV% (p ≥ 0.05) ❌")
+                print(f"     結論: LOESS 校正未顯著降低 QC CV% (p ≥ 0.05) ❌")
             
             # 描述性統計
             median_improvement = np.median(all_cv_improvements)
@@ -1201,8 +1270,8 @@ def plot_qc_cv_overview(cv_results_df, decision_stats, plots_dir, timestamp):
     ax1.plot([0, lim], [0, lim], 'r--', linewidth=1.5, label='No change')
     ax1.set_xlim(0, lim)
     ax1.set_ylim(0, lim)
-    ax1.set_xlabel('QC CV% Before LOWESS', fontsize=11, fontweight='bold')
-    ax1.set_ylabel('QC CV% After LOWESS', fontsize=11, fontweight='bold')
+    ax1.set_xlabel('QC CV% Before LOESS', fontsize=11, fontweight='bold')
+    ax1.set_ylabel('QC CV% After LOESS', fontsize=11, fontweight='bold')
     ax1.set_title('Feature-wise QC CV% Change', fontsize=13, fontweight='bold')
     improved = np.sum(cv_a < cv_b)
     ax1.text(
@@ -1288,9 +1357,9 @@ def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
         # ===== 防呆2: 輸出目錄檢查 =====
         if plots_dir is None:
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            base_dir = os.path.join(script_dir, 'output', 'QC_LOWESS_plots')
+            base_dir = os.path.join(script_dir, 'output', 'QC_LOESS_plots')
             os.makedirs(base_dir, exist_ok=True)
-            plots_dir = os.path.join(base_dir, f"QC_LOWESS_{timestamp}")
+            plots_dir = os.path.join(base_dir, f"QC_LOESS_{timestamp}")
 
         try:
             os.makedirs(plots_dir, exist_ok=True)
@@ -1393,9 +1462,9 @@ def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_pag
         # 確保輸出目錄存在
         if plots_dir is None:
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            base_dir = os.path.join(script_dir, 'output', 'QC_LOWESS_plots')
+            base_dir = os.path.join(script_dir, 'output', 'QC_LOESS_plots')
             os.makedirs(base_dir, exist_ok=True)
-            plots_dir = os.path.join(base_dir, f"QC_LOWESS_{timestamp}")
+            plots_dir = os.path.join(base_dir, f"QC_LOESS_{timestamp}")
 
         try:
             os.makedirs(plots_dir, exist_ok=True)
@@ -1413,7 +1482,7 @@ def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_pag
             feature_grouped.setdefault(feature_id, []).append((batch_name, plot_data))
 
         total_features = len(feature_grouped)
-        print(f"\n📊 繪製 LOWESS 擬合趨勢圖（同特徵一張）：{total_features} 個特徵...")
+        print(f"\n📊 繪製 LOESS 擬合趨勢圖（同特徵一張）：{total_features} 個特徵...")
 
         feature_count = 0
         for feature_id, batch_items in feature_grouped.items():
@@ -1444,7 +1513,7 @@ def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_pag
                     ax1 = axes[row_idx, 0]
                     ax2 = axes[row_idx, 1]
 
-                    # ===== 左圖：Raw vs LOWESS =====
+                    # ===== 左圖：Raw vs LOESS =====
                     ax1.scatter(
                         qc_orders,
                         qc_raw,
@@ -1456,7 +1525,7 @@ def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_pag
                         label='QC Raw',
                         zorder=3,
                     )
-                    ax1.plot(lowess_x, lowess_y, 'r-', linewidth=2, label='LOWESS Fit', zorder=2)
+                    ax1.plot(lowess_x, lowess_y, 'r-', linewidth=2, label='LOESS Fit', zorder=2)
                     ax1.axhline(
                         y=median_qc,
                         color='green',
@@ -1467,7 +1536,7 @@ def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_pag
                     )
                     ax1.set_xlabel('Injection Order', fontsize=10)
                     ax1.set_ylabel('Intensity', fontsize=10)
-                    ax1.set_title(f'Batch: {batch_name}  |  Raw + LOWESS Fit', fontsize=11, fontweight='bold')
+                    ax1.set_title(f'Batch: {batch_name}  |  Raw + LOESS Fit', fontsize=11, fontweight='bold')
                     ax1.legend(fontsize=8, loc='best')
                     ax1.grid(True, alpha=0.3, linestyle='--')
 
@@ -1505,7 +1574,7 @@ def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_pag
                     print(f"  ⚠️  警告：繪製 {feature_id} / {batch_name} 時發生錯誤: {e}")
                     continue
 
-            fig.suptitle(f'LOWESS Trend Fitting (Feature = {feature_id})', fontsize=14, fontweight='bold', y=0.99)
+            fig.suptitle(f'LOESS Trend Fitting (Feature = {feature_id})', fontsize=14, fontweight='bold', y=0.99)
             plt.tight_layout(rect=[0, 0, 1, 0.97])
 
             safe_feature = str(feature_id).replace('/', '_').replace('\\', '_').replace(':', '_')
@@ -1523,10 +1592,10 @@ def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_pag
             else:
                 print(f"  ⚠️  警告：{safe_feature} 圖表保存失敗")
 
-        print(f"✓ LOWESS 擬合趨勢圖繪製完成（共 {feature_count} 張，一特徵一張）")
+        print(f"✓ LOESS 擬合趨勢圖繪製完成（共 {feature_count} 張，一特徵一張）")
 
     except Exception as e:
-        print(f"  ⚠️ 繪製 LOWESS 擬合趨勢圖時發生錯誤: {e}")
+        print(f"  ⚠️ 繪製 LOESS 擬合趨勢圖時發生錯誤: {e}")
         import traceback
         traceback.print_exc()
 
@@ -1547,7 +1616,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             return False
 
         if lowess_df is None or lowess_df.empty:
-            print(f"❌ 錯誤：LOWESS 校正結果為空，無法保存")
+            print(f"❌ 錯誤：LOESS 校正結果為空，無法保存")
             return False
 
         if sample_info_df is None or sample_info_df.empty:
@@ -1695,7 +1764,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             header = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1))]
             
             # 所有進階指標 - 淺綠色
-            for col_name in ['MK_Trend_pvalue', 'Kendall_Tau', 'LOWESS_R2', 'LOWESS_RMSE',
+            for col_name in ['Kendall_Tau', 'LOESS_R2', 'LOESS_RMSE',
                              'Frac_Used', 'QC_CV_for_Frac', 'Frac_Strategy']:
                 if col_name in header:
                     col_idx = header.index(col_name) + 1
@@ -1736,7 +1805,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
 
         # ✅ 統計報告
         print(f"\n{'='*70}")
-        print(f"✓ QC LOWESS 結果已保存:")
+        print(f"✓ QC LOESS 結果已保存:")
         print(f"  {output_file}")
         print(f"{'='*70}")
         
@@ -1840,28 +1909,27 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             print(f"     - Frac 平均值: {fmt_frac_value(frac_mean)}")
             print(f"     - Frac 中位數: {fmt_frac_value(frac_median)}")
         
-        # Mann-Kendall 趨勢統計（副表）
-        mk_valid = trend_stats_df['MK_Trend_pvalue'].notna().sum()
-        mk_sig = ((trend_stats_df['MK_Trend_pvalue'] < 0.05) & 
-                  (trend_stats_df['MK_Trend_pvalue'].notna())).sum()
+        tau_valid = trend_stats_df['Kendall_Tau'].notna().sum()
         
         print(f"\n📊 進階統計（副表）:")
-        print(f"  Mann-Kendall 趨勢檢驗:")
-        print(f"    成功執行: {mk_valid}/{total_count} ({mk_valid/total_count*100:.1f}%)")
-        if mk_valid > 0:
-            print(f"    檢測到顯著趨勢 (p < 0.05): {mk_sig}/{mk_valid} ({mk_sig/mk_valid*100:.1f}%)")
+        print(f"  Kendall's tau:")
+        print(f"    成功估計: {tau_valid}/{total_count} ({tau_valid/total_count*100:.1f}%)")
+        if tau_valid > 0:
+            tau_values = trend_stats_df['Kendall_Tau'].dropna()
+            print(f"    中位數: {np.median(tau_values):.4f}")
+            print(f"    平均值: {np.mean(tau_values):.4f}")
         
         # R² 統計
-        r2_valid = trend_stats_df['LOWESS_R2'].notna().sum()
+        r2_valid = trend_stats_df['LOESS_R2'].notna().sum()
         if r2_valid > 0:
-            r2_values = trend_stats_df['LOWESS_R2'].dropna()
-            print(f"\n  LOWESS 擬合優度 R²:")
+            r2_values = trend_stats_df['LOESS_R2'].dropna()
+            print(f"\n  LOESS 擬合優度 R²:")
             print(f"    中位數: {np.median(r2_values):.4f}")
             print(f"    平均值: {np.mean(r2_values):.4f}")
         
         print(f"\n💡 提示:")
-        print(f"  - 主表 (QC LOWESS result): Levene's test + CV%（單一特徵）")
-        print(f"  - 副表 ({QC_LOWESS_ADVANCED_SHEET}): Mann-Kendall + R²/RMSE（進階評估）")
+        print(f"  - 主表 ({SHEET_NAMES['qc_lowess']}): Levene's test + CV%（單一特徵）")
+        print(f"  - 副表 ({QC_LOWESS_ADVANCED_SHEET}): Kendall's tau + R²/RMSE（進階評估）")
         print(f"  - Frac 參數已依代謝物穩定性與 QC 數量動態調整")
         print(f"  - 新增 Frac_Used / QC_CV_for_Frac / Frac_Strategy 可於 {QC_LOWESS_ADVANCED_SHEET} 交叉檢視")
         print(f"  - 整體評估: Wilcoxon test 已在終端機顯示")
@@ -1875,7 +1943,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         except Exception as e:
             print(f"  ⚠ QC CV Overview 圖生成失敗: {e}")
 
-        # LOWESS 擬合趨勢圖（僅限 debug 特徵）
+        # LOESS 擬合趨勢圖（僅限 debug 特徵）
         if trend_plot_data:
             plot_lowess_trend_fitting(trend_plot_data, plots_dir, timestamp)
 
@@ -1891,11 +1959,12 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
 # ========== 主程式 ==========
 def main(input_file=None, session_dir=None):
     """主程式入口"""
-    print("QC-LOWESS 批次效應校正")
+    print("QC-LOESS 批次效應校正")
     
     if input_file is None:
         raise ValueError("input_file is required; GUI must provide the file path.")
 
+    session_dir = resolve_session_dir(input_file=input_file, session_dir=session_dir)
     output_dir = get_output_root(input_file=input_file)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
@@ -1928,15 +1997,15 @@ def main(input_file=None, session_dir=None):
     timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
     if session_dir is not None:
         from metabolomics.utils.file_io import session_output_path, session_plots_dir
-        output_file = session_output_path(session_dir, step=2, prefix="QC_LOWESS")
+        output_file = session_output_path(session_dir, step=2, prefix="QC_LOESS")
         _plots_dir = session_plots_dir(session_dir)
     else:
-        output_file = build_output_path("QC_LOWESS", input_file=input_file, timestamp=timestamp)
+        output_file = build_output_path("QC_LOESS", input_file=input_file, timestamp=timestamp)
         _plots_dir = build_plots_dir(
-            "QC_LOWESS_plots",
+            "QC_LOESS_plots",
             input_file=input_file,
             timestamp=timestamp,
-            session_prefix="QC_LOWESS"
+            session_prefix="QC_LOESS"
         )
 
     success = save_results_to_excel(
@@ -1951,7 +2020,7 @@ def main(input_file=None, session_dir=None):
         print("❌ 結果保存失敗")
         return
     
-    print(f"\n  ✓ QC-LOWESS 完成 → {os.path.basename(output_file)}")
+    print(f"\n  ✓ QC-LOESS 完成 → {os.path.basename(output_file)}")
     
     metabolites_count = len(lowess_df)
     samples_count = len(sample_columns)

@@ -19,7 +19,7 @@ class TestSessionOutputUtilities:
     def test_output_paths_all_land_in_session(self, session):
         for step, prefix in [
             (1, "ISTD_Results"),
-            (2, "QC_LOWESS"),
+            (2, "QC_LOESS"),
             (3, "QC_Batch_Scaling"),
             (4, "Normalized_PQN"),
         ]:
