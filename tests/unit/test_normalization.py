@@ -218,6 +218,53 @@ class TestConcentrationNormHelpers:
         assert info_no_valid["ref_valid_count"] == 0
         assert np.isnan(info_no_valid["ref_median"])
 
+    def test_save_normalization_results_uses_in_memory_preserved_dataframes(
+        self,
+        conc_norm_module,
+        tmp_path,
+    ):
+        normalized_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0"],
+                "Sample_A": [123.4],
+            }
+        )
+        preserved_data_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0"],
+                "Sample_A": [55.0],
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Sample_A"],
+                "Sample_Type": ["Exposure"],
+            }
+        )
+
+        output_path = conc_norm_module.save_normalization_results(
+            normalized_df=normalized_df,
+            summary_report="= Summary\n[Section]\nOK",
+            file_path=str(tmp_path / "nonexistent_input.xlsx"),
+            method_name="PQN",
+            preserved_data_sheet_name=SHEET_NAMES["qc_lowess"],
+            sample_info_sheet_name=SHEET_NAMES["sample_info"],
+            output_dir=tmp_path,
+            preserved_data_df=preserved_data_df,
+            sample_info_df=sample_info_df,
+            output_path=tmp_path / "step4_perf_contract.xlsx",
+        )
+
+        workbook = pd.ExcelFile(output_path)
+        assert set(workbook.sheet_names) == {
+            "PQN_Result",
+            "PQN_summary",
+            SHEET_NAMES["qc_lowess"],
+            SHEET_NAMES["sample_info"],
+        }
+
+        preserved_sheet = pd.read_excel(output_path, sheet_name=SHEET_NAMES["qc_lowess"])
+        assert preserved_sheet.loc[0, "Sample_A"] == pytest.approx(55.0)
 
 
 class TestConcentrationNormOutput:

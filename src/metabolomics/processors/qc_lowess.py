@@ -57,14 +57,14 @@ def parse_batch_labels(value):
 
 def collect_red_marked_feature_ids(file_path, sheet_name):
     """Collect red-font feature IDs from the first column of a worksheet."""
-    workbook = load_workbook(file_path)
+    workbook = load_workbook(file_path, read_only=True)
     try:
         if sheet_name not in workbook.sheetnames:
             return set()
 
         worksheet = workbook[sheet_name]
         feature_ids = set()
-        for row in worksheet.iter_rows(min_row=2):
+        for row in worksheet.iter_rows(min_row=2, max_col=1):
             cell = row[0]
             color = getattr(getattr(cell, 'font', None), 'color', None)
             rgb = getattr(color, 'rgb', None)

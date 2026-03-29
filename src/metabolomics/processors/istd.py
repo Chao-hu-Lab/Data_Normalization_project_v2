@@ -116,11 +116,11 @@ def load_and_process_data(file_path):
         else:
             print(f"找到 {qc_count} 個 QC 樣本")
         
-        workbook = load_workbook(file_path)
+        workbook = load_workbook(file_path, read_only=True)
         worksheet = workbook[SHEET_NAMES['raw_intensity']]
         istd_feature_ids = []  # 收集紅色 FeatureID 的值
         red_colors = ['FFFF0000', 'FF0000']  # 只檢查紅色變體，全大寫
-        for row in worksheet.iter_rows(min_row=2):  # 從第 2 行開始
+        for row in worksheet.iter_rows(min_row=2, max_col=1):  # 從第 2 行開始
             cell = row[0]  # 第一欄 (FeatureID)
             if cell.font and cell.font.color and cell.font.color.rgb is not None:
                 rgb_str = str(cell.font.color.rgb).upper()  # 強制轉 str 並 upper

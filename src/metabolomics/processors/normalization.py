@@ -1958,6 +1958,8 @@ def save_normalization_results(
     preserved_data_sheet_name,
     sample_info_sheet_name,
     output_dir,
+    preserved_data_df=None,
+    sample_info_df=None,
     output_path=None,
 ):
     """儲存標準化結果到Excel檔案"""
@@ -1970,9 +1972,6 @@ def save_normalization_results(
             )
             output_path = output_dir / output_filename
 
-        # 載入原始工作簿
-        wb_original = load_workbook(file_path, data_only=False)
-        
         # 創建新工作簿
         wb_new = Workbook()
         wb_new.remove(wb_new.active)
@@ -2023,30 +2022,25 @@ def save_normalization_results(
         
         ws_summary.column_dimensions['A'].width = 80
         
-        # 3. 僅保留上一步資料工作表與 SampleInfo
+        # 3. Preserve upstream sheets directly from in-memory DataFrames
+        df_map = {
+            preserved_data_sheet_name: preserved_data_df,
+            sample_info_sheet_name: sample_info_df,
+        }
         preserved_sheet_names = []
         for sheet_name in [preserved_data_sheet_name, sample_info_sheet_name]:
-            if not sheet_name or sheet_name in preserved_sheet_names:
-                continue
-            if sheet_name not in wb_original.sheetnames:
+            preserved_df = df_map.get(sheet_name)
+            if not sheet_name or preserved_df is None or sheet_name in preserved_sheet_names:
                 continue
 
-            ws_original = wb_original[sheet_name]
-            ws_new = wb_new.create_sheet(title=sheet_name[:31])
+            ws_preserved = wb_new.create_sheet(title=sheet_name[:31])
             preserved_sheet_names.append(sheet_name)
 
-            for col in ws_original.column_dimensions:
-                ws_new.column_dimensions[col].width = ws_original.column_dimensions[col].width
+            cleaned_preserved_df = clean_dataframe_for_excel(preserved_df)
+            for r_idx, row in enumerate(dataframe_to_rows(cleaned_preserved_df, index=False, header=True), 1):
+                for c_idx, value in enumerate(row, 1):
+                    ws_preserved.cell(row=r_idx, column=c_idx, value=value)
 
-            for row_idx, row_dim in ws_original.row_dimensions.items():
-                ws_new.row_dimensions[row_idx].height = row_dim.height
-
-            for row in ws_original.iter_rows():
-                for cell in row:
-                    new_cell = ws_new.cell(row=cell.row, column=cell.column, value=cell.value)
-                    copy_cell_style(cell, new_cell)
-        
-        # 儲存新工作簿
         wb_new.save(output_path)
         
         print(f"\n✓ 結果已儲存至: {output_path}")
@@ -2196,6 +2190,8 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
         data_sheet_name,
         sample_info_sheet_name,
         output_dir,
+        preserved_data_df=data_df,
+        sample_info_df=sample_info_df,
         output_path=_save_path,
     )
     
