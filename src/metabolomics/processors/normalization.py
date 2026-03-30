@@ -26,6 +26,7 @@ from metabolomics.utils.file_io import (
     generate_output_filename,
     resolve_session_dir,
 )
+from metabolomics.utils.data_helpers import apply_feature_metadata_passthrough
 from metabolomics.utils.results import ProcessingResult
 from metabolomics.utils.console import safe_print as print
 
@@ -1880,7 +1881,6 @@ def perform_normalization(data_df, sample_info_df, file_path,
 
     # 準備數據矩陣 (特徵 x 樣本) - Vectorized (much faster than iterrows)
     feature_ids = data_df[data_df.columns[0]].tolist()
-
     # Extract sample columns and convert to numeric matrix directly
     valid_sample_cols = [c for c in sample_columns if c in data_df.columns]
     data_matrix = data_df[valid_sample_cols].apply(pd.to_numeric, errors='coerce').values
@@ -2072,6 +2072,8 @@ def perform_normalization(data_df, sample_info_df, file_path,
         normalized_df['QC_CV%'] = calculate_cv_per_feature(normalized_data[:, qc_indices_for_cv])
     else:
         normalized_df['QC_CV%'] = np.nan
+
+    normalized_df = apply_feature_metadata_passthrough(normalized_df, data_df)
     
     # ========== 生成摘要報告 ==========
     summary_report = create_normalization_summary_report(

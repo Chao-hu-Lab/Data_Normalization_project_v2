@@ -10,6 +10,9 @@ These tests verify:
 import pytest
 import pandas as pd
 import numpy as np
+import os
+import shutil
+from openpyxl import load_workbook
 
 from metabolomics.utils.constants import SHEET_NAMES
 
@@ -120,7 +123,7 @@ class TestQCLOWESSOutput:
     @pytest.mark.slow
     @pytest.mark.integration
     def test_output_file_structure(self, istd_module, qc_lowess_module,
-                                    sample_input_file, validate_excel_output):
+                                     sample_input_file, validate_excel_output):
         """Test output Excel file structure."""
         # Run Step 1
         step1_result = istd_module.main(input_file=sample_input_file)
@@ -141,6 +144,51 @@ class TestQCLOWESSOutput:
 
         assert validation['exists'], f"Output file should exist"
         assert validation['readable'], f"Output file should be readable"
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_qc_lowess_result_preserves_presence_absence_marker(
+        self,
+        qc_lowess_module,
+        sample_input_file,
+        output_dir,
+    ):
+        input_path = os.path.join(output_dir, "qc_lowess_marker_input.xlsx")
+        if os.path.exists(input_path):
+            os.remove(input_path)
+        shutil.copy2(sample_input_file, input_path)
+
+        workbook = load_workbook(input_path)
+        try:
+            worksheet = workbook["RawIntensity"]
+            marker_col = worksheet.max_column + 1
+            worksheet.cell(row=1, column=marker_col, value="is_Presence_Absence_Marker")
+            worksheet.cell(row=2, column=marker_col, value="is_Presence_Absence_Marker")
+            worksheet.cell(row=3, column=marker_col, value=True)
+            worksheet.cell(row=4, column=marker_col, value=False)
+            worksheet.cell(row=5, column=marker_col, value=True)
+            workbook.save(input_path)
+        finally:
+            workbook.close()
+
+        step2_result = qc_lowess_module.main(input_file=input_path)
+        step2_output = (
+            step2_result.output_path
+            if hasattr(step2_result, "output_path")
+            else step2_result.get("output_path")
+        )
+
+        result_wb = load_workbook(step2_output, read_only=True, data_only=True)
+        try:
+            ws = result_wb[SHEET_NAMES["qc_lowess"]]
+            headers = [cell.value for cell in ws[1]]
+            marker_idx = headers.index("is_Presence_Absence_Marker") + 1
+            assert ws.cell(row=2, column=marker_idx).value == "is_Presence_Absence_Marker"
+            assert ws.cell(row=3, column=marker_idx).value is True
+            assert ws.cell(row=4, column=marker_idx).value is False
+            assert ws.cell(row=5, column=marker_idx).value is True
+        finally:
+            result_wb.close()
 
     @pytest.mark.slow
     @pytest.mark.integration

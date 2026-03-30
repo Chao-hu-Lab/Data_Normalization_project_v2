@@ -11,6 +11,7 @@ import pytest
 import os
 import warnings
 from importlib import import_module
+from openpyxl import load_workbook
 import numpy as np
 import pandas as pd
 
@@ -113,6 +114,30 @@ class TestConcentrationNormHelpers:
         ]
 
         assert "UNKNOWN" not in sample_types
+
+    def test_get_all_sample_columns_excludes_presence_absence_marker(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Sample_A", "Sample_B", "QC_1"],
+                "Sample_Type": ["Exposure", "Normal", "QC"],
+            }
+        )
+        data_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0"],
+                "Sample_A": [10.0],
+                "Sample_B": [20.0],
+                "QC_1": [30.0],
+                "is_Presence_Absence_Marker": [True],
+            }
+        )
+
+        sample_columns = conc_norm_module.get_all_sample_columns(data_df, sample_info_df)
+
+        assert sample_columns == ["Sample_A", "Sample_B", "QC_1"]
 
     def test_build_sample_info_mapping_prefers_normalized_name_matches(
         self,
@@ -362,6 +387,79 @@ class TestConcentrationNormHelpers:
 
 class TestConcentrationNormOutput:
     """Tests for output validation."""
+
+    @staticmethod
+    def _write_step4_input_workbook(workbook_path, include_marker=True):
+        raw_df = pd.DataFrame(
+            {
+                "Mz/RT": ["Sample_Type", "100.1/1.0", "200.2/2.0", "300.3/3.0"],
+                "QC_1": ["QC", 10.0, 20.0, 30.0],
+                "QC_2": ["QC", 11.0, 21.0, 31.0],
+                "Sample_A": ["Exposure", 100.0, 200.0, 300.0],
+                "Sample_B": ["Normal", 110.0, 210.0, 310.0],
+            }
+        )
+        if include_marker:
+            raw_df["is_Presence_Absence_Marker"] = [
+                "is_Presence_Absence_Marker",
+                True,
+                False,
+                True,
+            ]
+
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "QC_2", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC", "Exposure", "Normal"],
+            }
+        )
+
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            raw_df.to_excel(writer, sheet_name=SHEET_NAMES["raw_intensity"], index=False)
+            sample_info_df.to_excel(writer, sheet_name=SHEET_NAMES["sample_info"], index=False)
+
+    def test_main_preserves_presence_absence_marker_in_pqn_result(
+        self,
+        conc_norm_module,
+        output_dir,
+    ):
+        input_path = os.path.join(output_dir, "step4_marker_input.xlsx")
+        if os.path.exists(input_path):
+            os.remove(input_path)
+        self._write_step4_input_workbook(input_path, include_marker=True)
+
+        step4_result = conc_norm_module.main(input_file=str(input_path))
+        step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get("output_path")
+
+        workbook = load_workbook(step4_output, read_only=True, data_only=True)
+        try:
+            ws = workbook["PQN_Result"]
+            headers = [cell.value for cell in ws[1]]
+            marker_col = headers.index("is_Presence_Absence_Marker") + 1
+
+            assert ws.cell(row=2, column=marker_col).value == "is_Presence_Absence_Marker"
+            assert ws.cell(row=3, column=marker_col).value is True
+            assert ws.cell(row=4, column=marker_col).value is False
+            assert ws.cell(row=5, column=marker_col).value is True
+        finally:
+            workbook.close()
+
+    def test_main_skips_presence_absence_marker_when_missing(
+        self,
+        conc_norm_module,
+        output_dir,
+    ):
+        input_path = os.path.join(output_dir, "step4_no_marker_input.xlsx")
+        if os.path.exists(input_path):
+            os.remove(input_path)
+        self._write_step4_input_workbook(input_path, include_marker=False)
+
+        step4_result = conc_norm_module.main(input_file=str(input_path))
+        step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get("output_path")
+
+        result_df = pd.read_excel(step4_output, sheet_name="PQN_Result", nrows=1)
+
+        assert "is_Presence_Absence_Marker" not in result_df.columns
 
     @pytest.mark.slow
     @pytest.mark.integration

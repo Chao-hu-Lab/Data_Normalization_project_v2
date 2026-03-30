@@ -14,7 +14,10 @@ from collections import Counter
 warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
-from metabolomics.utils.data_helpers import get_valid_values
+from metabolomics.utils.data_helpers import (
+    get_valid_values,
+    apply_feature_metadata_passthrough,
+)
 from metabolomics.utils.plotting import setup_matplotlib
 from metabolomics.utils.constants import (
     NON_SAMPLE_COLUMNS,
@@ -1668,6 +1671,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         
         # ✅ 主表：只保留 Levene's test 和 CV%
         lowess_with_cv = lowess_df.merge(cv_results_df, on='FeatureID', how='left')
+        lowess_with_cv = apply_feature_metadata_passthrough(lowess_with_cv, istd_df)
         
         # ✅ 主表欄位順序（移除 Wilcoxon_pvalue 和 Significant_Improvement）
         cols_order = [

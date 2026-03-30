@@ -128,6 +128,7 @@ NON_SAMPLE_COLUMNS = {
     'Frac_Strategy', 'exposure_ratio', 'normal_ratio', 'control_ratio', 'QC_ratio',
     # Additional metadata columns
     'mz', 'rt', 'm/z', 'Mass', 'Retention_Time',
+    'is_Presence_Absence_Marker',
 }
 
 # Keywords that identify derived statistical columns
