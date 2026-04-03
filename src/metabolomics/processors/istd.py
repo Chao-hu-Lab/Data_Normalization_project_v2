@@ -24,6 +24,8 @@ from metabolomics.utils.constants import (
 )
 from metabolomics.utils.sample_classification import (
     SampleClassifier,
+    build_sample_info_mapping,
+    identify_candidate_sample_columns,
     identify_sample_columns,
     normalize_sample_name,
     normalize_sample_type,
@@ -725,36 +727,36 @@ def calculate_corrected_ratios(df, sample_info_df):
     if 'Sample_Name' not in sample_info_df.columns:
         raise ValueError(f"錯誤：'{SHEET_NAMES['sample_info']}' 缺少 'Sample_Name' 欄位")
     
-    sample_names = sample_info_df['Sample_Name'].tolist()
+    candidate_columns, dropped_columns = identify_candidate_sample_columns(
+        df,
+        extra_non_sample_columns={'is_ISTD', 'Sample_Type', 'sample_type'},
+    )
+    col_to_info_row = build_sample_info_mapping(candidate_columns, sample_info_df)
+    sample_columns = [col for col in candidate_columns if col in col_to_info_row]
 
-    from metabolomics.utils.constants import NON_SAMPLE_COLUMNS
-    all_columns = df.columns.tolist()
-    # 排除已知的非樣本欄位（FeatureID, mz, rt, is_ISTD 等）
-    non_sample = NON_SAMPLE_COLUMNS | {'is_ISTD', 'Sample_Type', 'sample_type'}
-    raw_sample_columns = [col for col in all_columns
-                          if col not in non_sample and col != 'FeatureID']
+    if dropped_columns:
+        print(f"⚠️ 已排除 {len(dropped_columns)} 個推定統計欄位，不納入 ISTD 校正：")
+        for col in dropped_columns[:5]:
+            print(f"  - {col}")
+        if len(dropped_columns) > 5:
+            print(f"  ... 還有 {len(dropped_columns) - 5} 個欄位")
 
-    # 修改：標準化名稱（轉小寫、去除空格）以避免不匹配
-    normalized_sample_names = [name.strip().lower() for name in sample_names]
-    normalized_columns = {col: col.strip().lower() for col in raw_sample_columns}
+    if not sample_columns:
+        raise ValueError(
+            "未找到可與 SampleInfo 對齊的有效樣本欄位，"
+            "已停止 ISTD 校正以避免將未知資料欄位當成樣本。"
+        )
 
-    sample_columns = []
-    name_mapping = {}  # 記錄映射
-    for col, norm_col in normalized_columns.items():
-        if norm_col in normalized_sample_names:
-            sample_columns.append(col)  # 保留原始欄位名
-            name_mapping[col] = sample_names[normalized_sample_names.index(norm_col)]
+    unmatched_columns = [col for col in candidate_columns if col not in col_to_info_row]
+    if unmatched_columns:
+        preview = ", ".join(unmatched_columns[:5])
+        if len(unmatched_columns) > 5:
+            preview += f" ... 還有 {len(unmatched_columns) - 5} 個"
+        raise ValueError(
+            "以下資料欄位無法可靠對齊到 SampleInfo，已停止 ISTD 校正以避免錯誤樣本語義流入下游: "
+            f"{preview}"
+        )
 
-    # 如果精確匹配結果太少（名稱格式不同），回退使用 RawIntensity 中的所有數據欄位
-    if len(sample_columns) < len(raw_sample_columns) * 0.5:
-        print(f"⚠️ 精確名稱匹配僅找到 {len(sample_columns)}/{len(raw_sample_columns)} 個樣本")
-        print(f"  → 回退使用 {SHEET_NAMES['raw_intensity']} 中的所有數據欄位進行校正")
-        sample_columns = raw_sample_columns
-    else:
-        missing_columns = [name for name in sample_names if name.strip().lower() not in normalized_columns.values()]
-        if missing_columns:
-            print(f"警告：以下樣本名稱在 '{SHEET_NAMES['raw_intensity']}' 中缺少 (即使大小寫不同): {', '.join(missing_columns)}")
-    
     istd_cv = calculate_istd_cv(istd_signals, sample_columns)
     istd_medians = calculate_istd_medians(istd_signals, sample_columns)
     

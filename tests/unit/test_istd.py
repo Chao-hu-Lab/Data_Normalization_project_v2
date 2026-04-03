@@ -279,6 +279,50 @@ class TestISTDCorrectionHelpers:
         assert sample_columns == ["Sample_A1", "Sample_B1"]
         assert "exposure_ratio" not in sample_columns
 
+    def test_calculate_corrected_ratios_fails_closed_when_sample_names_do_not_match(self, istd_module):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Real_A", "Real_B"],
+                "Sample_Type": ["Exposure", "Control"],
+                "Batch": ["A", "B"],
+            }
+        )
+        raw_df = pd.DataFrame(
+            {
+                "FeatureID": ["ISTD_1", "Analyte_1"],
+                "mz": [100.0, 150.0],
+                "rt": [5.0, 5.2],
+                "is_ISTD": [True, False],
+                "Wrong_X": [10.0, 50.0],
+                "Wrong_Y": [20.0, 100.0],
+            }
+        )
+
+        with pytest.raises(ValueError, match="未找到可與 SampleInfo 對齊的有效樣本欄位"):
+            istd_module.calculate_corrected_ratios(raw_df, sample_info_df)
+
+    def test_calculate_corrected_ratios_fails_closed_when_only_some_names_match(self, istd_module):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Real_A", "Real_B"],
+                "Sample_Type": ["Exposure", "Control"],
+                "Batch": ["A", "B"],
+            }
+        )
+        raw_df = pd.DataFrame(
+            {
+                "FeatureID": ["ISTD_1", "Analyte_1"],
+                "mz": [100.0, 150.0],
+                "rt": [5.0, 5.2],
+                "is_ISTD": [True, False],
+                "Real_A": [10.0, 50.0],
+                "Wrong_Y": [20.0, 100.0],
+            }
+        )
+
+        with pytest.raises(ValueError, match="無法可靠對齊到 SampleInfo"):
+            istd_module.calculate_corrected_ratios(raw_df, sample_info_df)
+
     def test_get_qc_sample_columns_excludes_ratio_pseudo_samples(self, istd_module):
         raw_df = pd.DataFrame(
             {

@@ -118,7 +118,8 @@ CV_QUALITY_THRESHOLDS = {
 NON_SAMPLE_COLUMNS = {
     'Mz/RT', 'FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference', 'ISTD_Median',
     'CV%', 'QC_CV%', 'Original_CV%', 'Normalized_CV%', 'CV_Improvement%', 'Original_QC_CV%', 'Corrected_QC_CV%',
-    'Variance_Test_pvalue', 'Wilcoxon_pvalue', 'Wilcoxon_qvalue',
+    'Original_Robust_CV%', 'Corrected_Robust_CV%', 'Robust_CV_Improvement%',
+    'Variance_Test_pvalue', 'Variance_Test_qvalue', 'Wilcoxon_pvalue', 'Wilcoxon_qvalue',
     'Shapiro_pvalue', 'Kendall_Tau',
     'LOESS_R2', 'LOESS_RMSE', 'LOWESS_R2', 'LOWESS_RMSE', 'Significant_Improvement',
     'Decision', 'Trend_Status', 'frac', 'outliers_removed',
@@ -135,7 +136,7 @@ NON_SAMPLE_COLUMNS = {
 STAT_COLUMN_KEYWORDS = (
     'original_qc_', 'corrected_qc_', 'cv_', 'variance_', 'levene', 'mk_',
     'kendall', 'lowess_', 'loess_', 'trend_', 'wilcoxon', 'shapiro', 'significant',
-    'decision', 'rmse', 'median_correction', 'correction_factor'
+    'decision', 'rmse', 'median_correction', 'correction_factor', 'robust_cv', 'qvalue'
 )
 
 # ========== Sample Type Aliases ==========

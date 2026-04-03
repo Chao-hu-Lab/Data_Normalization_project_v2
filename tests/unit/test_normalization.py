@@ -171,6 +171,79 @@ class TestConcentrationNormHelpers:
         assert mapping["NormalBC2257_DNA"]["Sample_Type"] == "Normal"
         assert mapping["Breast_Cancer_Tissue_pooled_QC_1"]["Sample_Type"] == "QC"
 
+    def test_build_sample_info_mapping_does_not_positionally_guess_equal_length_inputs(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Real_A", "Real_B"],
+                "Sample_Type": ["Exposure", "Control"],
+                "Batch": ["A", "B"],
+            }
+        )
+
+        mapping = conc_norm_module.build_sample_info_mapping(
+            ["Wrong_X", "Wrong_Y"],
+            sample_info_df,
+        )
+
+        assert mapping == {}
+
+    def test_perform_normalization_fails_closed_when_sample_mapping_is_incomplete(
+        self,
+        conc_norm_module,
+    ):
+        data_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0", "200.2/2.0"],
+                "Wrong_X": [10.0, 20.0],
+                "Wrong_Y": [30.0, 40.0],
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Real_A", "Real_B"],
+                "Sample_Type": ["Exposure", "Control"],
+            }
+        )
+
+        with pytest.raises(ValueError, match="未找到可與 SampleInfo 對齊的有效樣本欄位"):
+            conc_norm_module.perform_normalization(
+                data_df,
+                sample_info_df,
+                file_path="dummy.xlsx",
+                normalization_method="PQN",
+                available_sheet_names=["RawIntensity", "SampleInfo"],
+            )
+
+    def test_perform_normalization_fails_closed_when_only_some_columns_match(
+        self,
+        conc_norm_module,
+    ):
+        data_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0", "200.2/2.0"],
+                "Real_A": [10.0, 20.0],
+                "Wrong_Y": [30.0, 40.0],
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Real_A", "Real_B"],
+                "Sample_Type": ["Exposure", "Control"],
+            }
+        )
+
+        with pytest.raises(ValueError, match="無法可靠對齊到 SampleInfo"):
+            conc_norm_module.perform_normalization(
+                data_df,
+                sample_info_df,
+                file_path="dummy.xlsx",
+                normalization_method="PQN",
+                available_sheet_names=["RawIntensity", "SampleInfo"],
+            )
+
     def test_clean_dataframe_for_excel_avoids_future_warnings_and_preserves_mixed_columns(
         self,
         conc_norm_module,

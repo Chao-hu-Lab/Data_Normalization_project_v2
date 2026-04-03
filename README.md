@@ -9,7 +9,7 @@ Metabolomics data normalization pipeline for mass spectrometry data processing.
 
 ### Dependencies
 
-```
+```text
 pandas
 numpy
 scipy
@@ -24,11 +24,11 @@ psutil
 
 1. Clone or download this repository
 2. Install dependencies:
-   ```bash
+   ```powershell
    pip install pandas numpy scipy scikit-learn matplotlib openpyxl psutil
    ```
 3. Run the GUI:
-   ```bash
+   ```powershell
    python Data_Normalization_program_v2.py
    ```
    Windows quick start: double-click `run_gui.bat`.
@@ -41,8 +41,8 @@ The pipeline consists of 4 sequential steps:
 |------|--------|-------------|
 | 1 | ISTD Correction | Internal standard correction using weighted ISTD selection |
 | 2 | QC-LOESS | QC-based trend correction using LOESS smoothing |
-| 3 | Batch Effect | Batch effect correction using ComBat algorithm |
-| 4 | Concentration Normalization | PQN (Probabilistic Quotient Normalization) |
+| 3 | QC Batch Scaling | QC batch median alignment and batch-wise scaling |
+| 4 | Concentration Normalization | `PQN` or `SampleSpecific` normalization |
 
 ### Step 1: ISTD Correction
 - Selects optimal ISTD for each metabolite based on RT proximity (60%), CV% (25%), intensity (10%), and m/z (5%)
@@ -54,15 +54,16 @@ The pipeline consists of 4 sequential steps:
 - Performs Levene's test and Wilcoxon test for improvement validation
 - Only applies correction when CV% improvement >= 2%
 
-### Step 3: Batch Effect Correction
-- Uses PERMANOVA to assess batch effects
-- Applies ComBat algorithm for batch correction
-- Validates correction with paired permutation test
+### Step 3: QC Batch Scaling
+- Builds batch membership from `SampleInfo`
+- Aligns batch-level QC medians instead of running ComBat
+- Preserves Step 2 outputs while adding batch diagnostic plots and residual checks
 
 ### Step 4: Concentration Normalization
-- Two-stage normalization: sample-specific (creatinine) + PQN
-- Uses QC samples as reference when available (>= 3 QC with CV% < 30%)
-- Falls back to robust median if insufficient QC samples
+- Supports both `PQN` and `SampleSpecific`
+- `PQN` prefers QC-driven reference behavior when reliable and falls back to robust median summaries
+- `SampleSpecific` uses a reference column from `SampleInfo` such as `Creatinine_mg_dL`
+- Sample columns must map reliably to `SampleInfo`; unmapped or ambiguously matched sample names now fail closed
 
 ## Input File Format
 
@@ -86,9 +87,10 @@ The pipeline consists of 4 sequential steps:
 
 | Column | Description |
 |--------|-------------|
-| `Sample_Name` | Must match column names in RawIntensity |
+| `Sample_Name` | Must match the data sheet sample columns reliably |
 | `Sample_Type` | e.g., `QC`, `Control`, `Exposed`, `Blank` |
 | `Batch` | (Optional) Batch number for batch effect correction |
+| `Creatinine_mg_dL` | Optional reference column for `SampleSpecific` normalization |
 
 ## Output Structure
 
@@ -109,7 +111,7 @@ output/
 ## Usage
 
 ### GUI Mode (Recommended)
-```bash
+```powershell
 python Data_Normalization_program_v2.py
 ```
 Windows quick start: double-click `run_gui.bat`.
@@ -124,10 +126,12 @@ Windows quick start: double-click `run_gui.bat`.
 from metabolomics.processors import istd, qc_lowess, qc_batch_scaling, normalization
 
 result1 = istd.main(input_file="your_data.xlsx")
-result2 = qc_lowess.main(input_file=result1["output_path"])
-result3 = qc_batch_scaling.main(input_file=result2["output_path"])
-result4 = normalization.main(input_file=result3["output_path"])
+result2 = qc_lowess.main(input_file=result1.output_path)
+result3 = qc_batch_scaling.main(input_file=result2.output_path)
+result4 = normalization.main(input_file=result3.output_path, normalization_method="PQN")
 ```
+
+Each step returns a `ProcessingResult`, so downstream steps should read `.output_path`.
 
 ## Test Data
 
@@ -143,7 +147,8 @@ For the current regression workflow and scenario-based smoke tests, see [docs/TE
 |-------|----------|
 | "Missing RawIntensity sheet" | Ensure Excel file has been VBA-formatted |
 | "No ISTD found" | Mark ISTD FeatureIDs with red font color |
-| "Sample name mismatch" | Verify SampleInfo names match RawIntensity columns |
+| "Sample name mismatch" | Verify `SampleInfo.Sample_Name` matches the data sheet columns; Step 1 and Step 4 now stop instead of silently guessing |
+| "`SampleSpecific` cannot start" | Ensure `SampleInfo` contains a usable reference column such as `Creatinine_mg_dL` |
 
 ## License
 

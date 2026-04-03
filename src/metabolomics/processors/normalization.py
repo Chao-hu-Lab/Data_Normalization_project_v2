@@ -16,6 +16,8 @@ from metabolomics.utils.plotting import setup_matplotlib
 from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS, NON_SAMPLE_COLUMNS, resolve_sheet_name
 from metabolomics.utils.sample_classification import (
     SampleClassifier,
+    build_sample_info_mapping as shared_build_sample_info_mapping,
+    identify_candidate_sample_columns,
     identify_sample_columns,
     normalize_sample_name,
     normalize_sample_type,
@@ -79,84 +81,8 @@ def _lookup_sample_type(sample, sample_info_df, col_to_info_row=None, default='U
 
 
 def build_sample_info_mapping(sample_columns, sample_info_df):
-    """Map data columns to SampleInfo rows, preferring normalized-name exact matches."""
-    info_name_col = sample_info_df.columns[0]
-    info_names = sample_info_df[info_name_col].astype(str).tolist()
-
-    mapping = {}
-    exact_lookup = {}
-    normalized_lookup = {}
-
-    for idx, row in sample_info_df.iterrows():
-        exact_lookup.setdefault(str(row.get(info_name_col, '')), row)
-
-        norm_name = normalize_sample_name(row.get(info_name_col, ''))
-        if norm_name and norm_name not in normalized_lookup:
-            normalized_lookup[norm_name] = row
-
-    for sample in sample_columns:
-        if sample in exact_lookup:
-            mapping[sample] = exact_lookup[sample]
-
-    for sample in sample_columns:
-        if sample in mapping:
-            continue
-        norm_sample = normalize_sample_name(sample)
-        if norm_sample in normalized_lookup:
-            mapping[sample] = normalized_lookup[norm_sample]
-
-    unmatched_samples = [sample for sample in sample_columns if sample not in mapping]
-    if not unmatched_samples:
-        return mapping
-
-    if len(info_names) == len(sample_columns):
-        for index, sample in enumerate(sample_columns):
-            mapping.setdefault(sample, sample_info_df.iloc[index])
-        return mapping
-
-    import re
-
-    def _extract_tokens(name):
-        s = str(name).strip().lower()
-        s = re.sub(r'^(dna|rna)_program\d+_', '', s)
-        parts = re.split(r'[\s_\-/]+', s)
-        tokens = set()
-        numbers = set()
-        for part in parts:
-            sub = re.findall(r'[a-z]+|[0-9]+', part)
-            tokens.update(sub)
-            combo = re.findall(r'[a-z]+\d+', part)
-            tokens.update(combo)
-            nums = re.findall(r'\d{3,}', part)
-            numbers.update(nums)
-        generic = {'tissue', 'cancer', 'breast', 'pooled', 'fat', 'dna', 'rna', 'and', 'program1'}
-        return tokens - generic, numbers
-
-    for sample in unmatched_samples:
-        sample_tokens, sample_nums = _extract_tokens(sample)
-        best_match = None
-        best_score = 0
-
-        for idx, info_name in enumerate(info_names):
-            info_tokens, info_nums = _extract_tokens(info_name)
-            num_overlap = len(sample_nums & info_nums)
-            token_overlap = len(sample_tokens & info_tokens)
-
-            if num_overlap > 0:
-                score = 0.8 + 0.2 * (token_overlap / max(len(sample_tokens), len(info_tokens), 1))
-            elif sample_tokens and info_tokens:
-                score = token_overlap / max(len(sample_tokens), len(info_tokens))
-            else:
-                score = 0
-
-            if score > best_score:
-                best_score = score
-                best_match = idx
-
-        if best_match is not None and best_score >= 0.5:
-            mapping[sample] = sample_info_df.iloc[best_match]
-
-    return mapping
+    """Compatibility wrapper for shared SampleInfo mapping logic."""
+    return shared_build_sample_info_mapping(sample_columns, sample_info_df)
 
 # ==================== 標準化方法 ====================
 
@@ -1871,13 +1797,30 @@ def perform_normalization(data_df, sample_info_df, file_path,
     print(f"開始執行 {method_name} 標準化處理...")
     print("="*70)
 
-    # 獲取純樣本欄位（排除統計欄位）
-    sample_columns = get_all_sample_columns(data_df, sample_info_df)
+    candidate_columns, dropped_columns = identify_candidate_sample_columns(data_df)
+    col_to_info_row = build_sample_info_mapping(candidate_columns, sample_info_df)
+    sample_columns = [col for col in candidate_columns if col in col_to_info_row]
+
+    if dropped_columns:
+        print(f"⚠ 已排除 {len(dropped_columns)} 個推定統計欄位，不納入 Step 4 標準化。")
+
     print(f"✓ 樣本數量（含QC）: {len(sample_columns)}")
 
     if len(sample_columns) == 0:
-        print("錯誤：未找到有效的樣本欄位")
-        return None
+        raise ValueError(
+            "未找到可與 SampleInfo 對齊的有效樣本欄位，"
+            "請確認資料工作表欄名與 SampleInfo.Sample_Name 一致。"
+        )
+
+    unmatched_samples = [sample for sample in candidate_columns if sample not in col_to_info_row]
+    if unmatched_samples:
+        preview = ", ".join(unmatched_samples[:5])
+        if len(unmatched_samples) > 5:
+            preview += f" ... 還有 {len(unmatched_samples) - 5} 個"
+        raise ValueError(
+            "以下資料欄位無法可靠對齊到 SampleInfo，已停止標準化以避免錯誤樣本語義流入下游: "
+            f"{preview}"
+        )
 
     # 準備數據矩陣 (特徵 x 樣本) - Vectorized (much faster than iterrows)
     feature_ids = data_df[data_df.columns[0]].tolist()
@@ -1889,8 +1832,6 @@ def perform_normalization(data_df, sample_info_df, file_path,
     # 保存原始數據用於對比
     original_data = data_matrix.copy()
 
-    # 建立樣本名稱映射
-    col_to_info_row = build_sample_info_mapping(sample_columns, sample_info_df)
     print(f"  名稱匹配: {len(col_to_info_row)}/{len(sample_columns)}")
 
     # ========== 根據方法分流 ==========

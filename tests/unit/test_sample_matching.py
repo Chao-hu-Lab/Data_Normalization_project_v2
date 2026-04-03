@@ -1,7 +1,12 @@
 import pandas as pd
 
 from metabolomics.processors.qc_batch_scaling import build_batch_membership
-from metabolomics.utils.sample_classification import identify_sample_columns, normalize_sample_name
+from metabolomics.utils.sample_classification import (
+    build_sample_info_mapping,
+    identify_candidate_sample_columns,
+    identify_sample_columns,
+    normalize_sample_name,
+)
 
 
 def test_normalize_sample_name_handles_spacing_camelcase_and_tissue_suffix():
@@ -123,6 +128,68 @@ def test_identify_sample_columns_excludes_ratio_and_cv_stat_columns():
     assert "QC_ratio" not in sample_columns
     assert "Original_CV%" not in sample_columns
     assert "Normalized_CV%" not in sample_columns
+
+
+def test_identify_sample_columns_returns_empty_when_no_sampleinfo_match_exists():
+    sample_info_df = pd.DataFrame(
+        {
+            "Sample_Name": ["Case_001", "Case_002"],
+            "Sample_Type": ["Exposure", "Control"],
+        }
+    )
+    df = pd.DataFrame(
+        {
+            "Mz/RT": ["100.1/1.0"],
+            "TotallyDifferent_1": [10.0],
+            "TotallyDifferent_2": [20.0],
+            "custom_ratio_metric": [0.5],
+            "mystery_score": [99.0],
+        }
+    )
+
+    sample_columns, dropped_columns = identify_sample_columns(df, sample_info_df)
+
+    assert sample_columns == []
+    assert dropped_columns == []
+
+
+def test_identify_candidate_sample_columns_keeps_unmatched_data_columns_for_fail_closed_checks():
+    df = pd.DataFrame(
+        {
+            "Mz/RT": ["100.1/1.0"],
+            "Real_A": [10.0],
+            "Wrong_Y": [20.0],
+            "is_ISTD": [False],
+            "custom_ratio_metric": [0.5],
+            "robust_cv_summary": [8.0],
+        }
+    )
+
+    candidate_columns, dropped_columns = identify_candidate_sample_columns(
+        df,
+        extra_non_sample_columns={"is_ISTD"},
+    )
+
+    assert candidate_columns == ["Real_A", "Wrong_Y", "custom_ratio_metric"]
+    assert dropped_columns == ["robust_cv_summary"]
+
+
+def test_build_sample_info_mapping_matches_program_prefixed_columns_via_fuzzy_tokens():
+    sample_info_df = pd.DataFrame(
+        {
+            "Sample_Name": ["Normal tissue BC2257_DNA", "Tumor tissue BC2257_DNA"],
+            "Sample_Type": ["Normal", "Exposure"],
+            "Batch": ["A", "A"],
+        }
+    )
+
+    mapping = build_sample_info_mapping(
+        ["DNA_program1_Normal_BC2257", "DNA_program1_Tumor_BC2257"],
+        sample_info_df,
+    )
+
+    assert mapping["DNA_program1_Normal_BC2257"]["Sample_Type"] == "Normal"
+    assert mapping["DNA_program1_Tumor_BC2257"]["Sample_Type"] == "Exposure"
 
 
 def test_build_batch_membership_matches_normalized_sample_names():
