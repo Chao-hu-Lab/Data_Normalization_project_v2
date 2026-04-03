@@ -6,12 +6,82 @@ import os
 import sys
 import shutil
 import tempfile
+import re
 from pathlib import Path
+from datetime import datetime
 
 from openpyxl import load_workbook
 
 # Add src directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+
+
+SAFE_TMP_SESSION_KEEP = 3
+
+
+def _sanitize_tmp_name(name: str) -> str:
+    """Return a filesystem-safe, compact temp directory stem."""
+    sanitized = re.sub(r"[^\w]+", "_", name).strip("_")
+    return sanitized[:80] or "tmp"
+
+
+def _prune_safe_tmp_sessions(root: Path, keep: int = SAFE_TMP_SESSION_KEEP) -> None:
+    """Keep the most recent repo-local tmp fixture sessions and delete older ones."""
+    sessions = sorted(
+        (path for path in root.glob("session_*") if path.is_dir()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for stale in sessions[keep:]:
+        shutil.rmtree(stale, ignore_errors=True)
+
+
+class RepoTempPathFactory:
+    """Minimal tmp-path factory that avoids pytest's Windows-problematic temp flow."""
+
+    def __init__(self, base_dir: Path) -> None:
+        self._base_dir = base_dir
+        self._counters: dict[str, int] = {}
+
+    def getbasetemp(self) -> Path:
+        """Return the session-scoped base temp directory."""
+        return self._base_dir
+
+    def mktemp(self, basename: str, numbered: bool = True) -> Path:
+        """Create a child temp directory using normal repo-local mkdir behavior."""
+        stem = _sanitize_tmp_name(basename)
+        if not numbered:
+            path = self._base_dir / stem
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+
+        counter = self._counters.get(stem, 0)
+        while True:
+            path = self._base_dir / f"{stem}_{counter:03d}"
+            if not path.exists():
+                path.mkdir(parents=True, exist_ok=False)
+                self._counters[stem] = counter + 1
+                return path
+            counter += 1
+
+
+@pytest.fixture(scope="session")
+def tmp_path_factory(project_root) -> RepoTempPathFactory:
+    """Provide a repo-local tmp path factory that stays under build/pytest."""
+    safe_root = Path(project_root) / "build" / "pytest" / "tmp-fixtures"
+    safe_root.mkdir(parents=True, exist_ok=True)
+    _prune_safe_tmp_sessions(safe_root)
+
+    session_name = datetime.now().strftime("session_%Y%m%d_%H%M%S")
+    session_root = safe_root / f"{session_name}_{os.getpid()}"
+    session_root.mkdir(parents=True, exist_ok=False)
+    return RepoTempPathFactory(session_root)
+
+
+@pytest.fixture
+def tmp_path(request, tmp_path_factory: RepoTempPathFactory) -> Path:
+    """Return a per-test repo-local temp directory without using pytest's tmpdir plugin."""
+    return tmp_path_factory.mktemp(request.node.nodeid, numbered=True)
 
 
 # ============================================================

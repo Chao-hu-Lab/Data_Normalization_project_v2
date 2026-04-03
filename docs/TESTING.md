@@ -7,21 +7,24 @@ This repository now includes a small regression workflow for validating the 4-st
 | If you are doing... | Run this layer | Command |
 | --- | --- | --- |
 | Small wiring/path/output change, or a quick sanity check | Layer 1: path contract | `python -m pytest .\tests\unit\test_file_io.py -q` |
+| Sample identity / `SampleInfo` alignment changes | Layer 1b: fail-closed sample mapping | `python -m pytest .\tests\unit\test_sample_matching.py -q` |
 | Normal day-to-day pipeline edits | Layer 2: core smoke | `python -m pytest .\tests\integration\test_scenario_smoke.py -q` |
 | Scenario logic changes, edge-case handling, normalization/batch logic refactors, or pre-release validation | Layer 3: deeper regression | `python -m pytest .\tests\integration\test_scenario_regression.py -q` |
 
 ## Recommended Quick Checks
 
-Run these two commands from the repository root after changing normalization logic, output handling, or pipeline wiring:
+Run these commands from the repository root after changing normalization logic, output handling, or pipeline wiring:
 
 ```powershell
 python -m pytest .\tests\unit\test_file_io.py -q
+python -m pytest .\tests\unit\test_sample_matching.py -q
 python -m pytest .\tests\integration\test_scenario_smoke.py -q
 ```
 
 What they cover:
 
 - `test_file_io.py`: output root routing, session directory naming, and test-data isolation
+- `test_sample_matching.py`: sample column detection and `SampleInfo` alignment fail-closed behavior
 - `test_scenario_smoke.py`: representative Step 1, Step 2, Step 3, and Step 4 end-to-end scenarios
 
 After larger algorithm changes, scenario-generator changes, or before a release, also run:
@@ -123,8 +126,30 @@ For everyday development:
 
 1. Change code.
 2. Run `python -m pytest .\tests\unit\test_file_io.py -q`.
-3. Run `python -m pytest .\tests\integration\test_scenario_smoke.py -q`.
-4. If both pass, the main scenario regression is in a good state.
+3. Run `python -m pytest .\tests\unit\test_sample_matching.py -q` if the change touched sample detection, naming, or `SampleInfo` mapping.
+4. Run `python -m pytest .\tests\integration\test_scenario_smoke.py -q`.
+5. If these pass, the main scenario regression is in a good state.
+
+## Known Windows Note
+
+On some Windows setups, `pytest` may fail before assertions run with:
+
+```text
+PermissionError: [WinError 5] ... build\pytest\tmp
+```
+
+When this happens, treat it as a temp-directory harness issue first, not an immediate pipeline regression. A good fallback is:
+
+1. Run the focused unit suites above.
+2. Run `python -m pytest .\tests\integration\test_scenario_regression.py -q`.
+3. Run the scenario workflow manually from a PowerShell-created workspace to verify Step 1 through Step 4 end to end.
+
+Current repo rule:
+
+- Keep pytest cache under `build/pytest/cache`
+- Use the repo-local custom `tmp_path` fixture from `tests/conftest.py`
+- Temp fixture sessions now live under `build/pytest/tmp-fixtures/`
+- Do not reintroduce a global `--basetemp=...` in `pytest.ini` on this Windows environment unless the underlying Python/pytest ACL behavior is verified
 
 ## Notes
 

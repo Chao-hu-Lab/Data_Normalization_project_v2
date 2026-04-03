@@ -9,6 +9,14 @@ from metabolomics.utils.file_io import (
 
 
 class TestOutputRootInference:
+    def test_tmp_path_fixture_stays_under_repo_build_tree(self, tmp_path):
+        parts = tmp_path.parts
+
+        assert "build" in parts
+        assert "pytest" in parts
+        assert "tmp-fixtures" in parts
+        assert tmp_path.exists()
+
     def test_get_output_root_prefers_input_file_output_ancestor(self, tmp_path):
         upstream_output = tmp_path / "ms-core" / ".worktrees" / "cross-project-bridge" / "output"
         input_file = upstream_output / "QC_LOESS_20260307_004818.xlsx"
