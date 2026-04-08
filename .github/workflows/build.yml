@@ -1,0 +1,28 @@
+name: Build Desktop Packages
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      upload_artifact:
+        description: "Upload as artifact (for testing without a tag)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: Chao-hu-Lab/shared-workflows/.github/workflows/python-build.yml@main
+    with:
+      upload_artifact: ${{ inputs.upload_artifact || false }}
+      spec-file: "build/MetabolomicsNormalization.spec"
+      executable-name: "MetabolomicsNormalization"
+      artifact-prefix: "MetabolomicsNormalization"
+      install-command: "pip install -r requirements.txt pyinstaller"
+      pythonpath: "src"
+      version-source: "tag"
+      platforms: '["windows", "macos"]'
+      extra-package-files: '[{"src":"README.md","dst":"README.md"}]'
