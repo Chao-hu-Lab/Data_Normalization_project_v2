@@ -129,9 +129,9 @@ def test_build_header_button_tokens_raise_secondary_action_contrast():
 def test_build_workspace_defaults_targets_balanced_split():
     defaults = DataNormalizationApp._build_workspace_defaults()
 
-    assert defaults["left_minsize"] == 540
-    assert defaults["right_minsize"] == 540
-    assert defaults["split_ratio"] == 0.4
+    assert defaults["left_minsize"] == 640
+    assert defaults["right_minsize"] == 460
+    assert defaults["split_ratio"] == 0.47
     assert defaults["initial_retry_ms"] == 120
     assert defaults["keep_ratio_on_resize"] is True
     assert defaults["card_rows"] == 4

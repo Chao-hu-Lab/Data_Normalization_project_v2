@@ -6,9 +6,14 @@ logic that were scattered across the processing modules.
 """
 import pandas as pd
 import re
-from typing import Dict, List, Tuple, Optional
+from typing import Collection, Dict, List, Optional, Tuple
 
 from .constants import NON_SAMPLE_COLUMNS, STAT_COLUMN_KEYWORDS, SAMPLE_TYPE_ALIASES
+
+
+def _normalized_stat_keywords() -> List[str]:
+    """Normalize statistical keywords for robust substring matching."""
+    return [normalize_sample_name(keyword) for keyword in STAT_COLUMN_KEYWORDS]
 
 
 def normalize_sample_name(name) -> str:
@@ -263,6 +268,83 @@ class SampleClassifier:
         return dict(Counter(types))
 
 
+def build_sample_info_mapping(
+    sample_columns: List[str],
+    sample_info_df: pd.DataFrame,
+) -> Dict[str, pd.Series]:
+    """Map data columns to SampleInfo rows, preferring exact and normalized-name matches."""
+    info_name_col = sample_info_df.columns[0]
+    info_names = sample_info_df[info_name_col].astype(str).tolist()
+
+    mapping: Dict[str, pd.Series] = {}
+    exact_lookup: Dict[str, pd.Series] = {}
+    normalized_lookup: Dict[str, pd.Series] = {}
+
+    for _, row in sample_info_df.iterrows():
+        exact_lookup.setdefault(str(row.get(info_name_col, '')), row)
+
+        norm_name = normalize_sample_name(row.get(info_name_col, ''))
+        if norm_name and norm_name not in normalized_lookup:
+            normalized_lookup[norm_name] = row
+
+    for sample in sample_columns:
+        if sample in exact_lookup:
+            mapping[sample] = exact_lookup[sample]
+
+    for sample in sample_columns:
+        if sample in mapping:
+            continue
+        norm_sample = normalize_sample_name(sample)
+        if norm_sample in normalized_lookup:
+            mapping[sample] = normalized_lookup[norm_sample]
+
+    unmatched_samples = [sample for sample in sample_columns if sample not in mapping]
+    if not unmatched_samples:
+        return mapping
+
+    def _extract_tokens(name: str) -> Tuple[set[str], set[str]]:
+        value = str(name).strip().lower()
+        value = re.sub(r'^(dna|rna)_program\d+_', '', value)
+        parts = re.split(r'[\s_\-/]+', value)
+        tokens = set()
+        numbers = set()
+        for part in parts:
+            sub = re.findall(r'[a-z]+|[0-9]+', part)
+            tokens.update(sub)
+            combo = re.findall(r'[a-z]+\d+', part)
+            tokens.update(combo)
+            nums = re.findall(r'\d{3,}', part)
+            numbers.update(nums)
+        generic = {'tissue', 'cancer', 'breast', 'pooled', 'fat', 'dna', 'rna', 'and', 'program1'}
+        return tokens - generic, numbers
+
+    for sample in unmatched_samples:
+        sample_tokens, sample_nums = _extract_tokens(sample)
+        best_match = None
+        best_score = 0
+
+        for info_name in info_names:
+            info_tokens, info_nums = _extract_tokens(info_name)
+            num_overlap = len(sample_nums & info_nums)
+            token_overlap = len(sample_tokens & info_tokens)
+
+            if num_overlap > 0:
+                score = 100 + num_overlap * 10 + token_overlap
+            else:
+                score = token_overlap
+
+            if score > best_score:
+                best_score = score
+                best_match = info_name
+
+        if best_match is not None and best_score >= 2:
+            matched_rows = sample_info_df[sample_info_df[info_name_col].astype(str) == str(best_match)]
+            if not matched_rows.empty:
+                mapping[sample] = matched_rows.iloc[0]
+
+    return mapping
+
+
 def identify_sample_columns(
     df: pd.DataFrame,
     sample_info_df: pd.DataFrame
@@ -287,6 +369,7 @@ def identify_sample_columns(
 
     # Normalize non-sample column names
     non_sample_lower = {normalize_sample_name(col) for col in NON_SAMPLE_COLUMNS}
+    stat_keywords = _normalized_stat_keywords()
 
     sample_columns = []
     dropped_columns = []
@@ -303,17 +386,52 @@ def identify_sample_columns(
             sample_columns.append(col)
         else:
             # Check for statistical column patterns
-            if any(keyword in col_norm for keyword in STAT_COLUMN_KEYWORDS):
+            if any(keyword and keyword in col_norm for keyword in stat_keywords):
                 dropped_columns.append(col)
 
-    # Fallback: if no matches, use all non-metadata columns
-    if not sample_columns:
-        sample_columns = [
-            col for col in df.columns
-            if normalize_sample_name(col) not in non_sample_lower
-        ]
-
     return sample_columns, dropped_columns
+
+
+def identify_candidate_sample_columns(
+    df: pd.DataFrame,
+    extra_non_sample_columns: Optional[Collection[str]] = None,
+) -> Tuple[List[str], List[str]]:
+    """
+    Identify all non-metadata columns that could be sample intensity columns.
+
+    This is stricter than exact SampleInfo matching: it keeps unknown candidate
+    columns so downstream processors can fail closed instead of silently dropping
+    partially unmatched sample data.
+
+    Args:
+        df: DataFrame containing potential sample columns
+
+    Returns:
+        Tuple of (candidate_columns, dropped_columns)
+    """
+    non_sample_columns = set(NON_SAMPLE_COLUMNS)
+    if extra_non_sample_columns:
+        non_sample_columns.update(str(col) for col in extra_non_sample_columns)
+
+    non_sample_lower = {normalize_sample_name(col) for col in non_sample_columns}
+    stat_keywords = _normalized_stat_keywords()
+
+    candidate_columns = []
+    dropped_columns = []
+
+    for col in df.columns:
+        col_norm = normalize_sample_name(col)
+
+        if col_norm in non_sample_lower:
+            continue
+
+        if any(keyword and keyword in col_norm for keyword in stat_keywords):
+            dropped_columns.append(col)
+            continue
+
+        candidate_columns.append(col)
+
+    return candidate_columns, dropped_columns
 
 
 def get_sample_type_colors(sample_types: List[str]) -> List[str]:
