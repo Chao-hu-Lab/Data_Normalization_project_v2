@@ -20,8 +20,8 @@ class TestSessionOutputUtilities:
         for step, prefix in [
             (1, "ISTD_Results"),
             (2, "QC_LOESS"),
-            (3, "QC_Batch_Scaling"),
-            (4, "Normalized_PQN"),
+            (3, "Normalized_PQN"),
+            (4, "QC_Batch_Scaling"),
         ]:
             path = session_output_path(session, step=step, prefix=prefix)
             assert path.parent == session

@@ -371,13 +371,13 @@ def run_full_pipeline(sample_input_file, istd_module, qc_lowess_module,
         results['step2'] = result2
 
         if result2 and hasattr(result2, "output_path"):
-            # Step 3: QC Batch Scaling
-            result3 = qc_batch_scaling_module.main(input_file=result2.output_path, session_dir=session_dir)
+            # Step 3: Concentration Normalization
+            result3 = conc_norm_module.main(input_file=result2.output_path, session_dir=session_dir)
             results['step3'] = result3
 
             if result3 and hasattr(result3, "output_path"):
-                # Step 4: Concentration Normalization
-                result4 = conc_norm_module.main(input_file=result3.output_path, session_dir=session_dir)
+                # Step 4: QC Batch Scaling
+                result4 = qc_batch_scaling_module.main(input_file=result3.output_path, session_dir=session_dir)
                 results['step4'] = result4
 
     return results

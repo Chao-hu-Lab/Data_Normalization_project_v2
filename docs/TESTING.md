@@ -38,11 +38,11 @@ This second-layer regression suite covers:
 - generator-shape checks for `istd_degradation` and `structured_missingness`
 - Step 1 regression for `istd_degradation`
 - Step 2 regression for `nonlinear_drift` and `carryover_memory`
-- Step 4 PQN regression for `structured_missingness`
+- Step 3 PQN regression for `structured_missingness`
 - advanced generator signatures for `matrix_effect_suppression`, `istd_sample_interference`, `mixed_direction_batch_drift`, and `signal_saturation`
 - Step 1 regression for `istd_sample_interference`
-- Step 3 regression for `mixed_direction_batch_drift`
-- Step 4 PQN regression for `matrix_effect_suppression` and `signal_saturation`
+- Step 4 QC Batch Scaling regression for `mixed_direction_batch_drift`
+- Step 3 PQN regression for `matrix_effect_suppression` and `signal_saturation`
 
 Current scenario coverage in `test_scenario_smoke.py`:
 
@@ -51,10 +51,10 @@ Current scenario coverage in `test_scenario_smoke.py`:
 | `unstable_istd` | Step 1 |
 | `strong_drift` | Step 2 |
 | `random_jump` | Step 2 |
-| `order_confounding` | Step 2 and Step 4 PQN |
-| `strong_batch` | Step 3 |
-| `balanced_pipeline` | Step 4 PQN |
-| `specnorm_friendly` | Step 4 SampleSpecific |
+| `order_confounding` | Step 2 and Step 3 PQN |
+| `strong_batch` | Step 4 QC Batch Scaling |
+| `balanced_pipeline` | Step 3 PQN |
+| `specnorm_friendly` | Step 3 SpecNorm+PQN |
 
 ## Scenario Matrices
 
@@ -67,15 +67,15 @@ Common validation targets:
 - `strong_drift`: Step 2 QC-LOESS correction
 - `nonlinear_drift`: Step 2 piecewise / non-linear drift behavior
 - `carryover_memory`: Step 2 local carryover tails after strong injections
-- `order_confounding`: order-biased biology risk in Step 2 / Step 4
-- `strong_batch`: Step 3 batch alignment diagnostics
+- `order_confounding`: order-biased biology risk in Step 2 / Step 3
+- `strong_batch`: Step 4 batch alignment diagnostics
 - `structured_missingness`: Step 3 / Step 4 NaN-heavy structured missingness
 - `balanced_pipeline`: full pipeline smoke test with PQN
-- `specnorm_friendly`: Step 4 SampleSpecific / SpecNorm behavior
-- `matrix_effect_suppression`: Step 1 / Step 4 matrix-effect bias on one sample class
+- `specnorm_friendly`: Step 3 SpecNorm+PQN behavior
+- `matrix_effect_suppression`: Step 1 / Step 3 matrix-effect bias on one sample class
 - `istd_sample_interference`: Step 1 real-sample-only ISTD interference with QC looking better
-- `mixed_direction_batch_drift`: Step 2 / Step 3 opposite QC drift directions by batch
-- `signal_saturation`: Step 4 nonlinear upper-tail compression / detector saturation
+- `mixed_direction_batch_drift`: Step 2 / Step 4 opposite QC drift directions by batch
+- `signal_saturation`: Step 3 nonlinear upper-tail compression / detector saturation
 
 To regenerate the full scenario set:
 

@@ -2,7 +2,7 @@
 Adapter B: Convert DNP output → Metaboanalyst_clone input format.
 
 Transformations:
-1. Read PQN_Result sheet from DNP output
+1. Read final normalized data from QC_Batch_Scaling_result, SpecNorm_PQN_Result, or PQN_Result
 2. Remove statistical columns (Mean, SD, CV%, etc.)
 3. Write cleaned data as the FIRST sheet (Metaboanalyst reads first sheet by default)
 4. Copy SampleInfo sheet (needed for SpecNorm)
@@ -53,7 +53,7 @@ def convert_dnp_to_metaboanalyst(input_path: str, output_path: str) -> str:
     FileNotFoundError
         If input file does not exist.
     ValueError
-        If PQN result sheet is not found.
+        If no supported normalized result sheet is found.
     """
     input_path = Path(input_path)
     output_path = Path(output_path)
@@ -61,17 +61,25 @@ def convert_dnp_to_metaboanalyst(input_path: str, output_path: str) -> str:
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
-    pqn_sheet = SHEET_NAMES['pqn_result']
-
     # --- Read available sheets ---
     xls = pd.ExcelFile(str(input_path))
-    if pqn_sheet not in xls.sheet_names:
+    result_candidates = [
+        SHEET_NAMES.get('qc_batch_scaling', 'QC_Batch_Scaling_result'),
+        'SpecNorm_PQN_Result',
+        SHEET_NAMES['pqn_result'],
+    ]
+    result_sheet = next(
+        (sheet_name for sheet_name in result_candidates if sheet_name in xls.sheet_names),
+        None,
+    )
+    if result_sheet is None:
         raise ValueError(
-            f"Sheet '{pqn_sheet}' not found. Available: {xls.sheet_names}"
+            f"No supported DNP result sheet found. Tried {result_candidates}. "
+            f"Available: {xls.sheet_names}"
         )
 
-    # --- Read PQN result data ---
-    df = pd.read_excel(xls, sheet_name=pqn_sheet)
+    # --- Read final result data ---
+    df = pd.read_excel(xls, sheet_name=result_sheet)
 
     # --- Filter out statistical columns ---
     keep_cols = [FEATURE_ID_COLUMN]  # Always keep feature ID first
