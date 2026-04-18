@@ -1,57 +1,49 @@
 import os
+from copy import copy
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
-from matplotlib.lines import Line2D
 from openpyxl import load_workbook
-from sklearn.decomposition import PCA
+from openpyxl.styles import Font
+from matplotlib.lines import Line2D
 from sklearn.preprocessing import StandardScaler
 
-from metabolomics.utils.constants import COLORBLIND_COLORS, DATETIME_FORMAT_FULL, FEATURE_ID_COLUMN, SHEET_NAMES
-from metabolomics.utils.data_helpers import extract_sample_type_row, insert_sample_type_row
-from metabolomics.utils.excel_format import copy_sheet_formatting_only
-from metabolomics.utils.file_io import build_output_path, build_plots_dir
-from metabolomics.utils.plotting import (
-    build_batch_group_indices,
-    build_pca_comparison_filename,
-    build_pca_comparison_suptitle,
-    plot_pca_comparison_qc_style,
-    setup_matplotlib,
+from metabolomics.utils.constants import (
+    COLORBLIND_COLORS,
+    DATETIME_FORMAT_FULL,
+    FEATURE_ID_COLUMN,
+    NON_SAMPLE_COLUMNS,
+    SHEET_NAMES,
+    resolve_sheet_name,
 )
+from metabolomics.utils.data_helpers import extract_sample_type_row, insert_sample_type_row
+from metabolomics.utils.excel_format import (
+    apply_band_fill,
+    apply_header_fill,
+    apply_number_format,
+)
+from metabolomics.utils.file_io import build_output_path, build_plots_dir, resolve_session_dir
+from metabolomics.utils.plotting import build_batch_group_indices, setup_matplotlib
 from metabolomics.utils.results import ProcessingResult
 from metabolomics.utils.sample_classification import (
     identify_sample_columns,
     normalize_sample_name,
     normalize_sample_type,
 )
-from metabolomics.utils.statistics import calculate_hotelling_t2_outliers
 from metabolomics.utils.console import safe_print as print
 
 
 RESULT_SHEET_NAME = SHEET_NAMES.get("qc_batch_scaling", "QC_Batch_Scaling_result")
 SUMMARY_SHEET_NAME = SHEET_NAMES.get("qc_batch_scaling_summary", "QC_Batch_Scaling_summary")
-STEP3_SOURCE_LABELS = {
-    SHEET_NAMES["qc_lowess"]: "QC LOWESS result",
-    SHEET_NAMES["istd_correction"]: "ISTD Correction result",
-    SHEET_NAMES["raw_intensity"]: "RawIntensity",
-}
-STEP3_RESULT_LABEL = "QC Batch Scaling result"
 
 setup_matplotlib()
 import matplotlib.pyplot as plt
 
 
 def log_section(title):
-    """Print a compact section banner for long-running Step 3 work."""
-    print(f"\n{'=' * 70}")
-    print(title)
-    print(f"{'=' * 70}")
-
-
-def get_step3_source_label(source_sheet_name):
-    """Return a stable PCA label for the selected upstream sheet."""
-    return STEP3_SOURCE_LABELS.get(source_sheet_name, str(source_sheet_name))
+    """Print a compact section header."""
+    print(f"\n  [{title}]")
 
 
 def parse_batch_labels(value):
@@ -105,7 +97,7 @@ def scale_feature_by_batch_qc_median(feature_row, batch_to_qc, batch_to_samples)
             errors="coerce",
         )
         qc_values = qc_values[np.isfinite(qc_values) & (qc_values > 0)]
-        batch_median = float(np.median(qc_values)) if not qc_values.empty else np.nan
+        batch_median = float(np.nanmedian(qc_values)) if not qc_values.empty else np.nan
         medians[batch] = batch_median
 
         if not np.isfinite(batch_median) or batch_median <= 0:
@@ -118,19 +110,16 @@ def scale_feature_by_batch_qc_median(feature_row, batch_to_qc, batch_to_samples)
 
     for sample, candidates in sample_scaled_values.items():
         if candidates:
-            scaled[sample] = float(np.median(candidates))
+            scaled[sample] = float(np.nanmedian(candidates))
 
     return scaled, medians
 
 
 def select_source_sheet(sheet_names):
     """Pick the best upstream sheet for Step 3."""
-    for sheet_name in (
-        SHEET_NAMES["qc_lowess"],
-        SHEET_NAMES["istd_correction"],
-        SHEET_NAMES["raw_intensity"],
-    ):
-        if sheet_name in sheet_names:
+    for sheet_key in ("qc_lowess", "istd_correction", "raw_intensity"):
+        sheet_name = resolve_sheet_name(sheet_names, sheet_key)
+        if sheet_name is not None:
             return sheet_name
     raise ValueError("No supported upstream data sheet found for QC batch scaling")
 
@@ -200,9 +189,16 @@ def build_summary_df(source_sheet_name, batch_to_qc, batch_to_samples, invalid_m
     for batch in sorted(batch_to_samples):
         rows.append(
             {
-                "Section": "batch",
-                "Item": batch,
-                "Value": f"qc={len(batch_to_qc.get(batch, []))}; samples={len(batch_to_samples.get(batch, []))}; invalid_feature_medians={invalid_median_counts.get(batch, 0)}",
+                "Section": f"batch {batch}",
+                "Item": "membership",
+                "Value": f"qc={len(batch_to_qc.get(batch, []))}; samples={len(batch_to_samples.get(batch, []))}",
+            }
+        )
+        rows.append(
+            {
+                "Section": f"batch {batch}",
+                "Item": "invalid_feature_medians",
+                "Value": invalid_median_counts.get(batch, 0),
             }
         )
 
@@ -239,26 +235,6 @@ def build_plot_metadata(sample_columns, sample_info_df):
             qc_indices.append(index)
 
     return sample_types, batch_memberships, qc_indices
-
-
-def prepare_pca_matrix(df, sample_columns):
-    """Build a PCA-ready matrix from the selected sample columns."""
-    data_matrix = (
-        df[sample_columns]
-        .apply(pd.to_numeric, errors="coerce")
-        .T
-        .to_numpy(dtype=float)
-    )
-    data_matrix = np.nan_to_num(data_matrix, nan=0.0, posinf=0.0, neginf=0.0)
-    data_matrix[data_matrix < 0] = 0
-
-    non_zero_features = np.any(data_matrix != 0, axis=0)
-    data_matrix = data_matrix[:, non_zero_features]
-    if data_matrix.shape[1] < 2:
-        return None
-
-    data_matrix = np.log2(data_matrix + 1)
-    return StandardScaler().fit_transform(data_matrix)
 
 
 def prepare_residual_matrix(df, sample_columns):
@@ -381,10 +357,10 @@ def plot_batch_residual_analysis(
     )
 
     plt.suptitle("QC Batch Scaling Residual Analysis", fontsize=16, fontweight="bold", y=0.98)
-    fig.legend(
+    ax1.legend(
         handles=legend_handles,
         loc="upper center",
-        bbox_to_anchor=(0.5, 0.91),
+        bbox_to_anchor=(1.05, 1.22),
         ncol=min(4, len(legend_handles)),
         fontsize=9,
         frameon=True,
@@ -397,7 +373,203 @@ def plot_batch_residual_analysis(
     return fig
 
 
-def generate_pca_plots(
+def calculate_batch_qc_feature_medians(df, batch_to_qc):
+    """Calculate per-feature QC medians for each batch."""
+    medians = {}
+    for batch, qc_samples in batch_to_qc.items():
+        valid_qc_samples = [sample for sample in qc_samples if sample in df.columns]
+        if not valid_qc_samples:
+            continue
+        qc_matrix = df[valid_qc_samples].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+        qc_matrix = np.where(qc_matrix > 0, qc_matrix, np.nan)
+        batch_feature_medians = np.nanmedian(qc_matrix, axis=1)
+        batch_feature_medians = batch_feature_medians[np.isfinite(batch_feature_medians) & (batch_feature_medians > 0)]
+        if len(batch_feature_medians):
+            medians[batch] = batch_feature_medians
+    return medians
+
+
+def plot_batch_qc_median_alignment(
+    feature_medians_before,
+    feature_medians_after,
+    *,
+    output_path=None,
+    dpi=300,
+):
+    """Plot batch-wise QC median alignment before and after scaling."""
+    batches = sorted(set(feature_medians_before) & set(feature_medians_after))
+    if len(batches) < 2:
+        return None
+
+    before_summary = []
+    after_summary = []
+    for batch in batches:
+        before_log = np.log2(np.asarray(feature_medians_before[batch], dtype=float))
+        after_log = np.log2(np.asarray(feature_medians_after[batch], dtype=float))
+        before_summary.append(
+            (
+                np.nanmedian(before_log),
+                np.nanpercentile(before_log, 25),
+                np.nanpercentile(before_log, 75),
+            )
+        )
+        after_summary.append(
+            (
+                np.nanmedian(after_log),
+                np.nanpercentile(after_log, 25),
+                np.nanpercentile(after_log, 75),
+            )
+        )
+
+    x = np.arange(len(batches), dtype=float)
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    before_medians = np.array([row[0] for row in before_summary], dtype=float)
+    after_medians = np.array([row[0] for row in after_summary], dtype=float)
+    before_err = np.vstack([
+        before_medians - np.array([row[1] for row in before_summary], dtype=float),
+        np.array([row[2] for row in before_summary], dtype=float) - before_medians,
+    ])
+    after_err = np.vstack([
+        after_medians - np.array([row[1] for row in after_summary], dtype=float),
+        np.array([row[2] for row in after_summary], dtype=float) - after_medians,
+    ])
+
+    ax.errorbar(
+        x - 0.08,
+        before_medians,
+        yerr=before_err,
+        color="#c44e52",
+        marker="o",
+        linewidth=2,
+        capsize=4,
+        label="Before",
+    )
+    ax.errorbar(
+        x + 0.08,
+        after_medians,
+        yerr=after_err,
+        color="#55a868",
+        marker="o",
+        linewidth=2,
+        capsize=4,
+        label="After",
+    )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"Batch {batch}" for batch in batches], fontsize=10)
+    ax.set_ylabel("Median log2(QC feature median intensity)", fontsize=11, fontweight="bold")
+    ax.set_title("Batch QC Median Alignment", fontsize=15, fontweight="bold")
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.legend(fontsize=10)
+    plt.tight_layout()
+
+    if output_path is not None:
+        plt.savefig(output_path, dpi=dpi, bbox_inches="tight")
+
+    return fig
+
+
+def calculate_sample_log_medians(df, sample_columns):
+    """Summarize each sample by the median log2 intensity across features."""
+    if not sample_columns:
+        return {}
+
+    data_matrix = df[sample_columns].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    data_matrix = np.where(data_matrix > 0, np.log2(data_matrix), np.nan)
+    sample_medians = np.nanmedian(data_matrix, axis=0)
+
+    result = {}
+    for sample, median in zip(sample_columns, sample_medians):
+        if np.isfinite(median):
+            result[sample] = float(median)
+    return result
+
+
+def plot_batch_boxplot(
+    source_df,
+    result_df,
+    sample_columns,
+    batch_memberships,
+    *,
+    output_path=None,
+    dpi=300,
+):
+    """Plot sample-level intensity distributions grouped by batch."""
+    batch_groups = build_batch_group_indices(batch_memberships)
+    if len(batch_groups) < 2:
+        return None
+
+    sample_medians_before = calculate_sample_log_medians(source_df, sample_columns)
+    sample_medians_after = calculate_sample_log_medians(result_df, sample_columns)
+    ordered_batches = list(batch_groups.keys())
+    before_data = []
+    after_data = []
+
+    for batch in ordered_batches:
+        indices = batch_groups[batch]
+        before_values = [
+            sample_medians_before[sample_columns[index]]
+            for index in indices
+            if sample_columns[index] in sample_medians_before
+        ]
+        after_values = [
+            sample_medians_after[sample_columns[index]]
+            for index in indices
+            if sample_columns[index] in sample_medians_after
+        ]
+        if before_values and after_values:
+            before_data.append(before_values)
+            after_data.append(after_values)
+        else:
+            before_data.append([])
+            after_data.append([])
+
+    if sum(bool(values) for values in before_data) < 2 or sum(bool(values) for values in after_data) < 2:
+        return None
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+    positions = np.arange(1, len(ordered_batches) + 1)
+
+    for ax, dataset, title, color in (
+        (ax1, before_data, "Before Scaling", "#c9d6df"),
+        (ax2, after_data, "After Scaling", "#bfe3c0"),
+    ):
+        safe_dataset = [values if values else [np.nan] for values in dataset]
+        box = ax.boxplot(
+            safe_dataset,
+            positions=positions,
+            patch_artist=True,
+            widths=0.6,
+            medianprops=dict(color="#222222", linewidth=2),
+        )
+        for patch in box["boxes"]:
+            patch.set_facecolor(color)
+            patch.set_alpha(0.85)
+
+        for pos, values in zip(positions, dataset):
+            if not values:
+                continue
+            jitter = np.random.uniform(-0.08, 0.08, size=len(values))
+            ax.scatter(np.full(len(values), pos) + jitter, values, color="#4c4c4c", alpha=0.55, s=20)
+
+        ax.set_title(title, fontsize=13, fontweight="bold")
+        ax.set_xticks(positions)
+        ax.set_xticklabels([f"Batch {batch}" for batch in ordered_batches], rotation=0)
+        ax.grid(True, axis="y", alpha=0.25)
+        ax.set_xlabel("Batch", fontsize=11, fontweight="bold")
+
+    ax1.set_ylabel("Sample median log2(intensity)", fontsize=11, fontweight="bold")
+    fig.suptitle("Batch-wise Sample Distribution", fontsize=16, fontweight="bold", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+    if output_path is not None:
+        plt.savefig(output_path, dpi=dpi, bbox_inches="tight")
+
+    return fig
+
+
+def generate_step3_plots(
     source_df,
     result_df,
     sample_columns,
@@ -405,9 +577,9 @@ def generate_pca_plots(
     input_file,
     timestamp,
     plots_dir=None,
-    source_sheet_name=None,
 ):
-    """Generate before/after PCA plots for QC Batch Scaling."""
+    """Generate diagnostic plots for QC Batch Scaling."""
+    created_figures = []
     if plots_dir is None:
         plots_dir = build_plots_dir(
             "QC_Batch_Scaling_plots",
@@ -419,112 +591,44 @@ def generate_pca_plots(
     if len(sample_columns) < 3:
         return str(plots_dir)
 
-    source_label = get_step3_source_label(source_sheet_name or SHEET_NAMES["qc_lowess"])
-    source_matrix = prepare_pca_matrix(source_df, sample_columns)
-    result_matrix = prepare_pca_matrix(result_df, sample_columns)
-    if source_matrix is None or result_matrix is None:
-        return str(plots_dir)
-
-    pca_source = PCA(n_components=2)
-    pca_result = PCA(n_components=2)
-    scores_source = pca_source.fit_transform(source_matrix)
-    scores_result = pca_result.fit_transform(result_matrix)
-    var_source = pca_source.explained_variance_ratio_
-    var_result = pca_result.explained_variance_ratio_
-
-    sample_types, batch_memberships, qc_indices = build_plot_metadata(sample_columns, sample_info_df)
-    qc_sample_names = [sample_columns[i] for i in qc_indices]
+    batch_to_qc, _ = build_batch_membership(sample_info_df, sample_columns=sample_columns)
+    _, batch_memberships, _ = build_plot_metadata(sample_columns, sample_info_df)
     unique_batches = sorted({batch for memberships in batch_memberships for batch in memberships if batch})
 
-    if len(qc_indices) >= 3:
-        qc_scores_source = scores_source[qc_indices]
-        qc_scores_result = scores_result[qc_indices]
-        _, source_threshold, source_outliers = calculate_hotelling_t2_outliers(
-            qc_scores_source, scores_source, alpha=0.05
-        )
-        _, result_threshold, result_outliers = calculate_hotelling_t2_outliers(
-            qc_scores_result, scores_result, alpha=0.05
-        )
-        qc_outliers_left = {
-            qc_sample_names[i] for i in range(len(qc_sample_names)) if i < len(source_outliers) and source_outliers[i]
-        }
-        qc_outliers_right = {
-            qc_sample_names[i] for i in range(len(qc_sample_names)) if i < len(result_outliers) and result_outliers[i]
-        }
-    else:
-        source_threshold = np.nan
-        result_threshold = np.nan
-        qc_outliers_left = set()
-        qc_outliers_right = set()
+    if len(unique_batches) < 2:
+        print("  - 只有單一 batch，跳過 Step 3 batch diagnostics")
+        return str(plots_dir)
 
-    batch_plot_path = None
-    if len(unique_batches) >= 2:
-        print("  - 生成 Fig1: PCA by batch")
-        batch_plot_path = os.path.join(
-            plots_dir,
-            build_pca_comparison_filename(
-                "Step3",
-                source_label,
-                STEP3_RESULT_LABEL,
-                grouping="batch",
-                timestamp=timestamp,
-            ),
+    qc_feature_medians_before = calculate_batch_qc_feature_medians(source_df, batch_to_qc)
+    qc_feature_medians_after = calculate_batch_qc_feature_medians(result_df, batch_to_qc)
+    if len(qc_feature_medians_before) >= 2 and len(qc_feature_medians_after) >= 2:
+        print("  - 生成 Fig1: Batch QC median alignment")
+        alignment_plot_path = os.path.join(plots_dir, f"Step3_Batch_QC_Median_Alignment_{timestamp}.png")
+        fig = plot_batch_qc_median_alignment(
+            qc_feature_medians_before,
+            qc_feature_medians_after,
+            output_path=alignment_plot_path,
+            dpi=300,
         )
-        plot_pca_comparison_qc_style(
-        scores_source,
-        scores_result,
-        var_source,
-        var_result,
-        sample_columns,
-        sample_types,
-        batch_memberships=batch_memberships,
-        grouping="batch",
-        suptitle=build_pca_comparison_suptitle(source_label, STEP3_RESULT_LABEL, grouping="batch"),
-        left_title=source_label,
-        right_title=STEP3_RESULT_LABEL,
-        left_threshold_text=(f"Hotelling T² Threshold: {source_threshold:.2f}" if len(qc_indices) >= 3 else None),
-        right_threshold_text=(f"Hotelling T² Threshold: {result_threshold:.2f}" if len(qc_indices) >= 3 else None),
-        qc_outlier_names_left=qc_outliers_left,
-        qc_outlier_names_right=qc_outliers_right,
-        output_path=batch_plot_path,
-        dpi=300,
-        )
-    else:
-        print("  - 只有單一 batch，跳過 Fig1_PCA_by_batch")
+        if fig is not None:
+            created_figures.append(fig)
 
-    print("  - 生成 Fig2: PCA by sample type")
-    sample_type_plot_path = os.path.join(
-        plots_dir,
-        build_pca_comparison_filename(
-            "Step3",
-            source_label,
-            STEP3_RESULT_LABEL,
-            grouping="sample_type",
-            timestamp=timestamp,
-        ),
-    )
-    plot_pca_comparison_qc_style(
-        scores_source,
-        scores_result,
-        var_source,
-        var_result,
+    print("  - 生成 Fig2: Batch boxplot")
+    batch_boxplot_path = os.path.join(plots_dir, f"Step3_Batch_Boxplot_{timestamp}.png")
+    fig = plot_batch_boxplot(
+        source_df,
+        result_df,
         sample_columns,
-        sample_types,
-        grouping="sample_type",
-        suptitle=build_pca_comparison_suptitle(source_label, STEP3_RESULT_LABEL, grouping="sample_type"),
-        left_title=source_label,
-        right_title=STEP3_RESULT_LABEL,
-        left_threshold_text=(f"Hotelling T² Threshold: {source_threshold:.2f}" if len(qc_indices) >= 3 else None),
-        right_threshold_text=(f"Hotelling T² Threshold: {result_threshold:.2f}" if len(qc_indices) >= 3 else None),
-        qc_outlier_names_left=qc_outliers_left,
-        qc_outlier_names_right=qc_outliers_right,
-        output_path=sample_type_plot_path,
+        batch_memberships,
+        output_path=batch_boxplot_path,
         dpi=300,
     )
+    if fig is not None:
+        created_figures.append(fig)
 
     residual_source = prepare_residual_matrix(source_df, sample_columns)
     residual_result = prepare_residual_matrix(result_df, sample_columns)
-    if residual_source is not None and residual_result is not None and len(unique_batches) >= 2:
+    if residual_source is not None and residual_result is not None:
         residuals_before = calculate_batch_residuals(
             residual_source,
             sample_columns,
@@ -538,16 +642,23 @@ def generate_pca_plots(
         if residuals_before and residuals_after:
             print("  - 生成 Fig3: Residual analysis")
             residual_plot_path = os.path.join(plots_dir, f"Step3_Residual_Analysis_{timestamp}.png")
-            plot_batch_residual_analysis(
+            fig = plot_batch_residual_analysis(
                 residuals_before,
                 residuals_after,
                 output_path=residual_plot_path,
                 dpi=300,
             )
-    elif len(unique_batches) < 2:
-        print("  - 只有單一 batch，跳過 Fig3_Residual_Analysis")
+            if fig is not None:
+                created_figures.append(fig)
 
+    for fig in created_figures:
+        plt.close(fig)
     return str(plots_dir)
+
+
+def generate_pca_plots(*args, **kwargs):
+    """Backward-compatible alias for the Step 3 diagnostics entry point."""
+    return generate_step3_plots(*args, **kwargs)
 
 
 def save_results_to_excel(
@@ -582,15 +693,59 @@ def save_results_to_excel(
         result_export.to_excel(writer, sheet_name=RESULT_SHEET_NAME, index=False)
         summary_df.to_excel(writer, sheet_name=SUMMARY_SHEET_NAME, index=False)
 
-    original_wb = load_workbook(input_file)
-    new_wb = load_workbook(output_file)
-    try:
-        if source_sheet_name in original_wb.sheetnames and source_sheet_name in new_wb.sheetnames:
-            copy_sheet_formatting_only(original_wb[source_sheet_name], new_wb[source_sheet_name])
-        new_wb.save(output_file)
-    finally:
-        original_wb.close()
-        new_wb.close()
+    workbook = load_workbook(output_file)
+    scientific_format = "0.00E+00"
+
+    for sheet_name in [source_sheet_name, RESULT_SHEET_NAME]:
+        if sheet_name not in workbook.sheetnames:
+            continue
+        worksheet = workbook[sheet_name]
+        header = [cell.value for cell in worksheet[1]]
+        header_map = {name: idx + 1 for idx, name in enumerate(header) if name}
+        apply_header_fill(worksheet)
+        for col_name in header:
+            if not col_name or col_name in NON_SAMPLE_COLUMNS:
+                continue
+            apply_number_format(worksheet, header_map[col_name], scientific_format)
+
+    if SHEET_NAMES["sample_info"] in workbook.sheetnames:
+        apply_header_fill(workbook[SHEET_NAMES["sample_info"]])
+
+    if SUMMARY_SHEET_NAME in workbook.sheetnames:
+        worksheet = workbook[SUMMARY_SHEET_NAME]
+        apply_header_fill(worksheet)
+
+        header = [cell.value for cell in worksheet[1]]
+        header_map = {name: idx + 1 for idx, name in enumerate(header) if name}
+        item_col_idx = header_map.get("Item")
+        value_col_idx = header_map.get("Value")
+        section_col_idx = header_map.get("Section")
+
+        if section_col_idx:
+            for cell in worksheet.iter_cols(
+                min_col=section_col_idx,
+                max_col=section_col_idx,
+                min_row=2,
+                max_row=worksheet.max_row,
+            ):
+                for item_cell in cell:
+                    updated_font = copy(item_cell.font) if item_cell.font is not None else Font()
+                    updated_font.bold = True
+                    item_cell.font = updated_font
+
+        if item_col_idx and value_col_idx:
+            for row_idx in range(2, worksheet.max_row + 1):
+                if worksheet.cell(row=row_idx, column=item_col_idx).value == "invalid_feature_medians":
+                    apply_band_fill(
+                        worksheet,
+                        value_col_idx,
+                        excellent=0.5,
+                        acceptable=5.5,
+                        min_row=row_idx,
+                        max_row=row_idx,
+                    )
+
+    workbook.save(output_file)
 
 
 def main(input_file=None, session_dir=None):
@@ -619,6 +774,16 @@ def main(input_file=None, session_dir=None):
             f"samples={len(batch_to_samples.get(batch, []))}"
         )
 
+    if len(batch_to_samples) <= 1:
+        print("⚠ 只有單一 batch，跳過 QC Batch Scaling（無需跨批次校正）")
+        return ProcessingResult(
+            file_path=input_file,
+            output_path=input_file,
+            metabolites=len(data_df),
+            samples=len(sample_columns),
+            extra={"batches": len(batch_to_samples), "skipped": True, "skip_reason": "single_batch"},
+        )
+
     log_section("執行 QC batch median scaling")
     result_df, invalid_median_counts = scale_dataframe_by_qc_medians(
         data_df, sample_columns, batch_to_qc, batch_to_samples
@@ -630,6 +795,7 @@ def main(input_file=None, session_dir=None):
         for batch in sorted(invalid_median_counts):
             print(f"  - Batch {batch}: {invalid_median_counts[batch]}")
 
+    session_dir = resolve_session_dir(input_file=input_file, session_dir=session_dir)
     timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
     if session_dir is not None:
         from metabolomics.utils.file_io import session_output_path, session_plots_dir
@@ -637,10 +803,10 @@ def main(input_file=None, session_dir=None):
         _plots_dir = str(session_plots_dir(session_dir))
     else:
         output_file = build_output_path("QC_Batch_Scaling", input_file=input_file, timestamp=timestamp)
-        _plots_dir = None  # let generate_pca_plots create its own
+        _plots_dir = None  # let generate_step3_plots create its own
 
-    log_section("生成 PCA / residual 圖")
-    plots_dir = generate_pca_plots(
+    log_section("生成 residual 分析圖")
+    plots_dir = generate_step3_plots(
         data_df,
         result_df,
         sample_columns,
@@ -648,7 +814,6 @@ def main(input_file=None, session_dir=None):
         input_file,
         timestamp,
         plots_dir=_plots_dir,
-        source_sheet_name=source_sheet_name,
     )
     log_section("寫出 Step 3 Excel")
     save_results_to_excel(
@@ -661,11 +826,7 @@ def main(input_file=None, session_dir=None):
         source_sheet_name,
         sample_type_row=sample_type_row,
     )
-    log_section("Step 3 完成")
-    print(f"輸出檔案: {output_file}")
-    print(f"圖表資料夾: {plots_dir}")
-    print(f"保留來源工作表: {source_sheet_name}")
-    print(f"新增工作表: {RESULT_SHEET_NAME}, {SUMMARY_SHEET_NAME}")
+    print(f"\n  ✓ QC Batch Scaling 完成 → {os.path.basename(str(output_file))}")
 
     return ProcessingResult(
         file_path=input_file,

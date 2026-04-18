@@ -4,6 +4,7 @@ Excel file I/O utilities for metabolomics data processing.
 Provides output path generation, directory management, and column validation helpers.
 """
 from datetime import datetime
+import os
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -11,6 +12,14 @@ from typing import Dict, Optional, Tuple, List
 from pathlib import Path
 
 from .constants import VALIDATION_THRESHOLDS, DATETIME_FORMAT_FULL
+
+
+TEST_MATRIX_SUBDIRS = {"scenario_matrices", "test_matrices"}
+
+
+def is_pytest_running() -> bool:
+    """Return True when code is executing inside pytest."""
+    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 def get_project_root() -> Path:
     """
@@ -41,10 +50,95 @@ def infer_output_root_from_input(input_file: Optional[str] = None) -> Optional[P
         return None
 
     search_start = input_path if input_path.is_dir() else input_path.parent
+
+    for parent in (search_start, *search_start.parents):
+        if parent.name.startswith("run_"):
+            output_root = parent.parent
+            output_root.mkdir(parents=True, exist_ok=True)
+            return output_root
+
     for parent in (search_start, *search_start.parents):
         if parent.name == "output":
-            parent.mkdir(parents=True, exist_ok=True)
+            search_start.mkdir(parents=True, exist_ok=True)
+            return search_start
+
+    return None
+
+
+def infer_isolated_output_root_from_input(input_file: Optional[str] = None) -> Optional[Path]:
+    """
+    Route repository test/scenario inputs to a dedicated output subtree.
+
+    This keeps synthetic validation runs separate from regular user analyses.
+    """
+    if not input_file:
+        return None
+
+    input_path = Path(input_file).resolve()
+    if not input_path.exists():
+        return None
+
+    project_root = get_project_root().resolve()
+    try:
+        relative_path = input_path.relative_to(project_root)
+    except ValueError:
+        if is_pytest_running():
+            return project_root / "output" / "test_data_runs" / input_path.stem
+        return None
+
+    relative_parts = relative_path.parts[:-1] if input_path.is_file() else relative_path.parts
+    if len(relative_parts) >= 2 and relative_parts[0] == "data" and relative_parts[1] in TEST_MATRIX_SUBDIRS:
+        return project_root / "output" / "test_data_runs" / input_path.stem
+
+    if is_pytest_running() and relative_parts and relative_parts[0] == "data":
+        return project_root / "output" / "test_data_runs" / input_path.stem
+
+    if relative_parts and relative_parts[0] == "tests":
+        return project_root / "output" / "test_data_runs" / input_path.stem
+
+    return None
+
+
+def infer_session_dir_from_input(input_file: Optional[str] = None) -> Optional[Path]:
+    """
+    Reuse an existing session directory when the upstream file already lives in one.
+    """
+    if not input_file:
+        return None
+
+    input_path = Path(input_file).resolve()
+    if not input_path.exists():
+        return None
+
+    search_start = input_path if input_path.is_dir() else input_path.parent
+    for parent in (search_start, *search_start.parents):
+        if parent.name.startswith("run_") and (parent / "plots").exists():
             return parent
+
+    return None
+
+
+def resolve_session_dir(
+    input_file: Optional[str] = None,
+    session_dir: Optional[Path] = None,
+) -> Optional[Path]:
+    """
+    Resolve the effective session directory for a pipeline run.
+
+    Priority:
+    1. Explicit ``session_dir``
+    2. Reuse the upstream run directory when input already belongs to a session
+    3. Under pytest, auto-create a session so tests use step-scoped outputs
+    """
+    if session_dir is not None:
+        return Path(session_dir)
+
+    inferred_session = infer_session_dir_from_input(input_file=input_file)
+    if inferred_session is not None:
+        return inferred_session
+
+    if is_pytest_running():
+        return create_session_dir(output_root=get_output_root(input_file=input_file))
 
     return None
 
@@ -54,6 +148,8 @@ def get_output_root(input_file: Optional[str] = None) -> Path:
     Return the project-level output directory and ensure it exists.
     """
     output_root = infer_output_root_from_input(input_file)
+    if output_root is None:
+        output_root = infer_isolated_output_root_from_input(input_file)
     if output_root is None:
         output_root = get_project_root() / "output"
     output_root.mkdir(parents=True, exist_ok=True)

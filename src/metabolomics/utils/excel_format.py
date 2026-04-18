@@ -1,52 +1,179 @@
-"""Excel 格式複製工具函式。
-
-提供工作表格式複製功能，用於在 pandas 寫入 Excel 後保留原始格式
-（如 ISTD 紅色標記、border、alignment、number_format 等）。
-"""
+"""Excel formatting helpers shared across pipeline steps."""
 
 from copy import copy
+import math
+
+from openpyxl.styles import Font, PatternFill
+
+from .constants import CV_QUALITY_THRESHOLDS, VALIDATION_THRESHOLDS
 
 
-def copy_cell_style(src_cell, tgt_cell):
-    """複製單一儲存格的所有樣式（font, border, fill, number_format, protection, alignment）"""
-    if src_cell.has_style:
-        tgt_cell.font = copy(src_cell.font)
-        tgt_cell.border = copy(src_cell.border)
-        tgt_cell.fill = copy(src_cell.fill)
-        tgt_cell.number_format = src_cell.number_format
-        tgt_cell.protection = copy(src_cell.protection)
-        tgt_cell.alignment = copy(src_cell.alignment)
+PASS_FILL = PatternFill(fgColor="C6EFCE", fill_type="solid")
+WARN_FILL = PatternFill(fgColor="FFEB9C", fill_type="solid")
+FAIL_FILL = PatternFill(fgColor="FFC7CE", fill_type="solid")
+SIG_FILL = PatternFill(fgColor="BDD7EE", fill_type="solid")
+NO_FILL = PatternFill(fill_type=None)
+
+HEADER_FILL = PatternFill(fgColor="D9E1F2", fill_type="solid")
+SECTION_TITLE_FILL = PatternFill(fgColor="B7D7F0", fill_type="solid")
+SECTION_DIVIDER_FILL = PatternFill(fgColor="D9E1F2", fill_type="solid")
+SECTION_LABEL_FILL = PatternFill(fgColor="F2F2F2", fill_type="solid")
+
+PASS_FONT_COLOR = "276321"
+WARN_FONT_COLOR = "9C5700"
+FAIL_FONT_COLOR = "9C0006"
+STRUCTURE_FONT_COLOR = "1F3864"
+
+def _coerce_numeric(value):
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
 
 
-def copy_sheet_with_style(src_ws, tgt_ws):
-    """複製工作表的所有儲存格值與格式，含列寬、行高、合併儲存格。"""
-    for row in src_ws.iter_rows():
-        for cell in row:
-            new_cell = tgt_ws.cell(row=cell.row, column=cell.column, value=cell.value)
-            copy_cell_style(cell, new_cell)
-
-    # 列寬
-    for col_letter, col_dim in src_ws.column_dimensions.items():
-        tgt_ws.column_dimensions[col_letter].width = col_dim.width
-
-    # 行高
-    for row_num, row_dim in src_ws.row_dimensions.items():
-        tgt_ws.row_dimensions[row_num].height = row_dim.height
-
-    # 合併儲存格
-    for merged_range in src_ws.merged_cells.ranges:
-        tgt_ws.merge_cells(str(merged_range))
+def _copy_font(cell):
+    if cell.has_style and cell.font is not None:
+        return copy(cell.font)
+    return Font()
 
 
-def copy_sheet_formatting_only(src_ws, tgt_ws):
-    """只複製格式（不覆蓋值），用於 pandas 寫入後補回格式。
+def _apply_style(cell, fill=None, font_color=None, bold=None, size=None, alignment=None):
+    if fill is not None:
+        cell.fill = copy(fill)
 
-    以 src_ws 的 max_row/max_column 為範圍，逐格複製格式到 tgt_ws 的相同位置。
-    適用於：pandas 已寫入正確的值，但格式（紅色 ISTD 標記等）遺失的情況。
-    """
-    for row in range(1, src_ws.max_row + 1):
-        for col_idx in range(1, src_ws.max_column + 1):
-            src_cell = src_ws.cell(row=row, column=col_idx)
-            if src_cell.has_style:
-                tgt_cell = tgt_ws.cell(row=row, column=col_idx)
-                copy_cell_style(src_cell, tgt_cell)
+    if any(option is not None for option in (font_color, bold, size)):
+        font = _copy_font(cell)
+        if font_color is not None:
+            font.color = font_color
+        if bold is not None:
+            font.bold = bold
+        if size is not None:
+            font.size = size
+        cell.font = font
+
+    if alignment is not None:
+        cell.alignment = copy(alignment)
+
+
+def _iter_column_cells(worksheet, col_idx, min_row=2, max_row=None):
+    final_row = max_row or worksheet.max_row
+    for row in worksheet.iter_rows(
+        min_row=min_row,
+        max_row=final_row,
+        min_col=col_idx,
+        max_col=col_idx,
+    ):
+        yield row[0]
+
+
+def _resolve_status_style(style_key):
+    style_map = {
+        "pass": (PASS_FILL, PASS_FONT_COLOR),
+        "warn": (WARN_FILL, WARN_FONT_COLOR),
+        "fail": (FAIL_FILL, FAIL_FONT_COLOR),
+        "sig": (SIG_FILL, None),
+        "none": (NO_FILL, None),
+    }
+    return style_map.get(style_key, (None, None))
+
+
+def apply_header_fill(
+    worksheet,
+    fill_color="D9E1F2",
+    row_idx=1,
+    min_col=1,
+    max_col=None,
+    font_size=11,
+):
+    """Apply a standard header fill + bold to a worksheet row."""
+    final_max_col = max_col or worksheet.max_column
+    fill = HEADER_FILL if fill_color == "D9E1F2" else PatternFill(fgColor=fill_color, fill_type="solid")
+    for cell in worksheet[row_idx][min_col - 1:final_max_col]:
+        _apply_style(cell, fill=fill, bold=True, size=font_size)
+
+
+def apply_band_fill(
+    worksheet,
+    col_idx,
+    excellent,
+    acceptable,
+    *,
+    min_row=2,
+    max_row=None,
+    higher_is_better=False,
+    use_abs=False,
+):
+    """Apply PASS/WARN/FAIL colors based on numeric thresholds."""
+    for cell in _iter_column_cells(worksheet, col_idx, min_row=min_row, max_row=max_row):
+        numeric = _coerce_numeric(cell.value)
+        if numeric is None:
+            continue
+        value = abs(numeric) if use_abs else numeric
+        if higher_is_better:
+            style_key = "pass" if value >= excellent else "warn" if value >= acceptable else "fail"
+        else:
+            style_key = "pass" if value < excellent else "warn" if value < acceptable else "fail"
+        fill, font_color = _resolve_status_style(style_key)
+        _apply_style(cell, fill=fill, font_color=font_color)
+
+
+def apply_cv_quality_fill(worksheet, col_idx, thresholds=None, min_row=2, max_row=None):
+    """Apply PASS/WARN/FAIL styling to CV-like columns."""
+    thresholds = thresholds or CV_QUALITY_THRESHOLDS
+    apply_band_fill(
+        worksheet,
+        col_idx,
+        excellent=thresholds["excellent"],
+        acceptable=thresholds["acceptable"],
+        min_row=min_row,
+        max_row=max_row,
+    )
+
+
+def apply_improvement_fill(worksheet, col_idx, threshold=5.0, min_row=2, max_row=None):
+    """Apply IMPROVE/NEUTRAL/DEGRADE styling to delta metrics."""
+    for cell in _iter_column_cells(worksheet, col_idx, min_row=min_row, max_row=max_row):
+        numeric = _coerce_numeric(cell.value)
+        if numeric is None:
+            continue
+        if numeric > threshold:
+            style_key = "pass"
+        elif numeric < -threshold:
+            style_key = "fail"
+        else:
+            style_key = "warn"
+        fill, font_color = _resolve_status_style(style_key)
+        _apply_style(cell, fill=fill, font_color=font_color)
+
+
+def apply_significance_fill(worksheet, col_idx, alpha=None, min_row=2, max_row=None):
+    """Fill significant p/q values with the shared significance color."""
+    alpha = VALIDATION_THRESHOLDS["alpha"] if alpha is None else alpha
+    for cell in _iter_column_cells(worksheet, col_idx, min_row=min_row, max_row=max_row):
+        numeric = _coerce_numeric(cell.value)
+        if numeric is None:
+            continue
+        if numeric < alpha:
+            _apply_style(cell, fill=SIG_FILL)
+        else:
+            _apply_style(cell, fill=NO_FILL)
+
+
+def apply_status_fill(worksheet, col_idx, status_map, min_row=2, max_row=None):
+    """Apply styles according to the cell text value."""
+    for cell in _iter_column_cells(worksheet, col_idx, min_row=min_row, max_row=max_row):
+        style_key = status_map.get(cell.value)
+        if style_key is None:
+            continue
+        fill, font_color = _resolve_status_style(style_key)
+        _apply_style(cell, fill=fill, font_color=font_color)
+
+
+def apply_number_format(worksheet, col_idx, fmt, min_row=2, max_row=None):
+    """Apply a number format to numeric cells only."""
+    for cell in _iter_column_cells(worksheet, col_idx, min_row=min_row, max_row=max_row):
+        if _coerce_numeric(cell.value) is not None:
+            cell.number_format = fmt
