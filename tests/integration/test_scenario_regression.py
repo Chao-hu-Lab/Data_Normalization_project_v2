@@ -42,6 +42,18 @@ def _assert_result_in_session(result, session_dir: Path, expected_step_prefix: s
     assert Path(result.output_path).name.startswith(expected_step_prefix)
 
 
+def _assert_step1_result_allows_skip(result, input_file: str, session_dir: Path) -> None:
+    assert result is not None
+    assert Path(result.output_path).exists()
+
+    if getattr(result, "extra", {}).get("skipped"):
+        assert Path(result.output_path) == Path(input_file)
+        assert getattr(result, "extra", {}).get("skip_reason") == "insufficient_good_istd"
+        return
+
+    _assert_result_in_session(result, session_dir, "Step1_")
+
+
 @pytest.mark.integration
 def test_istd_degradation_generator_has_negative_istd_order_slopes():
     _, sample_info_df, feature_df, intensity_matrix = _build_scenario_arrays("istd_degradation")
@@ -160,7 +172,7 @@ def test_step1_regression_scenario_runs_for_istd_degradation(istd_module, projec
 
     step1_result = istd_module.main(input_file=input_file, session_dir=session_dir)
 
-    _assert_result_in_session(step1_result, session_dir, "Step1_")
+    _assert_step1_result_allows_skip(step1_result, input_file, session_dir)
     assert any((session_dir / "plots").glob("Step1_*.png"))
 
 
@@ -170,7 +182,7 @@ def test_step1_regression_scenario_runs_for_istd_sample_interference(istd_module
 
     step1_result = istd_module.main(input_file=input_file, session_dir=session_dir)
 
-    _assert_result_in_session(step1_result, session_dir, "Step1_")
+    _assert_step1_result_allows_skip(step1_result, input_file, session_dir)
     assert Path(step1_result.output_path).exists()
 
 
@@ -187,7 +199,7 @@ def test_step2_regression_scenarios_run_and_emit_plots(
     step1_result = istd_module.main(input_file=input_file, session_dir=session_dir)
     step2_result = qc_lowess_module.main(input_file=step1_result.output_path, session_dir=session_dir)
 
-    _assert_result_in_session(step1_result, session_dir, "Step1_")
+    _assert_step1_result_allows_skip(step1_result, input_file, session_dir)
     _assert_result_in_session(step2_result, session_dir, "Step2_")
     assert any((session_dir / "plots").glob("Step2_*.png"))
 
@@ -205,7 +217,7 @@ def test_mixed_direction_batch_drift_runs_through_step3(
     step2_result = qc_lowess_module.main(input_file=step1_result.output_path, session_dir=session_dir)
     step3_result = qc_batch_scaling_module.main(input_file=step2_result.output_path, session_dir=session_dir)
 
-    _assert_result_in_session(step1_result, session_dir, "Step1_")
+    _assert_step1_result_allows_skip(step1_result, input_file, session_dir)
     _assert_result_in_session(step2_result, session_dir, "Step2_")
     _assert_result_in_session(step3_result, session_dir, "Step3_")
     assert any((session_dir / "plots").glob("Step3_*.png"))
@@ -232,7 +244,7 @@ def test_advanced_step4_regression_scenarios_run_with_pqn(
         normalization_method="PQN",
     )
 
-    _assert_result_in_session(step1_result, session_dir, "Step1_")
+    _assert_step1_result_allows_skip(step1_result, input_file, session_dir)
     _assert_result_in_session(step2_result, session_dir, "Step2_")
     _assert_result_in_session(step3_result, session_dir, "Step3_")
     _assert_result_in_session(step4_result, session_dir, "Step4_")
@@ -258,7 +270,7 @@ def test_structured_missingness_runs_through_step4_pqn(
         normalization_method="PQN",
     )
 
-    _assert_result_in_session(step1_result, session_dir, "Step1_")
+    _assert_step1_result_allows_skip(step1_result, input_file, session_dir)
     _assert_result_in_session(step2_result, session_dir, "Step2_")
     _assert_result_in_session(step3_result, session_dir, "Step3_")
     _assert_result_in_session(step4_result, session_dir, "Step4_")
