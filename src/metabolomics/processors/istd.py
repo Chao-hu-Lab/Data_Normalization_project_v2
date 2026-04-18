@@ -83,10 +83,10 @@ def load_and_process_data(file_path):
             excel_file = pd.ExcelFile(file_path)
         except Exception as e:
             raise ValueError(f"錯誤：無法讀取 Excel 檔案，可能已損壞或格式不正確。詳細錯誤: {e}") from e
-        
+
         # 讀取所有工作表，儲存為字典 {sheet_name: df}
         all_sheets = {sheet: pd.read_excel(excel_file, sheet_name=sheet) for sheet in excel_file.sheet_names}
-        
+
         # ===== 防呆5: 必要工作表检查 =====
         required_sheets = [SHEET_NAMES['raw_intensity'], SHEET_NAMES['sample_info']]
         missing_sheets = [sheet for sheet in required_sheets if sheet not in all_sheets]
@@ -123,7 +123,7 @@ def load_and_process_data(file_path):
             print(f"  部分統計分析可能無法執行")
         else:
             print(f"找到 {qc_count} 個 QC 樣本")
-        
+
         workbook = load_workbook(file_path, read_only=True)
         worksheet = workbook[SHEET_NAMES['raw_intensity']]
         istd_feature_ids = []  # 收集紅色 FeatureID 的值
@@ -136,7 +136,7 @@ def load_and_process_data(file_path):
                     if cell.value:  # 確保有值
                         istd_feature_ids.append(str(cell.value).strip())  # 轉 str 以匹配
         workbook.close()
-        
+
         raw_df = all_sheets[SHEET_NAMES['raw_intensity']]
 
         # ===== 防呆9: RawIntensity 基本检查 =====
@@ -300,15 +300,15 @@ def load_and_process_data(file_path):
                     if len(parts) >= 2:
                         return parts[0], parts[1]
                 return np.nan, np.nan
-            
+
             parsed = raw_df['FeatureID'].apply(parse_feature_id)
             raw_df['mz'] = pd.to_numeric([p[0] for p in parsed], errors='coerce')
             raw_df['rt'] = pd.to_numeric([p[1] for p in parsed], errors='coerce')
-            
+
             invalid_count = raw_df['mz'].isna().sum()
             if invalid_count > 0:
                 print(f"警告：{invalid_count} 筆 'FeatureID' 無法解析為 m/z 和 RT（已設為 NaN）。")
-        
+
         # 基於 FeatureID 值設定 is_ISTD（避免索引偏移）
         raw_df['is_ISTD'] = raw_df['FeatureID'].astype(str).str.strip().isin(istd_feature_ids)
 
@@ -506,17 +506,17 @@ def evaluate_istd_gate(raw_df, col_to_info, sample_info_df=None):
     }
 
 
-def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv, 
+def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv,
                                 sample_columns,  # ✅ 新增參數
-                                rt_weight=0.6, cv_weight=0.25, 
+                                rt_weight=0.6, cv_weight=0.25,
                                 intensity_weight=0.1, mz_weight=0.05):
     """
     多因素加權評分的 ISTD 選擇函數
-    
+
     評分公式（越低越好）：
-    score = 0.6 × RT差異(標準化) + 0.25 × CV%(標準化) + 
+    score = 0.6 × RT差異(標準化) + 0.25 × CV%(標準化) +
             0.1 × 強度倒數(標準化) + 0.05 × m/z差異(標準化)
-    
+
     Parameters:
     -----------
     analyte_row : pd.Series
@@ -535,7 +535,7 @@ def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv,
         強度權重（預設 0.1）
     mz_weight : float
         m/z 差異權重（預設 0.05）
-    
+
     Returns:
     --------
     best_istd : pd.Series or None
@@ -560,14 +560,14 @@ def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv,
             f"   rt_weight={rt_weight}, cv_weight={cv_weight}, "
             f"intensity_weight={intensity_weight}, mz_weight={mz_weight}"
         )
-    
+
     analyte_rt = analyte_row.get('rt', np.nan)
     analyte_mz = analyte_row.get('mz', np.nan)
-    
+
     # 檢查 analyte 資訊完整性
     if np.isnan(analyte_rt) or np.isnan(analyte_mz):
         return None, float('inf')
-    
+
     # ========== 步驟 1: 收集所有 ISTD 的指標 (向量化優化) ==========
     # Pre-calculate median intensities for all ISTDs (vectorized)
     valid_sample_cols = [c for c in sample_columns if c in istd_signals.columns]
@@ -616,18 +616,18 @@ def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv,
             'intensity': median_intensity if not np.isnan(median_intensity) else 0.0,
             'mz_diff_ppm': mz_diff_ppm
         })
-    
+
     # ========== 步驟 2: 如果沒有候選，返回 None ==========
     if len(candidates) == 0:
         return None, float('inf')
-    
+
     # ========== 步驟 3: 標準化各指標（Min-Max Normalization）==========
     # 提取所有候選的指標
     rt_diffs = np.array([c['rt_diff'] for c in candidates])
     cvs = np.array([c['cv'] for c in candidates])
     intensities = np.array([c['intensity'] for c in candidates])
     mz_diffs = np.array([c['mz_diff_ppm'] for c in candidates])
-    
+
     # 🔧 修正：標準化函數（處理所有值相同的情況）
     def normalize(values):
         """
@@ -640,17 +640,17 @@ def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv,
             # 如果所有值相同，表示無差異，返回 0（不影響評分）
             return np.zeros(len(values))
         return (values - min_val) / (max_val - min_val)
-    
+
     # 標準化各指標
     normalized_rt = normalize(rt_diffs)
     normalized_cv = normalize(cvs)
-    
+
     # 🔧 修正：強度標準化（強度越高 → 分數越低）
     normalized_intensity = normalize(intensities)
     normalized_intensity_inv = 1.0 - normalized_intensity  # 反轉（強度高得分低）
-    
+
     normalized_mz = normalize(mz_diffs)
-    
+
     # ========== 步驟 4: 計算加權評分 ==========
     for i, candidate in enumerate(candidates):
         # 加權評分（越低越好）
@@ -661,7 +661,7 @@ def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv,
             mz_weight * normalized_mz[i]
         )
         candidate['score'] = score
-        
+
         # 🔧 新增：記錄各項評分（用於調試）
         candidate['score_breakdown'] = {
             'rt_score': rt_weight * normalized_rt[i],
@@ -669,10 +669,10 @@ def find_best_istd_for_analyte(analyte_row, istd_signals, istd_cv,
             'intensity_score': intensity_weight * normalized_intensity_inv[i],
             'mz_score': mz_weight * normalized_mz[i]
         }
-    
+
     # ========== 步驟 5: 選擇評分最低的 ISTD ==========
     best_candidate = min(candidates, key=lambda x: x['score'])
-    
+
     return best_candidate['istd_row'], best_candidate['rt_diff']
 
 def calculate_istd_medians(istd_signals, sample_columns):
@@ -726,7 +726,7 @@ def calculate_corrected_ratios(df, sample_info_df):
 
     if 'Sample_Name' not in sample_info_df.columns:
         raise ValueError(f"錯誤：'{SHEET_NAMES['sample_info']}' 缺少 'Sample_Name' 欄位")
-    
+
     candidate_columns, dropped_columns = identify_candidate_sample_columns(
         df,
         extra_non_sample_columns={'is_ISTD', 'Sample_Type', 'sample_type'},
@@ -759,7 +759,7 @@ def calculate_corrected_ratios(df, sample_info_df):
 
     istd_cv = calculate_istd_cv(istd_signals, sample_columns)
     istd_medians = calculate_istd_medians(istd_signals, sample_columns)
-    
+
     # ✅ 新增：印出權重設定資訊
     print(f"\n{'='*70}")
     print(f"🎯 ISTD 選擇權重設定:")
@@ -770,33 +770,33 @@ def calculate_corrected_ratios(df, sample_info_df):
     print(f"  - m/z 差異權重:    5%")
     print(f"  - 總和:          100%")
     print(f"{'='*70}\n")
-    
+
     results = []
     for _, analyte_row in analyte_signals.iterrows():
         # ✅ 傳入 sample_columns
         best_istd, min_rt_diff = find_best_istd_for_analyte(
-            analyte_row, istd_signals, istd_cv, 
+            analyte_row, istd_signals, istd_cv,
             sample_columns  # ✅ 新增參數
         )
-        
-        if best_istd is None: 
+
+        if best_istd is None:
             continue
-        
+
         istd_id = best_istd['FeatureID']
         istd_median = istd_medians[istd_id]
         rt_diff = analyte_row['rt'] - best_istd['rt']
-        
+
         result_row = {
-            'FeatureID': analyte_row['FeatureID'], 
-            'RT': analyte_row['rt'], 
-            'ISTD': istd_id, 
-            'ISTD_RT': best_istd['rt'], 
-            'RT_Difference': rt_diff, 
+            'FeatureID': analyte_row['FeatureID'],
+            'RT': analyte_row['rt'],
+            'ISTD': istd_id,
+            'ISTD_RT': best_istd['rt'],
+            'RT_Difference': rt_diff,
             'ISTD_Median': istd_median
         }
-        
+
         for col in sample_columns:
-            if col not in df.columns: 
+            if col not in df.columns:
                 continue
             try:
                 analyte_intensity = float(analyte_row[col])
@@ -804,23 +804,23 @@ def calculate_corrected_ratios(df, sample_info_df):
             except (ValueError, KeyError):
                 analyte_intensity = np.nan
                 istd_intensity = np.nan
-            
+
             corrected = (
-                (analyte_intensity / istd_intensity) * istd_median 
-                if istd_intensity > 0 and not np.isnan(istd_median) and not np.isnan(analyte_intensity) 
+                (analyte_intensity / istd_intensity) * istd_median
+                if istd_intensity > 0 and not np.isnan(istd_median) and not np.isnan(analyte_intensity)
                 else np.nan
             )
             result_row[col] = corrected
-        
+
         results.append(result_row)
-    
+
     results_df = pd.DataFrame(results)
-    
+
     # 防呆：強制轉換 results_df 的樣本欄位為數值 (向量化)
     valid_sample_cols = [col for col in sample_columns if col in results_df.columns]
     if valid_sample_cols:
         results_df[valid_sample_cols] = results_df[valid_sample_cols].apply(pd.to_numeric, errors='coerce')
-    
+
     return results_df, sample_columns
 
 
@@ -986,73 +986,73 @@ def calculate_qc_cv_with_statistical_test(results_df, sample_columns, sample_inf
 
         if (row_idx + 1) % 500 == 0:
             print(f"  處理進度: {row_idx + 1}/{total_features} features")
-    
+
     print(f"  ✓ 統計檢定完成！")
-    
+
     cv_results_df = pd.DataFrame(cv_results)
-    
+
     # 統計摘要
     sig_yes = (cv_results_df['Significant_Improvement'] == 'Yes').sum()
     sig_marginal = (cv_results_df['Significant_Improvement'] == 'Marginal').sum()
     sig_cv_only = (cv_results_df['Significant_Improvement'] == 'Yes (CV% only)').sum()
     sig_no = (cv_results_df['Significant_Improvement'] == 'No').sum()
     total_count = len(cv_results_df)
-    
+
     print(f"\n📊 統計檢定摘要:")
     print(f"  - 總特徵數: {total_count}")
     print(f"  - 顯著改善 (Yes): {sig_yes} ({sig_yes/total_count*100:.1f}%)")
     print(f"  - 邊緣顯著 (Marginal): {sig_marginal} ({sig_marginal/total_count*100:.1f}%)")
     print(f"  - 僅 CV% 改善: {sig_cv_only} ({sig_cv_only/total_count*100:.1f}%)")
     print(f"  - 無顯著改善 (No): {sig_no} ({sig_no/total_count*100:.1f}%)")
-    
+
     # Wilcoxon 檢定統計
     wilcoxon_valid = cv_results_df['Wilcoxon_pvalue'].notna().sum()
-    wilcoxon_sig = ((cv_results_df['Wilcoxon_pvalue'] < 0.05) & 
+    wilcoxon_sig = ((cv_results_df['Wilcoxon_pvalue'] < 0.05) &
                     (cv_results_df['Wilcoxon_pvalue'].notna())).sum()
-    
+
     print(f"\n🔬 Wilcoxon 配對符號等級檢定（中位數變化）:")
     print(f"  - 成功執行: {wilcoxon_valid}/{total_count} ({wilcoxon_valid/total_count*100:.1f}%)")
     if wilcoxon_valid > 0:
         print(f"  - 中位數顯著改變 (p < 0.05): {wilcoxon_sig}/{wilcoxon_valid} ({wilcoxon_sig/wilcoxon_valid*100:.1f}%)")
         print(f"  - 中位數無顯著改變: {wilcoxon_valid - wilcoxon_sig}/{wilcoxon_valid} ({(wilcoxon_valid-wilcoxon_sig)/wilcoxon_valid*100:.1f}%)")
-    
+
     # Levene's test 統計
     variance_valid = cv_results_df['Variance_Test_pvalue'].notna().sum()
-    variance_sig = ((cv_results_df['Variance_Test_pvalue'] < 0.05) & 
+    variance_sig = ((cv_results_df['Variance_Test_pvalue'] < 0.05) &
                     (cv_results_df['Variance_Test_pvalue'].notna())).sum()
-    
+
     print(f"\n🔬 Levene's Test（方差齊性）:")
     print(f"  - 成功執行: {variance_valid}/{total_count} ({variance_valid/total_count*100:.1f}%)")
     if variance_valid > 0:
         print(f"  - 方差顯著改變 (p < 0.05): {variance_sig}/{variance_valid} ({variance_sig/variance_valid*100:.1f}%)")
         print(f"  - 方差無顯著改變: {variance_valid - variance_sig}/{variance_valid} ({(variance_valid-variance_sig)/variance_valid*100:.1f}%)")
-    
+
     # CV% 改善統計
     cv_improvement_valid = cv_results_df['CV_Improvement%'].notna()
     if cv_improvement_valid.sum() > 0:
         improvements = cv_results_df.loc[cv_improvement_valid, 'CV_Improvement%']
         improvements_finite = improvements[np.isfinite(improvements)]
-        
+
         if len(improvements_finite) > 0:
             median_improvement = np.median(improvements_finite)
             mean_improvement = np.mean(improvements_finite)
-            
+
             print(f"\n📊 CV% 改善統計:")
             print(f"  - 中位數改善: {median_improvement:.2f}%")
             print(f"  - 平均改善: {mean_improvement:.2f}%")
             print(f"  - 範圍: {improvements_finite.min():.2f}% - {improvements_finite.max():.2f}%")
-            
+
             improved_cv = (improvements_finite > 5).sum()
             similar_cv = ((improvements_finite >= -5) & (improvements_finite <= 5)).sum()
             worse_cv = (improvements_finite < -5).sum()
-            
+
             print(f"\n  改善程度分類:")
             print(f"  - 顯著改善 (>5%): {improved_cv} ({improved_cv/len(improvements_finite)*100:.1f}%)")
             print(f"  - 無明顯變化 (±5%): {similar_cv} ({similar_cv/len(improvements_finite)*100:.1f}%)")
             print(f"  - 變差 (<-5%): {worse_cv} ({worse_cv/len(improvements_finite)*100:.1f}%)")
-    
+
     print(f"\n{'='*70}\n")
-    
+
     return cv_results_df
 
 
@@ -1067,36 +1067,36 @@ def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
             plots_dir = os.path.join(base_dir, f"ISTD_Correction_{timestamp}")
 
         os.makedirs(plots_dir, exist_ok=True)
-        
+
         variance_pvalues = cv_results_df['Variance_Test_pvalue'].dropna()
-        
+
         if len(variance_pvalues) < 10:
             print("  ⚠️ 有效 p 值數量不足，跳過 p 值分佈圖")
             return
-        
+
         # ✅ 只繪製直方圖（移除 Q-Q Plot）
         fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        
+
         # 直方圖
         ax.hist(variance_pvalues, bins=20, color='steelblue', edgecolor='black', alpha=0.7)
         ax.axhline(y=len(variance_pvalues)/20, color='red', linestyle='--', linewidth=2,
                    label='Uniform Distribution Expected')
         ax.set_xlabel('P-value (Levene\'s Test)', fontsize=12, fontweight='bold')
         ax.set_ylabel('Frequency', fontsize=12, fontweight='bold')
-        ax.set_title('P-value Distribution (Variance Homogeneity Test)', 
+        ax.set_title('P-value Distribution (Variance Homogeneity Test)',
                      fontsize=14, fontweight='bold')
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3, linestyle='--')
-        
+
         # Kolmogorov-Smirnov 檢定
         from scipy.stats import kstest
         ks_stat, ks_pvalue = kstest(variance_pvalues, 'uniform')
-        
+
         # 統計摘要
         p_below_005 = (variance_pvalues < 0.05).sum()
         p_below_001 = (variance_pvalues < 0.01).sum()
         total = len(variance_pvalues)
-        
+
         textstr = f'📊 Statistical Summary:\n'
         textstr += f'Total features: {total}\n'
         textstr += f'p < 0.05: {p_below_005} ({p_below_005/total*100:.1f}%)\n'
@@ -1104,7 +1104,7 @@ def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
         textstr += f'Kolmogorov-Smirnov Test:\n'
         textstr += f'KS statistic = {ks_stat:.4f}\n'
         textstr += f'P-value = {ks_pvalue:.4f}\n\n'
-        
+
         if ks_pvalue < 0.05:
             textstr += '✅ Result: Non-uniform\n'
             textstr += '→ ISTD correction significantly\n'
@@ -1115,25 +1115,25 @@ def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
             textstr += '→ Limited effect of\n'
             textstr += '   ISTD correction'
             bgcolor = 'lightyellow'
-        
+
         ax.text(0.98, 0.97, textstr, transform=ax.transAxes,
                 fontsize=10, verticalalignment='top', horizontalalignment='right',
                 bbox=dict(boxstyle='round', facecolor=bgcolor, alpha=0.8))
-        
+
         plt.tight_layout()
-        
+
         # ✅ 儲存到 output/ISTD_Correction_plots/
         pvalue_plot_path = os.path.join(plots_dir, f'Step1_Pvalue_Distribution_{timestamp}.png')
         plt.savefig(pvalue_plot_path, dpi=300, bbox_inches='tight')
         plt.close()
-        
+
         print(f"\n✓ P 值分佈圖已儲存: {pvalue_plot_path}")
         print(f"  - Kolmogorov-Smirnov 檢定: KS={ks_stat:.4f}, p={ks_pvalue:.4f}")
         if ks_pvalue < 0.05:
             print(f"  - ✅ 結論: ISTD 校正顯著改善 QC 方差穩定性")
         else:
             print(f"  - ⚠️ 結論: ISTD 校正效果有限")
-        
+
     except Exception as e:
         print(f"  ⚠️ 繪製 p 值分佈圖時發生錯誤: {e}")
         import traceback
@@ -1551,14 +1551,14 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
 
     # ✅ 圖表輸出基底（可覆蓋為特定目錄）
     plot_output_dir = plots_dir or os.path.dirname(output_file)
-    
+
     # ✅ 使用新的統計檢定函數
     if cv_results_df is None:
         cv_results_df = calculate_qc_cv_with_statistical_test(
             results_df, sample_columns, sample_info_df, original_df,
             col_to_info=col_to_info
         )
-    
+
     # 合併結果
     results_with_cv = results_df.merge(cv_results_df, on='FeatureID', how='left')
 
@@ -1602,7 +1602,7 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
     ]
     other_cols = [col for col in results_with_cv.columns if col not in cols_order]
     results_with_cv = results_with_cv[other_cols + cols_order]
-    
+
     # 寫入 Excel（將內部欄名 'FeatureID' 還原為 FEATURE_ID_COLUMN）
     def _rename_feature_col(df):
         if 'FeatureID' in df.columns and FEATURE_ID_COLUMN != 'FeatureID':
@@ -1673,7 +1673,7 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
         for sheet_name, df in retained_sheets.items():
             _rename_feature_col(df).to_excel(writer, sheet_name=sheet_name, index=False)
         _rename_feature_col(results_with_cv).to_excel(writer, sheet_name=SHEET_NAMES['istd_correction'], index=False)
-    
+
     # 統計區格式設定（直接配色，不複製原始檔格式）
     new_workbook = load_workbook(output_file)
 
@@ -1722,14 +1722,14 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
             if not col_name or col_name in NON_SAMPLE_COLUMNS:
                 continue
             apply_number_format(worksheet, header_map[col_name], scientific_format)
-    
+
     new_workbook.save(output_file)
-    
+
     print(f"\n{'='*70}")
     print(f"✓ ISTD Correction 結果已保存:")
     print(f"  {output_file}")
     print(f"{'='*70}\n")
-    
+
     # P 值分佈圖 (disabled: provides limited diagnostic value)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
     # plot_pvalue_distribution(cv_results_df, plot_output_dir, timestamp)
@@ -1757,13 +1757,13 @@ def save_skipped_istd_results_to_excel(output_file, all_sheets, original_workboo
 def main(input_file=None, session_dir=None):
     """
     主函數 - 修改為與 GUI 配合
-    
+
     Parameters:
     -----------
     input_file : str, optional
         輸入檔案路徑（由 GUI 傳入）
         如果為 None，則顯示檔案選擇對話框
-    
+
     Returns:
     --------
     dict or None
@@ -1775,46 +1775,31 @@ def main(input_file=None, session_dir=None):
 
     session_dir = resolve_session_dir(input_file=input_file, session_dir=session_dir)
 
-    
+
     # 🔧 建立 output 資料夾
     output_dir = get_output_root(input_file=input_file)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
         print(f"已建立 'output' 資料夾: {output_dir}")
-    
-    # 🔧 關鍵修正：如果沒有提供 input_file，則顯示對話框
+
     if input_file is None:
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
-        
-        input_file = filedialog.askopenfilename(
-            title="選擇原始 Excel 檔案", 
-            filetypes=[("Excel files", "*.xlsx *.xls")]
-        )
-        
-        root.destroy()
-        
-        # 如果用戶取消選擇，返回 None
-        if not input_file:
-            print("⚠️ 用戶取消了檔案選擇")
-            return None
-    
+        raise ValueError("input_file is required; GUI must provide the file path.")
+
     # 驗證檔案是否存在
     if not os.path.exists(input_file):
         raise FileNotFoundError(f"找不到檔案: {input_file}")
-    
+
     print("\n" + "="*70)
     print("🔬 開始 ISTD Correction 分析")
     print(f"📁 輸入檔案: {os.path.basename(input_file)}")
     print("="*70 + "\n")
-    
+
     # 載入數據 (raises ValueError on failure)
     original_df, sample_info_df, all_sheets, col_to_info = load_and_process_data(input_file)
 
     # 計算校正結果 (raises ValueError on failure)
     sample_columns = None
-    
+
     # 🔧 修改：儲存結果到 output 資料夾
     run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
     if session_dir is not None:
@@ -1867,10 +1852,11 @@ def main(input_file=None, session_dir=None):
     print("="*70 + "\n")
 
     if gate_eval['should_skip']:
-        save_skipped_istd_results_to_excel(output_file, all_sheets, input_file)
+        # Skip: no output workbook is produced. Downstream steps should continue
+        # from the original input and apply their own fallback filtering.
         return ProcessingResult(
             file_path=input_file,
-            output_path=str(output_file),
+            output_path=input_file,
             metabolites=len(original_df),
             samples=len(gate_eval['sample_columns']),
             extra={
@@ -1906,9 +1892,9 @@ def main(input_file=None, session_dir=None):
         timestamp=run_timestamp,
         col_to_info=col_to_info,
     )
-    
+
     print(f"\n  ✓ ISTD Correction 完成 → {os.path.basename(output_file)}")
-    
+
     # 🎯 返回統計資訊給 GUI
     return ProcessingResult(
         file_path=input_file,

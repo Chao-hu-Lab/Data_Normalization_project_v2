@@ -1,4 +1,4 @@
-﻿import pandas as pd
+import pandas as pd
 import numpy as np
 from pathlib import Path
 import warnings
@@ -281,39 +281,39 @@ def get_all_sample_columns(df, sample_info_df):
 def calculate_cohens_d(group1, group2):
     """
     計算 Cohen's d (effect size)
-    
+
     Parameters:
     -----------
     group1 : np.ndarray
         第一組數據
     group2 : np.ndarray
         第二組數據
-    
+
     Returns:
     --------
     float : Cohen's d 值
     """
     n1 = len(group1)
     n2 = len(group2)
-    
+
     if n1 < 2 or n2 < 2:
         return np.nan
-    
+
     mean1 = np.mean(group1)
     mean2 = np.mean(group2)
-    
+
     var1 = np.var(group1, ddof=1)
     var2 = np.var(group2, ddof=1)
-    
+
     # Pooled standard deviation
     pooled_std = np.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2))
-    
+
     if pooled_std == 0:
         return np.nan
-    
+
     # Cohen's d
     d = (mean1 - mean2) / pooled_std
-    
+
     return d
 
 def evaluate_group_difference_preservation(original_data, normalized_data,
@@ -334,12 +334,12 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
         樣本資訊表
     sample_columns : list
         樣本名稱列表
-    
+
     Returns:
     --------
     dict or None : 組間差異評估結果
     """
-    
+
     # 1. 提取組別資訊
     sample_groups = np.array([
         _lookup_sample_type(s, sample_info_df, col_to_info_row)
@@ -349,51 +349,51 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
     # 2. 識別 CONTROL 和 EXPOSURE
     control_indices = np.where(sample_groups == 'CONTROL')[0]
     exposure_indices = np.where(sample_groups == 'EXPOSURE')[0]
-    
+
     if len(control_indices) == 0 or len(exposure_indices) == 0:
         print(f"\n【組間差異評估】")
         print(f"  ⚠ 警告: 未找到 CONTROL 或 EXPOSURE 組別")
         print(f"    找到的組別類型: {np.unique(sample_groups)}")
         print(f"  跳過組間差異評估")
         return None
-    
+
     print(f"\n【組間差異評估】")
     print(f"  Control 組樣本數: {len(control_indices)}")
     print(f"  Exposure 組樣本數: {len(exposure_indices)}")
-    
+
     # 3. 計算 Cohen's d
     n_features = original_data.shape[0]
     cohens_d_before = []
     cohens_d_after = []
-    
+
     print(f"  計算 Effect Size (Cohen's d)...", end="")
-    
+
     for i in range(n_features):
         # 標準化前
         control_before = original_data[i, control_indices]
         exposure_before = original_data[i, exposure_indices]
-        
+
         control_before = control_before[~np.isnan(control_before)]
         exposure_before = exposure_before[~np.isnan(exposure_before)]
-        
+
         d_before = calculate_cohens_d(control_before, exposure_before)
         cohens_d_before.append(d_before)
-        
+
         # 標準化後
         control_after = normalized_data[i, control_indices]
         exposure_after = normalized_data[i, exposure_indices]
-        
+
         control_after = control_after[~np.isnan(control_after)]
         exposure_after = exposure_after[~np.isnan(exposure_after)]
-        
+
         d_after = calculate_cohens_d(control_after, exposure_after)
         cohens_d_after.append(d_after)
-        
+
         if (i + 1) % 100 == 0:
             print(f"\r  計算 Effect Size... {i+1}/{n_features}", end="")
-    
+
     print(f"\r  ✓ 計算完成 ({n_features}/{n_features})")
-    
+
     cohens_d_before = np.array(cohens_d_before)
     cohens_d_after = np.array(cohens_d_after)
 
@@ -559,7 +559,7 @@ def get_non_qc_columns(df, sample_info_df):
             else:
                 if not col.upper().startswith('QC'):
                     non_qc_columns.append(col)
-    
+
     return non_qc_columns
 
 def get_sample_columns_only(df, sample_info_df):
@@ -568,11 +568,11 @@ def get_sample_columns_only(df, sample_info_df):
     """
     # 排除的統計欄位關鍵字
     exclude_keywords = [
-        'CV', 'Silhouette', 'Permutation', 'Correlation', 
-        'R_squared', 'Improvement', 'Before', 'After', 
+        'CV', 'Silhouette', 'Permutation', 'Correlation',
+        'R_squared', 'Improvement', 'Before', 'After',
         'Original', 'Corrected', 'pvalue', 'p_value'
     ]
-    
+
     sample_columns = []
 
     # Vectorized sample type dict building (faster than iterrows)
@@ -583,10 +583,10 @@ def get_sample_columns_only(df, sample_info_df):
     for col in df.columns:
         if col == df.columns[0]:  # 跳過第一欄（特徵ID）
             continue
-        
+
         # 檢查是否包含排除關鍵字
         is_stat_column = any(keyword.lower() in str(col).lower() for keyword in exclude_keywords)
-        
+
         if not is_stat_column:
             # 檢查是否為QC樣本
             if col in sample_type_dict:
@@ -595,18 +595,18 @@ def get_sample_columns_only(df, sample_info_df):
             else:
                 if not col.upper().startswith('QC'):
                     sample_columns.append(col)
-    
+
     return sample_columns
 
 def calculate_cv_per_feature(data_matrix):
     """
     計算每個特徵的CV%
-    
+
     Parameters:
     -----------
     data_matrix : np.ndarray
         數據矩陣 (特徵 x 樣本)
-    
+
     Returns:
     --------
     cv_values : np.ndarray
@@ -1136,11 +1136,11 @@ def plot_cv_comparison(original_cv, normalized_cv, output_path, method_name):
 def evaluate_normalization_quality(original_data, normalized_data):
     """綜合評估標準化質量"""
     results = {}
-    
+
     # 1. CV% 評估
     original_cv = calculate_rsd(original_data)
     normalized_cv = calculate_rsd(normalized_data)
-    
+
     results['median_cv_before'] = np.nanmedian(original_cv)
     results['median_cv_after'] = np.nanmedian(normalized_cv)
     results['mean_cv_before'] = np.nanmean(original_cv)
@@ -1164,33 +1164,33 @@ def evaluate_normalization_quality(original_data, normalized_data):
     except (ValueError, TypeError):
         results['cv_wilcoxon_stat'] = np.nan
         results['cv_wilcoxon_pvalue'] = np.nan
-    
+
     # CV%改善的特徵比例
     cv_improved = np.sum((original_cv - normalized_cv) > 0)
     cv_total = len(original_cv[~np.isnan(original_cv)])
     results['cv_improved_ratio'] = (cv_improved / cv_total) * 100 if cv_total > 0 else 0
-    
+
     # 2. 樣本總強度變異
     original_totals = np.nansum(original_data, axis=0)
     normalized_totals = np.nansum(normalized_data, axis=0)
-    
+
     results['total_cv_before'] = (np.std(original_totals) / np.mean(original_totals)) * 100
     results['total_cv_after'] = (np.std(normalized_totals) / np.mean(normalized_totals)) * 100
     results['total_cv_improvement'] = results['total_cv_before'] - results['total_cv_after']
-    
+
     # 3. 樣本間相關性
     corr_mean_before, corr_std_before = calculate_sample_correlation(original_data)
     corr_mean_after, corr_std_after = calculate_sample_correlation(normalized_data)
-    
+
     results['sample_corr_mean_before'] = corr_mean_before
     results['sample_corr_mean_after'] = corr_mean_after
     results['sample_corr_std_before'] = corr_std_before
     results['sample_corr_std_after'] = corr_std_after
-    
+
     # 4. 數據範圍評估
     results['data_range_before'] = np.nanmax(original_data) - np.nanmin(original_data)
     results['data_range_after'] = np.nanmax(normalized_data) - np.nanmin(normalized_data)
-    
+
     return results
 
 
@@ -1334,7 +1334,7 @@ def create_normalization_summary_report(
     report.append(f"標準化效果摘要報告 - {method_name}")
     report.append(f"報告生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     report.append(SUMMARY_REPORT_SEPARATOR)
-    
+
     summary_context = summary_context or {}
     subset_metrics = subset_metrics or {}
 
@@ -1360,7 +1360,7 @@ def create_normalization_summary_report(
     if pqn_info:
         report.append(f"QC 樣本數量: {pqn_info['qc_count']}")
         report.append(f"真實樣本數量: {pqn_info['real_count']}")
-    
+
     # ========== 標準化參考資訊 ==========
     if pqn_info:
         report.append("")
@@ -1390,7 +1390,7 @@ def create_normalization_summary_report(
                     "PQN 因子範圍: "
                     f"{np.nanmin(real_factors):.4f} – {np.nanmax(real_factors):.4f}"
                 )
-    
+
     # ========== CV% 評估 ==========
     report.append("")
     report.append("【Feature CV 變化（全部樣本）】")
@@ -1433,7 +1433,7 @@ def create_normalization_summary_report(
             )
         else:
             report.append("真實樣本 feature CV: 樣本數不足，未提供分層統計")
-    
+
     # ========== 樣本總強度變異 ==========
     report.append("")
     report.append("【樣本總強度變異（全部樣本）】")
@@ -1453,7 +1453,7 @@ def create_normalization_summary_report(
                 f"{subset_metrics['qc_total_cv_before']:.2f}% -> "
                 f"{subset_metrics['qc_total_cv_after']:.2f}%"
             )
-    
+
     # ========== 樣本間相關性 ==========
     report.append("")
     report.append("【樣本間相關性（全部樣本）】")
@@ -1496,7 +1496,7 @@ def create_normalization_summary_report(
                 f"Effect size 明顯下降特徵比例: {effect_size_flagged_ratio*100:.1f}% "
                 f"(描述性標準: |Cohen's d| 下降 > 30%)"
             )
-        
+
         if group_diff_results['severe_reduction'] / group_diff_results['total'] > 0.1:
             report.append("評估: ⚠⚠ 部分特徵差異顯著減弱，需檢查")
         elif group_diff_results['avg_preservation'] > 90:
@@ -1505,7 +1505,7 @@ def create_normalization_summary_report(
             report.append("評估: ✓ 組間差異保留良好")
         else:
             report.append("評估: ○ 組間差異保留尚可")
-    
+
     # ========== 整體判讀 ==========
     report.append("")
     report.append("【整體判讀】")
@@ -1540,11 +1540,11 @@ def create_normalization_summary_report(
             report.append("✓✓ 組間差異保留良好")
         else:
             report.append("○ 組間差異保留度尚可")
-    
+
     # ========== 建議與注意事項 ==========
     report.append("")
     report.append("【建議與注意事項】")
-    
+
     # 方法相關建議
     if pqn_info:
         if pqn_info['reference_strategy'] == 'SampleSpecific':
@@ -1563,10 +1563,10 @@ def create_normalization_summary_report(
         if group_diff_results['severe_reduction'] > 0:
             report.append(f"⚠ 注意：有 {group_diff_results['severe_reduction']} 個特徵的組間差異顯著減弱")
             report.append("  建議：檢查這些特徵是否受標準化影響過大，可能需要特別處理")
-        
+
         if group_diff_results['avg_preservation'] < 80:
             report.append("⚠ 建議：組間差異保留率較低，建議檢查標準化方法是否適合您的數據")
-    
+
     # CV% 改善相關建議
     if quality_metrics['cv_improved_ratio'] < 50:
         report.append("⚠ 建議：僅不到一半的特徵 CV% 得到改善，可能需要考慮其他標準化方法")
@@ -1579,38 +1579,24 @@ def create_normalization_summary_report(
 
     report.append("")
     report.append("=" * 80)
-    
+
     return "\n".join(report)
 
 # ==================== 檔案處理函數 ====================
 
 def select_file():
     raise RuntimeError("input_file is required; GUI must provide the file path.")
-    """讓使用者選擇Excel檔案"""
-    root = tk.Tk()
-    root.withdraw()
-    
-    file_path = filedialog.askopenfilename(
-        title="請選擇Excel檔案",
-        filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
-    )
-    
-    if not file_path:
-        print("未選擇檔案，程式結束。")
-        return None
-    
-    return file_path
 
 def load_excel_sheets(file_path):
     """載入Excel檔案的所有工作表"""
     try:
         xl_file = pd.ExcelFile(file_path)
         sheet_names = xl_file.sheet_names
-        
+
         sheets = {}
         for sheet_name in sheet_names:
             sheets[sheet_name] = pd.read_excel(file_path, sheet_name=sheet_name)
-            
+
         return sheets, sheet_names
     except Exception as e:
         print(f"讀取Excel檔案時發生錯誤: {e}")
@@ -1629,7 +1615,7 @@ def determine_correction_sheet(sheets):
         if sheet_name is not None:
             print(f"✓ 依優先順序選擇工作表: {sheet_name}")
             return sheets[sheet_name], sheet_name
-    
+
     print("警告：未找到指定的資料工作表")
     return None, None
 
@@ -1637,11 +1623,11 @@ def determine_correction_sheet(sheets):
 def find_sample_info_sheet(sheets):
     """尋找包含樣本資訊的工作表"""
     possible_names = [SHEET_NAMES['sample_info'], 'Sample_Info', 'sample_info', 'Sample Info']
-    
+
     for name in possible_names:
         if name in sheets:
             return sheets[name], name
-    
+
     for sheet_name, df in sheets.items():
         if any(col for col in df.columns if 'normalization' in str(col).lower() or 'sample_type' in str(col).lower()):
             return df, sheet_name
@@ -1855,9 +1841,9 @@ def perform_normalization(data_df, sample_info_df, file_path,
             data_matrix, sample_info_df, sample_columns,
             col_to_info_row=col_to_info_row
         )
-    
+
     print(f"✓ 標準化完成")
-    
+
     # 統一輸出目錄與圖表路徑
     output_dir = get_output_root(input_file=file_path)
     run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
@@ -1905,7 +1891,7 @@ def perform_normalization(data_df, sample_info_df, file_path,
     original_data_valid = original_data[:, valid_sample_mask]
     normalized_data_valid = normalized_data[:, valid_sample_mask]
     sample_columns_valid = [sample_columns[i] for i in range(len(sample_columns)) if valid_sample_mask[i]]
-    
+
     # ========== 評估標準化質量 ==========
     print("\n評估標準化質量...")
     quality_metrics = evaluate_normalization_quality(original_data_valid, normalized_data_valid)
@@ -1926,7 +1912,7 @@ def perform_normalization(data_df, sample_info_df, file_path,
     except Exception as e:
         print(f"  ⚠ 組間差異評估失敗: {e}")
         group_diff_results = None
-    
+
     # ========== 生成視覺化圖表 ==========
     print("\n生成視覺化圖表...")
 
@@ -1990,11 +1976,11 @@ def perform_normalization(data_df, sample_info_df, file_path,
     # 創建結果DataFrame（只包含樣本數據和CV%）
     normalized_df = pd.DataFrame()
     normalized_df[data_df.columns[0]] = feature_ids
-    
+
     # 添加標準化後的樣本數據
     for i, col in enumerate(sample_columns):
         normalized_df[col] = normalized_data[:, i]
-    
+
     # Step 8 output rule: keep CV metrics with unified Original/Normalized naming.
     # Keep unified CV naming for sample-level metrics; keep single QC_CV% only.
     original_cv_full = calculate_cv_per_feature(original_data)
@@ -2015,7 +2001,7 @@ def perform_normalization(data_df, sample_info_df, file_path,
         normalized_df['QC_CV%'] = np.nan
 
     normalized_df = apply_feature_metadata_passthrough(normalized_df, data_df)
-    
+
     # ========== 生成摘要報告 ==========
     summary_report = create_normalization_summary_report(
         quality_metrics, method_name, len(feature_ids), len(sample_columns),
@@ -2028,9 +2014,9 @@ def perform_normalization(data_df, sample_info_df, file_path,
         ),
         mapped_sample_count=len(col_to_info_row),
     )
-    
+
     print(f"\n{summary_report}")
-    
+
     return normalized_df, summary_report, method_name, output_dir, quality_metrics, figures_dir
 
 def save_normalization_results(
@@ -2058,10 +2044,10 @@ def save_normalization_results(
         # 創建新工作簿
         wb_new = Workbook()
         wb_new.remove(wb_new.active)
-        
+
         # 1. 儲存標準化後的資料
         ws_normalized = wb_new.create_sheet(title=f'{method_name}_Result')
-        
+
         cleaned_normalized_df = clean_dataframe_for_excel(normalized_df)
         for r_idx, row in enumerate(dataframe_to_rows(cleaned_normalized_df, index=False, header=True), 1):
             for c_idx, value in enumerate(row, 1):
@@ -2077,7 +2063,7 @@ def save_normalization_results(
             if not col_name or col_name in NON_SAMPLE_COLUMNS:
                 continue
             apply_number_format(ws_normalized, normalized_header_map[col_name], '0.00E+00')
-        
+
         # 自動調整列寬
         for column in ws_normalized.columns:
             max_length = 0
@@ -2092,7 +2078,7 @@ def save_normalization_results(
                     pass
             adjusted_width = min(max_length + 2, 50)
             ws_normalized.column_dimensions[column_letter].width = adjusted_width
-        
+
         # 2. 儲存摘要報告
         ws_summary = wb_new.create_sheet(title=summary_sheet_name)
         summary_rows = summary_report.split('\n')
@@ -2109,9 +2095,9 @@ def save_normalization_results(
                 cell.font = Font(color=PASS_FONT_COLOR)
             elif '⚠' in row_text:
                 cell.font = Font(color=WARN_FONT_COLOR)
-        
+
         ws_summary.column_dimensions['A'].width = 80
-        
+
         # 3. 保留上一步資料工作表與 SampleInfo（直接使用記憶體中的 DataFrame）
         df_map = {
             preserved_data_sheet_name: preserved_data_df,
@@ -2146,19 +2132,19 @@ def save_normalization_results(
                     default=8,
                 )
                 ws_preserved.column_dimensions[column[0].column_letter].width = min(max_length + 2, 50)
-        
+
         # 儲存新工作簿
         wb_new.save(output_path)
-        
+
         print(f"\n✓ 結果已儲存至: {output_path}")
         print(f"\n包含工作表:")
         print(f"  1. {method_name}_Result (標準化後資料)")
         print(f"  2. {summary_sheet_name} (摘要報告)")
         for index, sheet_name in enumerate(preserved_sheet_names, start=3):
             print(f"  {index}. {sheet_name} (保留輸入資料)")
-        
+
         return str(output_path)
-        
+
     except Exception as e:
         print(f"儲存檔案時發生錯誤: {e}")
         import traceback
@@ -2195,35 +2181,26 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
 
     session_dir = resolve_session_dir(input_file=input_file, session_dir=session_dir)
 
-    if input_file is None:
-        file_path = select_file()
-        
-        # 如果用戶取消選擇，返回 None
-        if not file_path:
-            print("❌ 未選擇檔案，程式結束。")
-            return None
-        
-        input_file = file_path
-    
+
     # 驗證檔案是否存在
     if not os.path.exists(input_file):
         raise FileNotFoundError(f"找不到檔案: {input_file}")
-    
+
     print(f"\n✓ 選擇的檔案: {Path(input_file).name}")
-    
+
     # 載入Excel工作表
     sheets, sheet_names = load_excel_sheets(input_file)
     if not sheets:
         raise Exception("無法載入 Excel 工作表")
-    
+
     print(f"✓ 找到 {len(sheet_names)} 個工作表")
-    
+
     # 尋找樣本資訊工作表
     sample_info_df, sample_info_sheet_name = find_sample_info_sheet(sheets)
     if sample_info_df is None:
         print("❌ 錯誤：找不到包含樣本資訊的工作表")
         raise Exception("找不到樣本資訊工作表")
-    
+
     print(f"✓ 使用樣本資訊工作表: {sample_info_sheet_name}")
 
     # SampleSpecific 模式需要校正欄位
@@ -2231,8 +2208,11 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
     if normalization_method == 'SampleSpecific':
         correction_col, correction_type = find_correction_column(sample_info_df)
         if not correction_col:
-            print("❌ 錯誤：SampleSpecific 模式需要校正欄位，但找不到")
-            raise Exception("找不到校正欄位（SampleInfo 中需要數值型參考欄位）")
+            raise ValueError(
+                "SampleInfo 中找不到 Sample-specific normalization 所需的校正欄位。\n"
+                "請確認 SampleInfo 工作表的第 F 欄（或之後）包含數值型校正資料\n"
+                "（例如 Creatinine 濃度、Normalization adduct 等）。"
+            )
         print(f"✓ 校正欄位: {correction_col} (類型: {correction_type})")
 
     # 確定要標準化的資料工作表
@@ -2268,15 +2248,15 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
         correction_col=correction_col,
         available_sheet_names=sheet_names,
     )
-    
+
     if result is None:
         print("\n❌ 標準化失敗")
         raise Exception("標準化失敗")
-    
+
     normalized_df, summary_report, method_name, output_dir, quality_metrics, figures_dir = result
-    
-   
-    
+
+
+
     # 回插 Sample_Type 資訊行到 normalized_df（若有）
     if sample_type_row is not None:
         from metabolomics.utils.data_helpers import insert_sample_type_row
@@ -2302,21 +2282,21 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
         sample_info_df=sample_info_df,
         output_path=_save_path,
     )
-    
+
     if not output_path:
         raise Exception("儲存結果失敗")
-    
+
     print(f"\n  ✓ Step 4 完成 → {Path(output_path).name}")
     print(f"    CV%: {quality_metrics['median_cv_before']:.1f}% → {quality_metrics['median_cv_after']:.1f}%"
           f" (改善 {quality_metrics['cv_improvement_pct']:.0f}%, {quality_metrics['cv_improved_ratio']:.0f}% features)")
     print(f"    上游基準: {data_sheet_name}")
     print(f"    總強度CV%: {quality_metrics['total_cv_before']:.1f}% → {quality_metrics['total_cv_after']:.1f}%")
-    
+
     # 🎯 返回統計資訊給 GUI
     # 從 normalized_df 中提取樣本數量（排除第一列 FeatureID）
     sample_count = len(normalized_df.columns) - 1
     metabolite_count = len(normalized_df)
-    
+
     return ProcessingResult(
         file_path=input_file,
         output_path=str(output_path),
@@ -2329,4 +2309,3 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
 if __name__ == "__main__":
     # 🔧 獨立運行時不傳入 input_file，會顯示對話框
     main()
-

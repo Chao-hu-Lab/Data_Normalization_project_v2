@@ -1097,18 +1097,18 @@ def load_and_process_data(file_path):
 # ========== ✅ 修正：統計檢定（Levene's test + 整體 Wilcoxon test）==========
 def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sample_info_df, qc_corrected_values):
     """計算 QC CV% 並進行正確的統計檢定"""
-    
+
     istd_df = istd_df.reset_index(drop=True)
     lowess_df = lowess_df.reset_index(drop=True)
-    
+
     min_length = min(len(istd_df), len(lowess_df))
     istd_df = istd_df.iloc[:min_length]
     lowess_df = lowess_df.iloc[:min_length]
-    
+
     print(f"\n{'='*70}")
     print(f"🔬 統計檢定")
     print(f"{'='*70}")
-    
+
     # 識別 QC 樣本（優先從 SampleInfo 查找，若名稱不匹配則從欄位名稱判斷）
     if 'Sample_Type' in sample_info_df.columns:
         qc_names_from_info = sample_info_df[
@@ -1122,26 +1122,26 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
     if not qc_columns:
         qc_columns = [col for col in sample_columns if 'QC' in col.upper() or 'POOLED' in col.upper()]
     print(f"  - QC 樣本數: {len(qc_columns)}")
-    
+
     if len(qc_columns) == 0:
         print(f"  ❌ 錯誤：未找到任何 QC 樣本！")
         return pd.DataFrame()
-    
+
     cv_results = []
     all_cv_improvements = []  # ✅ 收集所有 CV% 改善值（用於整體評估）
-    
+
     print(f"\n  💡 統計方法:")
     print(f"     • Levene's test: 檢測方差是否顯著改變（單一特徵）")
     print(f"     • Wilcoxon test: 檢測 CV% 是否整體顯著降低（所有特徵）")
-    
+
     for idx in range(len(istd_df)):
         try:
             istd_row = istd_df.iloc[idx]
             lowess_row = lowess_df.iloc[idx]
             feature_id = istd_row['FeatureID']
-            
+
             qc_values_istd = get_valid_values(istd_row, qc_columns)
-            
+
             if feature_id in qc_corrected_values:
                 qc_corrected_dict = qc_corrected_values[feature_id]
                 qc_values_lowess = []
@@ -1152,7 +1152,7 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
                             qc_values_lowess.append(val)
             else:
                 qc_values_lowess = get_valid_values(lowess_row, qc_columns)
-            
+
             min_len = min(len(qc_values_istd), len(qc_values_lowess))
             if min_len < 3:
                 cv_results.append({
@@ -1204,32 +1204,32 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
                 'Robust_CV_Improvement%': robust_cv_improvement,
                 'Variance_Test_pvalue': levene_pvalue
             })
-            
+
             if (idx + 1) % 100 == 0:
                 print(f"  處理進度: {idx + 1}/{len(istd_df)} features")
-        
+
         except Exception as e:
             print(f"  ⚠️ 處理特徵 {idx} 時發生錯誤: {e}")
             continue
-    
+
     cv_results_df = pd.DataFrame(cv_results)
-    
+
     # ========== ✅ 整體評估：Wilcoxon test ==========
     print(f"\n{'='*70}")
     print(f"📊 整體校正效果評估")
     print(f"{'='*70}")
-    
+
     if len(all_cv_improvements) >= 10:
         try:
             # 檢測 CV% 改善是否整體 > 0
             w_stat, w_pvalue = wilcoxon(all_cv_improvements, alternative='greater')
-            
+
             print(f"\n  ✅ Wilcoxon Signed-Rank Test (整體評估):")
             print(f"     H₀: CV% 改善的中位數 = 0")
             print(f"     H₁: CV% 改善的中位數 > 0")
             print(f"     統計量: {w_stat:.2f}")
             print(f"     P-value: {w_pvalue:.4e}")
-            
+
             if w_pvalue < 0.001:
                 print(f"     結論: LOESS 校正顯著降低了 QC CV% (p < 0.001) ✅✅✅")
             elif w_pvalue < 0.01:
@@ -1238,24 +1238,24 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
                 print(f"     結論: LOESS 校正顯著降低了 QC CV% (p < 0.05) ✅")
             else:
                 print(f"     結論: LOESS 校正未顯著降低 QC CV% (p ≥ 0.05) ❌")
-            
+
             # 描述性統計
             median_improvement = np.median(all_cv_improvements)
             mean_improvement = np.mean(all_cv_improvements)
             positive_improvements = np.sum(np.array(all_cv_improvements) > 0)
-            
+
             print(f"\n  📊 CV% 改善的描述性統計:")
             print(f"     中位數改善: {median_improvement:.2f}%")
             print(f"     平均改善: {mean_improvement:.2f}%")
             print(f"     改善特徵比例: {positive_improvements}/{len(all_cv_improvements)} ({positive_improvements/len(all_cv_improvements)*100:.1f}%)")
-            
+
         except Exception as e:
             print(f"  ⚠️ 整體評估失敗: {e}")
     else:
         print(f"  ⚠️ 有效特徵數不足 ({len(all_cv_improvements)} < 10)，跳過整體評估")
-    
+
     print(f"{'='*70}\n")
-    
+
     return cv_results_df
 
 
@@ -1389,30 +1389,30 @@ def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
         if not os.access(plots_dir, os.W_OK):
             print(f"  ⚠️  警告：沒有寫入權限到目錄: {plots_dir}")
             return
-        
+
         levene_pvalues = cv_results_df['Variance_Test_pvalue'].dropna()
-        
+
         if len(levene_pvalues) < 10:
             print("  ⚠️ 有效 p 值數量不足，跳過 p 值分佈圖")
             return
-        
+
         # 只繪製 Levene's test 的 p 值分佈
         fig, ax = plt.subplots(1, 1, figsize=(10, 7))
-        
+
         ax.hist(levene_pvalues, bins=20, color='steelblue', edgecolor='black', alpha=0.7)
         ax.axhline(y=len(levene_pvalues)/20, color='red', linestyle='--', linewidth=2,
                    label='Uniform Distribution Expected')
         ax.set_xlabel('P-value (Levene\'s Test)', fontsize=12, fontweight='bold')
         ax.set_ylabel('Frequency', fontsize=12, fontweight='bold')
-        ax.set_title('P-value Distribution\n(Variance Homogeneity Test)', 
+        ax.set_title('P-value Distribution\n(Variance Homogeneity Test)',
                      fontsize=14, fontweight='bold')
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3, linestyle='--')
-        
+
         # Kolmogorov-Smirnov 檢定
         from scipy.stats import kstest
         ks_stat, ks_pvalue = kstest(levene_pvalues, 'uniform')
-        
+
         textstr = f'Kolmogorov-Smirnov Test:\n'
         textstr += f'Statistic = {ks_stat:.4f}\n'
         textstr += f'P-value = {ks_pvalue:.4f}\n'
@@ -1420,13 +1420,13 @@ def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
             textstr += 'Result: Uniform ✓'
         else:
             textstr += 'Result: Non-uniform ✗'
-        
+
         ax.text(0.98, 0.97, textstr, transform=ax.transAxes,
                 fontsize=10, verticalalignment='top', horizontalalignment='right',
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-        
+
         plt.tight_layout()
-        
+
         pvalue_plot_path = os.path.join(plots_dir, f'Step2_Pvalue_Distribution_Levene_{timestamp}.png')
 
         # ===== 防呆: 圖表保存檢查 =====
@@ -1455,7 +1455,7 @@ def plot_pvalue_distribution(cv_results_df, plots_dir, timestamp):
             print(f"  - 結論: p 值分佈接近均勻分佈 ✓")
         else:
             print(f"  - 結論: p 值分佈偏離均勻分佈 ✗")
-        
+
     except Exception as e:
         print(f"  ⚠️ 繪製 p 值分佈圖時發生錯誤: {e}")
         import traceback
@@ -1662,27 +1662,27 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             print(f"❌ 錯誤：找不到輸入檔案: {input_file}")
             return False
         cv_results_df = calculate_qc_cv_with_statistical_test(
-            istd_df, 
-            lowess_df, 
-            sample_columns, 
-            sample_info_df, 
+            istd_df,
+            lowess_df,
+            sample_columns,
+            sample_info_df,
             qc_corrected_values
         )
-        
+
         # ✅ 主表：只保留 Levene's test 和 CV%
         lowess_with_cv = lowess_df.merge(cv_results_df, on='FeatureID', how='left')
         lowess_with_cv = apply_feature_metadata_passthrough(lowess_with_cv, istd_df)
-        
+
         # ✅ 主表欄位順序（移除 Wilcoxon_pvalue 和 Significant_Improvement）
         cols_order = [
-            'Original_QC_CV%', 
-            'Corrected_QC_CV%', 
+            'Original_QC_CV%',
+            'Corrected_QC_CV%',
             'CV_Improvement%',
             'Variance_Test_pvalue'  # 只保留 Levene's test
         ]
         other_cols = [col for col in lowess_with_cv.columns if col not in cols_order]
         lowess_with_cv = lowess_with_cv[other_cols + cols_order]
-        
+
         # ✅ 副表：進階統計指標
         advanced_stats_df = lowess_df[['FeatureID']].merge(
             trend_stats_df, on='FeatureID', how='left'
@@ -1791,10 +1791,10 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         ]
         for strategy, count in frac_strategy_counts.items():
             summary_pairs.append((f"Frac strategy: {strategy}", count))
-        
+
         print(f"\n📋 開始處理 Excel 檔案...")
         print(f"  - 載入原始檔案: {os.path.basename(input_file)}")
-        
+
         def sanitize_excel_df(df):
             if df is None:
                 return None
@@ -1870,7 +1870,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
                 col_idx = header.index('Variance_Test_pvalue') + 1
                 apply_significance_fill(worksheet, col_idx)
                 apply_number_format(worksheet, col_idx, '0.0000')
-        
+
         # 副表顏色標記
         if QC_LOWESS_ADVANCED_SHEET in workbook.sheetnames:
             worksheet = workbook[QC_LOWESS_ADVANCED_SHEET]
@@ -1976,12 +1976,12 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         print(f"✓ QC LOESS 結果已保存:")
         print(f"  {output_file}")
         print(f"{'='*70}")
-        
+
         total_count = len(cv_results_df)
-        
+
         print(f"\n📊 核心統計摘要（主表）:")
         print(f"  - 總特徵數: {total_count}")
-        
+
         # CV% 改善統計
         cv_improvements = cv_results_df['CV_Improvement%'].dropna()
         if len(cv_improvements) > 0:
@@ -1989,26 +1989,26 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             print(f"     平均: {cv_improvements.mean():.2f}%")
             print(f"     中位數: {cv_improvements.median():.2f}%")
             print(f"     範圍: {cv_improvements.min():.2f}% ~ {cv_improvements.max():.2f}%")
-            
+
             improved = (cv_improvements > 5).sum()
             similar = ((cv_improvements >= -5) & (cv_improvements <= 5)).sum()
             worse = (cv_improvements < -5).sum()
-            
+
             print(f"\n  分類:")
             print(f"     顯著改善 (>5%): {improved} ({improved/len(cv_improvements)*100:.1f}%)")
             print(f"     持平 (±5%): {similar} ({similar/len(cv_improvements)*100:.1f}%)")
             print(f"     變差 (<-5%): {worse} ({worse/len(cv_improvements)*100:.1f}%)")
-        
+
         # Levene's test 統計
         levene_valid = cv_results_df['Variance_Test_pvalue'].notna().sum()
-        levene_sig = ((cv_results_df['Variance_Test_pvalue'] < 0.05) & 
+        levene_sig = ((cv_results_df['Variance_Test_pvalue'] < 0.05) &
                       (cv_results_df['Variance_Test_pvalue'].notna())).sum()
-        
+
         print(f"\n  🔬 Levene's Test（方差齊性）:")
         print(f"     成功執行: {levene_valid}/{total_count} ({levene_valid/total_count*100:.1f}%)")
         if levene_valid > 0:
             print(f"     方差顯著改變 (p < 0.05): {levene_sig}/{levene_valid} ({levene_sig/levene_valid*100:.1f}%)")
-        
+
         # 校正決策統計
         feature_total = decision_stats.get('total_features', total_count)
         feature_success = decision_stats.get('success', 0)
@@ -2076,9 +2076,9 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
                 print(f"     - 其他（資料不足）: {other_count} ({frac_pct(other_count):.1f}%)")
             print(f"     - Frac 平均值: {fmt_frac_value(frac_mean)}")
             print(f"     - Frac 中位數: {fmt_frac_value(frac_median)}")
-        
+
         tau_valid = trend_stats_df['Kendall_Tau'].notna().sum()
-        
+
         print(f"\n📊 進階統計（副表）:")
         print(f"  Kendall's tau:")
         print(f"    成功估計: {tau_valid}/{total_count} ({tau_valid/total_count*100:.1f}%)")
@@ -2086,7 +2086,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             tau_values = trend_stats_df['Kendall_Tau'].dropna()
             print(f"    中位數: {np.median(tau_values):.4f}")
             print(f"    平均值: {np.mean(tau_values):.4f}")
-        
+
         # R² 統計
         r2_valid = trend_stats_df['LOESS_R2'].notna().sum()
         if r2_valid > 0:
@@ -2094,7 +2094,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             print(f"\n  LOESS 擬合優度 R²:")
             print(f"    中位數: {np.median(r2_values):.4f}")
             print(f"    平均值: {np.mean(r2_values):.4f}")
-        
+
         print(f"\n💡 提示:")
         print(f"  - 主表 ({SHEET_NAMES['qc_lowess']}): Levene's test + CV%（單一特徵）")
         print(f"  - 副表 ({QC_LOWESS_ADVANCED_SHEET}): Kendall's tau + R²/RMSE（進階評估）")
@@ -2102,7 +2102,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         print(f"  - 新增 Frac_Used / QC_CV_for_Frac / Frac_Strategy 可於 {QC_LOWESS_ADVANCED_SHEET} 交叉檢視")
         print(f"  - 整體評估: Wilcoxon test 已在終端機顯示")
         print(f"\n{'='*70}\n")
-        
+
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
 
         # QC CV% 校正效果總覽圖
@@ -2128,7 +2128,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
 def main(input_file=None, session_dir=None):
     """主程式入口"""
     print("QC-LOESS 批次效應校正")
-    
+
     if input_file is None:
         raise ValueError("input_file is required; GUI must provide the file path.")
 
@@ -2137,24 +2137,11 @@ def main(input_file=None, session_dir=None):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
         print(f"\n✓ 已建立 'output' 資料夾: {output_dir}")
-    
-    if input_file:
-        file_path = input_file
-    else:
-        root = tk.Tk()
-        root.withdraw()
 
-        file_path = filedialog.askopenfilename(
-            title="選擇 Excel 檔案",
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
-        )
-
-        if not file_path:
-            print("未選擇檔案，程式結束")
-            return
+    file_path = input_file
 
     print(f"  輸入: {os.path.basename(file_path)}")
-    
+
     raw_df, istd_df, sample_info_df, sample_type_row = load_and_process_data(file_path)
     source_sheet_name = istd_df.attrs.get('source_sheet_name', SHEET_NAMES['istd_correction'])
 
@@ -2183,16 +2170,16 @@ def main(input_file=None, session_dir=None):
         plots_dir=_plots_dir, trend_plot_data=trend_plot_data,
         sample_type_row=sample_type_row
     )
-    
+
     if not success:
         print("❌ 結果保存失敗")
         return
-    
+
     print(f"\n  ✓ QC-LOESS 完成 → {os.path.basename(output_file)}")
-    
+
     metabolites_count = len(lowess_df)
     samples_count = len(sample_columns)
-    
+
     return ProcessingResult(
         file_path=file_path,
         output_path=str(output_file),

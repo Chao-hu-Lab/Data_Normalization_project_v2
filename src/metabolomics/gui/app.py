@@ -129,9 +129,9 @@ class DataNormalizationApp:
     @staticmethod
     def _build_workspace_defaults():
         return {
-            'left_minsize': 640,
-            'right_minsize': 460,
-            'split_ratio': 0.47,
+            'left_minsize': 540,
+            'right_minsize': 540,
+            'split_ratio': 0.4,
             'initial_retry_ms': 120,
             'keep_ratio_on_resize': True,
             'card_rows': 4,
@@ -163,7 +163,7 @@ class DataNormalizationApp:
         master.title("Data Normalization Workflow v2")
         master.geometry(window_defaults['geometry'])
         master.minsize(*window_defaults['minsize'])  # 設定最小視窗大小，確保進度條不被遮擋
-        
+
         # 🎨 現代化色彩方案
         self.color_scheme = {
             'background': '#f0f2f5',      # 整體背景色 (淺灰)
@@ -177,7 +177,7 @@ class DataNormalizationApp:
             'accent_hover': '#1557b0',    # 主色調懸停
             'border': '#d1d5db',          # 邊框顏色
             'card_shadow': '#00000015',   # 卡片陰影
-            
+
             # 步驟專屬顏色 (扁平淡色)
             'step1': '#e8f0fe',
             'step1_accent': '#1a73e8',
@@ -187,7 +187,7 @@ class DataNormalizationApp:
             'step3_accent': '#f9ab00',
             'step4': '#fce8e6',
             'step4_accent': '#ea4335',
-            
+
             'success': '#34a853',
             'running': '#f9ab00',
             'danger': '#ea4335',
@@ -197,7 +197,7 @@ class DataNormalizationApp:
             'primary': '#1a73e8',          # 主要按鈕
             'primary_text': '#ffffff'      # 主要按鈕文字
         }
-        
+
         master.configure(bg=self.color_scheme['background'])
 
         # 執行狀態管理
@@ -207,12 +207,12 @@ class DataNormalizationApp:
         self.progress_queue = queue.Queue()
         self.is_executing = False
         self.log_queue = queue.Queue()
-        
+
         # 檔案選擇相關
         self.file_selected = threading.Event()
         self.selected_file_path = None
         self._ms_session_dir = None
-        
+
         self.last_output_file = None  # 記錄最後一個輸出檔案
         self.steps = self._build_workflow_steps()
         self.step_outputs = {}
@@ -222,9 +222,7 @@ class DataNormalizationApp:
         self._split_ratio_applied = False
         self.current_step_index = -1  # 追蹤當前步驟索引
 
-        # Step 4 方法選擇
-        self.normalization_method_var = tk.StringVar(value='PQN')
-        
+
         # 統計資訊
         self.current_stats = {
             'step_name': '',
@@ -240,7 +238,7 @@ class DataNormalizationApp:
         self.style = ttk.Style()
         self.style.theme_use('clam')
         self.configure_styles()
-        
+
         # 創建主框架
         self.create_main_layout()
 
@@ -252,30 +250,30 @@ class DataNormalizationApp:
 
         # 創建頂部標題區
         self.create_title_section()
-        
+
         # 創建頂部 Hero Section (檔案選擇)
         self.create_hero_section()
-        
+
         # 創建標題和控制按鈕
         self.create_header()
-        
+
         # 創建左右分欄
         self.create_split_layout()
-        
+
         # 左側：步驟區域 (卡片式)
         self.create_steps_area()
-        
+
         # 右側：分頁式資訊面板 (Stats + Log)
         self.create_right_panel()
-        
+
         # 設置日誌系統
         self.setup_logging()
-        
+
         # 開始檢查進度和日誌
         self.check_progress()
         self.check_log_queue()
         self.update_stats_display()
-        
+
         # 初始化按鈕狀態
         self.update_button_states()
 
@@ -540,12 +538,12 @@ class DataNormalizationApp:
         """設置日誌系統"""
         log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
         os.makedirs(log_dir, exist_ok=True)
-        
+
         log_file = os.path.join(
-            log_dir, 
+            log_dir,
             f'normalization_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
         )
-        
+
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
@@ -555,11 +553,11 @@ class DataNormalizationApp:
             ]
         )
         self.logger = logging.getLogger(__name__)
-        
+
         gui_handler = QueueHandler(self.log_queue)
         gui_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
         self.logger.addHandler(gui_handler)
-        
+
         self.logger.info("=" * 80)
         self.logger.info("Data Normalization Workflow v2 啟動")
         self.logger.info("=" * 80)
@@ -568,84 +566,84 @@ class DataNormalizationApp:
         """🎨 Configure unified styles - Arial (Modern)"""
         # Main Frame
         self.style.configure('Main.TFrame', background=self.color_scheme['background'])
-        
+
         # Header Frame (控制按鈕區域)
-        self.style.configure('Header.TFrame', 
+        self.style.configure('Header.TFrame',
                              background=self.color_scheme['background'],
                              relief='flat')
-        
+
         # Hero Frame (檔案選擇區域 - 主色調)
-        self.style.configure('Hero.TFrame', 
+        self.style.configure('Hero.TFrame',
                              background=self.color_scheme['hero_bg'],
                              relief='flat')
-        
+
         # Panel Frame (with border)
-        self.style.configure('Panel.TFrame', 
-                             background=self.color_scheme['panel_bg'], 
+        self.style.configure('Panel.TFrame',
+                             background=self.color_scheme['panel_bg'],
                              relief='solid',
                              borderwidth=1,
                              bordercolor=self.color_scheme['border'])
-        
+
         # Step Frame
-        self.style.configure('Step.TFrame', 
-                             background=self.color_scheme['panel_bg'], 
+        self.style.configure('Step.TFrame',
+                             background=self.color_scheme['panel_bg'],
                              relief='flat',
                              borderwidth=0)
-        
+
         # Stats Panel Frame
         self.style.configure('Stats.TFrame',
                              background=self.color_scheme['panel_bg'],
                              relief='flat',
                              borderwidth=0)
-        
+
         # Card Frame (卡片式設計)
         self.style.configure('Card.TFrame',
                              background=self.color_scheme['panel_bg'],
                              relief='flat',
                              borderwidth=0)
-        
+
         # Title Label - Arial, 18pt, White text on Hero bg
-        self.style.configure('HeroTitle.TLabel', 
-                             font=(FONTS['sans'], 18, 'bold'), 
-                             foreground=self.color_scheme['hero_text'], 
+        self.style.configure('HeroTitle.TLabel',
+                             font=(FONTS['sans'], 18, 'bold'),
+                             foreground=self.color_scheme['hero_text'],
                              background=self.color_scheme['hero_bg'])
-        
+
         # Hero Subtitle
-        self.style.configure('HeroSubtitle.TLabel', 
-                             font=(FONTS['sans'], 11), 
-                             foreground='#cce0ff', 
+        self.style.configure('HeroSubtitle.TLabel',
+                             font=(FONTS['sans'], 11),
+                             foreground='#cce0ff',
                              background=self.color_scheme['hero_bg'])
-        
+
         # Section Title Label - Arial, 14pt
-        self.style.configure('Title.TLabel', 
-                             font=(FONTS['sans'], 14, 'bold'), 
-                             foreground=self.color_scheme['text_dark'], 
+        self.style.configure('Title.TLabel',
+                             font=(FONTS['sans'], 14, 'bold'),
+                             foreground=self.color_scheme['text_dark'],
                              background=self.color_scheme['background'])
-        
+
         # Notice Label - Arial, 10pt
-        self.style.configure('Notice.TLabel', 
-                             font=(FONTS['sans'], 10), 
-                             foreground=self.color_scheme['text_light'], 
+        self.style.configure('Notice.TLabel',
+                             font=(FONTS['sans'], 10),
+                             foreground=self.color_scheme['text_light'],
                              background=self.color_scheme['background'])
-        
+
         # Step Button
-        self.style.configure('Step.TButton', 
+        self.style.configure('Step.TButton',
                              font=(FONTS['sans'], 11, 'bold'),
                              borderwidth=0,
                              relief='flat')
-        
+
         # Primary Button Style
         self.style.configure('Primary.TButton',
                              font=(FONTS['sans'], 11, 'bold'),
                              background=self.color_scheme['primary'],
                              foreground=self.color_scheme['primary_text'])
-        
+
         # Ghost Button Style
         self.style.configure('Ghost.TButton',
                              font=(FONTS['sans'], 11),
                              background=self.color_scheme['ghost'],
                              foreground=self.color_scheme['ghost_text'])
-        
+
         # Compact Step Frame
         self.style.configure('CompactStep.TFrame',
                              background=self.color_scheme['panel_bg'],
@@ -656,16 +654,16 @@ class DataNormalizationApp:
                              font=(FONTS['sans'], 11),
                              background=self.color_scheme['panel_bg'],
                              foreground=self.color_scheme['text_dark'])
-        
+
         # Stats Title Label
         self.style.configure('StatsTitle.TLabel',
                              font=(FONTS['sans'], 12, 'bold'),
                              background=self.color_scheme['panel_bg'],
                              foreground=self.color_scheme['text_dark'])
-        
+
         # Tab Style
         self.style.configure('TNotebook', background=self.color_scheme['panel_bg'])
-        self.style.configure('TNotebook.Tab', 
+        self.style.configure('TNotebook.Tab',
                              font=(FONTS['sans'], 11),
                              padding=[12, 6])
 
@@ -741,7 +739,7 @@ class DataNormalizationApp:
         # 標題容器 - 使用 grid row 0
         title_container = tk.Frame(self.main_frame, bg=self.color_scheme['background'])
         title_container.grid(row=0, column=0, sticky='ew', pady=(0, 10))
-        
+
         # 主標題
         main_title = tk.Label(
             title_container,
@@ -751,7 +749,7 @@ class DataNormalizationApp:
             bg=self.color_scheme['background']
         )
         main_title.pack(anchor='w')
-        
+
         # 副標題說明
         subtitle = tk.Label(
             title_container,
@@ -761,7 +759,7 @@ class DataNormalizationApp:
             bg=self.color_scheme['background']
         )
         subtitle.pack(anchor='w', pady=(2, 0))
-        
+
         # 分隔線 - 使用 grid row 1
         separator = tk.Frame(self.main_frame, bg=self.color_scheme['divider'], height=1)
         separator.grid(row=1, column=0, sticky='ew', pady=(5, 15))
@@ -771,16 +769,16 @@ class DataNormalizationApp:
         # Hero 容器 - 主色調背景 - 使用 grid row 2
         hero_container = tk.Frame(self.main_frame, bg=self.color_scheme['hero_bg'])
         hero_container.grid(row=2, column=0, sticky='ew', pady=(0, 12))
-        
+
         hero_inner = tk.Frame(hero_container, bg=self.color_scheme['hero_bg'], padx=18, pady=16)
         hero_inner.pack(fill=tk.X)
         hero_inner.grid_columnconfigure(0, weight=1)
         hero_inner.grid_columnconfigure(1, minsize=340)
-        
+
         # 左側：標題與說明
         left_section = tk.Frame(hero_inner, bg=self.color_scheme['hero_bg'])
         left_section.grid(row=0, column=0, sticky='w', padx=(0, 18))
-        
+
         title_label = tk.Label(
             left_section,
             text="Input File Selection",
@@ -791,7 +789,7 @@ class DataNormalizationApp:
             justify='left'
         )
         title_label.pack(anchor='w')
-        
+
         subtitle_label = tk.Label(
             left_section,
             text="Select your VBA-formatted Excel file to begin the workflow",
@@ -800,17 +798,17 @@ class DataNormalizationApp:
             bg=self.color_scheme['hero_bg']
         )
         subtitle_label.pack(anchor='w', pady=(4, 0))
-        
+
         # 右側：檔案選擇區
         right_section = tk.Frame(hero_inner, bg=self.color_scheme['hero_bg'])
         right_section.grid(row=0, column=1, sticky='e')
         right_section.grid_columnconfigure(0, weight=1)
         right_section.grid_columnconfigure(1, weight=1, uniform='hero-actions')
-        
+
         # 檔案顯示框
         file_display_frame = tk.Frame(right_section, bg='#ffffff', padx=2, pady=2)
         file_display_frame.grid(row=0, column=0, columnspan=2, sticky='ew')
-        
+
         self.input_file_label = tk.Label(
             file_display_frame,
             text="No file selected...",
@@ -828,7 +826,7 @@ class DataNormalizationApp:
         actions_row.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(10, 0))
         actions_row.grid_columnconfigure(0, weight=1, uniform='hero-actions')
         actions_row.grid_columnconfigure(1, weight=1, uniform='hero-actions')
-        
+
         # 選擇按鈕 (白色背景)
         select_btn = tk.Button(
             actions_row,
@@ -870,22 +868,22 @@ class DataNormalizationApp:
         header_frame.grid(row=3, column=0, sticky='ew', pady=(0, 10))
         header_frame.grid_columnconfigure(0, weight=1)
         header_frame.grid_columnconfigure(1, weight=0)
-        
+
         # Left: Title & Notice
         title_frame = ttk.Frame(header_frame, style='Header.TFrame')
         title_frame.grid(row=0, column=0, sticky='ew')
-        
+
         self.title_label = tk.Label(
-            title_frame, 
-            text=text_tokens['title'], 
+            title_frame,
+            text=text_tokens['title'],
             font=(FONTS['sans'], 14, 'bold'),
             fg=self.color_scheme['text_dark'],
             bg=self.color_scheme['background']
         )
         self.title_label.pack(anchor='w')
-        
+
         self.notice_label = tk.Label(
-            title_frame, 
+            title_frame,
             text=text_tokens['subtitle'],
             font=(FONTS['sans'], 10),
             fg=self.color_scheme['text_light'],
@@ -895,13 +893,13 @@ class DataNormalizationApp:
         )
         if text_tokens['subtitle']:
             self.notice_label.pack(anchor='w', pady=(2, 0))
-        
+
         # Right: Control Buttons
         control_grid = tk.Frame(header_frame, bg=self.color_scheme['background'])
         control_grid.grid(row=0, column=1, sticky='ne', padx=(16, 0))
         for column in range(button_tokens['columns']):
             control_grid.grid_columnconfigure(column, weight=1, uniform='controls')
-        
+
         # Auto Run Button
         self.run_all_btn = tk.Button(
             control_grid,
@@ -920,7 +918,7 @@ class DataNormalizationApp:
             disabledforeground='#dbeafe'
         )
         self.run_all_btn.grid(row=0, column=0, padx=4, pady=4, sticky='ew')
-        
+
         self.cancel_btn = tk.Button(
             control_grid,
             text=button_tokens['stop']['text'],
@@ -937,7 +935,7 @@ class DataNormalizationApp:
             disabledforeground='#e2e8f0'
         )
         self.cancel_btn.grid(row=0, column=1, padx=4, pady=4, sticky='ew')
-        
+
         self.reset_btn = tk.Button(
             control_grid,
             text=button_tokens['reset']['text'],
@@ -984,14 +982,14 @@ class DataNormalizationApp:
             sashrelief='flat'
         )
         self.split_frame.grid(row=4, column=0, sticky='nsew', pady=4)
-        
+
         # 左側框架（步驟區域）- 卡片式設計
         self.left_frame = tk.Frame(self.split_frame, bg=self.color_scheme['background'])
         self.split_frame.add(self.left_frame, minsize=workspace_defaults['left_minsize'], stretch='always')
-        
+
         # 右側框架（分頁式資訊面板）
         self.right_frame = tk.Frame(
-            self.split_frame, 
+            self.split_frame,
             bg=self.color_scheme['panel_bg'],
             highlightbackground=self.color_scheme['border'],
             highlightthickness=1
@@ -1035,12 +1033,12 @@ class DataNormalizationApp:
         self.left_frame.grid_columnconfigure(0, weight=1)
         cards_container.grid(row=0, column=0, sticky='nsew')
         cards_container.grid_columnconfigure(0, weight=1)
-        
+
         for i, step in enumerate(steps):
             cards_container.grid_rowconfigure(i, weight=1, uniform='step-cards')
             # === 卡片容器 ===
             card_frame = tk.Frame(
-                cards_container, 
+                cards_container,
                 bg=self.color_scheme['panel_bg'],
                 highlightbackground=self.color_scheme['border'],
                 highlightthickness=1,
@@ -1055,18 +1053,18 @@ class DataNormalizationApp:
             )
             card_frame.grid_rowconfigure(0, weight=1)
             self.step_cards.append(card_frame)
-            
+
             # 卡片內部佈局
             card_inner = tk.Frame(card_frame, bg=self.color_scheme['panel_bg'])
             card_inner.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
             card_inner.grid_columnconfigure(1, weight=1)
             card_inner.grid_columnconfigure(2, minsize=card_tokens['actions_width'])
-            
+
             # === 左側：顏色指示條 + 步驟編號 ===
             left_indicator = tk.Frame(card_inner, bg=step['accent'], width=card_tokens['badge_width'], height=104)
             left_indicator.grid(row=0, column=0, sticky='ns')
             left_indicator.grid_propagate(False)
-            
+
             step_num_label = tk.Label(
                 left_indicator,
                 text=f"Step {i+1}",
@@ -1076,7 +1074,7 @@ class DataNormalizationApp:
                 justify='center'
             )
             step_num_label.pack(expand=True)
-            
+
             # === 中間：步驟資訊區 ===
             info_section = tk.Frame(
                 card_inner,
@@ -1085,7 +1083,7 @@ class DataNormalizationApp:
                 pady=card_tokens['section_pady'],
             )
             info_section.grid(row=0, column=1, sticky='nsew')
-            
+
             # 步驟名稱
             step_name_label = tk.Label(
                 info_section,
@@ -1096,11 +1094,11 @@ class DataNormalizationApp:
                 anchor='w'
             )
             step_name_label.pack(anchor='w')
-            
+
             # 輸入來源顯示 (Chain of Custody)
             input_source_frame = tk.Frame(info_section, bg=self.color_scheme['panel_bg'])
             input_source_frame.pack(anchor='w', pady=(4, 0))
-            
+
             input_icon_label = tk.Label(
                 input_source_frame,
                 text="📥 Input: ",
@@ -1110,13 +1108,13 @@ class DataNormalizationApp:
             )
             input_icon_label.pack(side=tk.LEFT)
             input_icon_label.config(text="Input:")
-            
+
             # 根據步驟索引顯示不同的輸入來源
             if i == 0:
                 input_text = "Waiting for file selection..."
             else:
                 input_text = f"← Output from Step {i}"
-            
+
             if i != 0:
                 input_text = f"Output from Step {i}"
 
@@ -1130,29 +1128,6 @@ class DataNormalizationApp:
             input_source_label.pack(side=tk.LEFT)
             self.step_input_labels.append(input_source_label)
 
-            # Step 4 專用：方法選擇 RadioButton
-            if i == 3:
-                method_frame = tk.Frame(info_section, bg=self.color_scheme['panel_bg'])
-                method_frame.pack(anchor='w', pady=(2, 0))
-                step4_accent = self.color_scheme['step4_accent']
-                tk.Label(
-                    method_frame, text="Method:",
-                    font=(FONTS['sans'], 9, 'bold'),
-                    fg=step4_accent,
-                    bg=self.color_scheme['panel_bg'],
-                ).pack(side=tk.LEFT)
-                for val, label in [('PQN', 'PQN'), ('SampleSpecific', 'Sample-Specific')]:
-                    tk.Radiobutton(
-                        method_frame, text=label, value=val,
-                        variable=self.normalization_method_var,
-                        font=(FONTS['sans'], 9),
-                        fg=self.color_scheme['text_dark'],
-                        bg=self.color_scheme['panel_bg'],
-                        activebackground=self.color_scheme['panel_bg'],
-                        activeforeground=step4_accent,
-                        selectcolor=self.color_scheme['panel_bg'],
-                        indicatoron=True,
-                    ).pack(side=tk.LEFT, padx=(4, 0))
 
             # === 右側：控制按鈕區 ===
             control_section = tk.Frame(
@@ -1170,17 +1145,17 @@ class DataNormalizationApp:
             control_section.grid_columnconfigure(0, weight=1, uniform='step-actions')
             control_section.grid_columnconfigure(1, weight=1, uniform='step-actions')
             control_section.grid_columnconfigure(2, weight=1, uniform='step-actions')
-            
+
             # 按鈕行
             btn_row = control_section
-            
+
             self.step_status_labels.append(None)
-            
+
             # 執行按鈕 (Primary/Ghost 樣式)
             is_first_step = (i == 0)
             btn_bg = self.color_scheme['ghost'] if not is_first_step else step['accent']
             btn_fg = self.color_scheme['ghost_text'] if not is_first_step else '#ffffff'
-            
+
             run_btn = tk.Button(
                 btn_row,
                 text="▶ Run",
@@ -1204,7 +1179,7 @@ class DataNormalizationApp:
             )
             run_btn.grid(row=0, column=0, padx=4, pady=4, sticky='ew')
             self.step_buttons.append(run_btn)
-            
+
             # Excel 按鈕
             excel_btn = tk.Button(
                 btn_row,
@@ -1226,7 +1201,7 @@ class DataNormalizationApp:
             )
             excel_btn.grid(row=0, column=1, padx=4, pady=4, sticky='ew')
             self.step_excel_buttons.append(excel_btn)
-            
+
             # Plot 按鈕
             plot_btn = tk.Button(
                 btn_row,
@@ -1254,15 +1229,15 @@ class DataNormalizationApp:
         # 建立 Notebook (分頁容器)
         self.info_notebook = ttk.Notebook(self.right_frame)
         self.info_notebook.pack(fill=tk.BOTH, expand=True)
-        
+
         # === Tab 1: 執行日誌 ===
         log_tab = tk.Frame(self.info_notebook, bg=self.color_scheme['panel_bg'])
         self.info_notebook.add(log_tab, text="Execution Log")
-        
+
         # Log 標題列
         log_header = tk.Frame(log_tab, bg=self.color_scheme['panel_bg'])
         log_header.pack(fill=tk.X, padx=12, pady=(12, 6))
-        
+
         tk.Label(
             log_header,
             text="Real-time execution output",
@@ -1270,15 +1245,15 @@ class DataNormalizationApp:
             fg=self.color_scheme['text_light'],
             bg=self.color_scheme['panel_bg']
         ).pack(side=tk.LEFT)
-        
+
         # Clear Log Button (使用輔助方法)
         clear_log_btn = self._create_ghost_button(log_header, "Clear", self.clear_log)
         clear_log_btn.pack(side=tk.RIGHT)
-        
+
         # Log 文字區域
         log_container = tk.Frame(log_tab, bg=self.color_scheme['panel_bg'])
         log_container.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
-        
+
         self.result_text = scrolledtext.ScrolledText(
             log_container,
             wrap=tk.WORD,
@@ -1290,13 +1265,13 @@ class DataNormalizationApp:
             borderwidth=0
         )
         self.result_text.pack(fill=tk.BOTH, expand=True)
-        
+
         # Configure Tag Colors
         self.result_text.tag_configure('INFO', foreground='#9cdcfe')
         self.result_text.tag_configure('WARNING', foreground='#dcdcaa')
         self.result_text.tag_configure('ERROR', foreground='#f14c4c')
         self.result_text.tag_configure('SUCCESS', foreground='#4ec9b0')
-        
+
         # === Tab 2: 狀態統計 ===
         stats_tab = tk.Frame(self.info_notebook, bg=self.color_scheme['panel_bg'])
         self.info_notebook.add(stats_tab, text="Status")
@@ -1325,7 +1300,7 @@ class DataNormalizationApp:
 
         # 進度條容器
         progress_inner = tk.Frame(
-            self.progress_frame, 
+            self.progress_frame,
             bg=self.color_scheme['panel_bg'],
             highlightbackground=self.color_scheme['border'],
             highlightthickness=1
@@ -1338,7 +1313,7 @@ class DataNormalizationApp:
         # 進度標題與文字
         progress_header = tk.Frame(content, bg=self.color_scheme['panel_bg'])
         progress_header.pack(fill=tk.X, pady=(0, 8))
-        
+
         tk.Label(
             progress_header,
             text="Progress",
@@ -1388,21 +1363,21 @@ class DataNormalizationApp:
                 next_step_index = i
                 break
             next_step_index = len(steps)  # 全部完成
-        
+
         # Step 1 永遠可用
         self.step_buttons[0].config(state='normal')
-        
+
         # 更新所有按鈕樣式
         for i in range(len(steps)):
             step = steps[i]
             prev_step = steps[i-1]['name'] if i > 0 else None
-            
+
             # 判斷是否可以執行此步驟
             can_execute = (i == 0) or (prev_step and prev_step in completed_steps)
-            
+
             if can_execute:
                 self.step_buttons[i].config(state='normal')
-                
+
                 # 如果是下一個待執行步驟 (Primary 高亮樣式)
                 if step['name'] not in completed_steps and i == next_step_index:
                     self.step_buttons[i].config(
@@ -1432,7 +1407,7 @@ class DataNormalizationApp:
                 )
                 if hasattr(self, 'step_cards') and i < len(self.step_cards):
                     self.step_cards[i].config(highlightbackground=self.color_scheme['border'], highlightthickness=1)
-        
+
         # 更新完成進度標籤
         if hasattr(self, 'stats_completed_label'):
             completed_count = len(completed_steps)
@@ -1474,7 +1449,7 @@ class DataNormalizationApp:
                 data_dict = self._result_to_dict(data)
                 if not data_dict:
                     continue
-                
+
                 # 更新統計資訊
                 if 'metabolites' in data_dict:
                     self.current_stats['metabolites'] = data_dict['metabolites']
@@ -1489,9 +1464,9 @@ class DataNormalizationApp:
                             self.step_outputs[self.current_stats['step_name']] = data
                         else:
                             self.step_outputs[self.current_stats['step_name']] = data_dict
-                
+
                 self.update_stats_display()
-                
+
         except queue.Empty:
             pass
         finally:
@@ -1504,7 +1479,7 @@ class DataNormalizationApp:
             self.stats_step_label.config(text=self.current_stats['step_name'])
         else:
             self.stats_step_label.config(text="Idle")
-        
+
         # 更新資料維度
         if self.current_stats['metabolites'] > 0:
             self.stats_data_label.config(
@@ -1512,17 +1487,17 @@ class DataNormalizationApp:
             )
         else:
             self.stats_data_label.config(text="No data loaded")
-        
+
         # 更新完成進度
         if hasattr(self, 'stats_completed_label'):
             completed_count = len(self.completed_steps)
             self.stats_completed_label.config(text=f"{completed_count} / 4")
-    
+
     def update_input_source_labels(self):
         """更新輸入來源顯示 (Chain of Custody)"""
         if not hasattr(self, 'step_input_labels'):
             return
-            
+
         for i, label in enumerate(self.step_input_labels):
             if i == 0:
                 # Step 1: 顯示使用者選取的原始檔案
@@ -1586,7 +1561,7 @@ class DataNormalizationApp:
     def display_log(self, record):
         """Display log message"""
         msg = self.format_log_message(record)
-        
+
         # Choose tag based on log level
         if record.levelno >= logging.ERROR:
             tag = 'ERROR'
@@ -1596,7 +1571,7 @@ class DataNormalizationApp:
             tag = 'SUCCESS'
         else:
             tag = 'INFO'
-        
+
         self.result_text.insert(tk.END, msg + '\n', tag)
         self.result_text.see(tk.END)
 
@@ -1807,7 +1782,7 @@ class DataNormalizationApp:
         if not self.selected_file_path:
             messagebox.showwarning("Notice", "Please select an input file first")
             return
-        
+
         if self.is_executing:
             return
 
@@ -1832,14 +1807,14 @@ class DataNormalizationApp:
         if self.is_executing:
             messagebox.showwarning("Running", "A step is already running, please wait")
             return
-        
+
         self.logger.info("=" * 80)
         self.logger.info(f"Starting: {step['name']}")
         self.logger.info("=" * 80)
-        
+
         # 🆕 Record start time
         self.execution_start_time = datetime.now()
-        
+
         # Reset cancel flag
         self.cancel_flag.clear()
 
@@ -1858,7 +1833,7 @@ class DataNormalizationApp:
         self._invalidate_step_and_downstream(step['name'])
         self.update_input_source_labels()
         self.update_button_states()
-        
+
         # Run in new thread
         self.current_thread = threading.Thread(
             target=self.run_step,
@@ -1866,7 +1841,7 @@ class DataNormalizationApp:
             daemon=True
         )
         self.current_thread.start()
-        
+
         # Update UI
         self.master.after(0, lambda: self.on_step_start(step))
 
@@ -1882,51 +1857,45 @@ class DataNormalizationApp:
 
             if step['name'] != 'Step 1: ISTD Correction':
                 self.logger.info(f"Auto-selected previous output: {os.path.basename(current_input)}")
-            
+
             self.logger.info(f"Using input file: {os.path.basename(current_input)}")
-            
+
             # Load processor module
             script_module = self.load_script(step['module'])
-            
+
             if not script_module:
                 raise Exception("Failed to load script")
-            
+
             # 🔧 Capture stdout and stderr
             old_stdout = sys.stdout
             old_stderr = sys.stderr
-            
+
             # Use custom StreamToLogger
             sys.stdout = StreamToLogger(self.logger, logging.INFO)
             sys.stderr = StreamToLogger(self.logger, logging.ERROR)
-            
-            try:
-                # Build kwargs — Step 4 gets normalization_method
-                extra_kwargs = {}
-                if step['name'] == 'Step 4: Conc. Normalization':
-                    extra_kwargs['normalization_method'] = self.normalization_method_var.get()
 
+            try:
                 # Execute subprocess
                 result = script_module.main(
                     input_file=current_input,
                     session_dir=self.current_session_dir,
-                    **extra_kwargs,
                 )
-                
+
             finally:
                 # Restore stdout and stderr
                 sys.stdout = old_stdout
                 sys.stderr = old_stderr
-            
+
             # 🆕 Calculate execution time
             execution_time = (datetime.now() - self.execution_start_time).total_seconds()
             self.current_stats['execution_time'] = execution_time
-            
+
             # Check if cancelled
             if self.cancel_flag.is_set():
                 error_msg = "Execution cancelled by user"
                 self.master.after(0, lambda s=step, err=error_msg: self.on_step_cancelled(s, err))
                 return
-            
+
             # 🔧 Try to parse result and update stats
             if isinstance(result, ProcessingResult):
                 self.logger.info(f"Received result: {result.to_dict()}")
@@ -1936,10 +1905,10 @@ class DataNormalizationApp:
                 self.progress_queue.put(result)
             elif result is None:
                 self.logger.warning(f"{step['name']} returned None, trying to extract info from logs")
-            
+
             # Complete
             self.master.after(0, lambda s=step, r=result: self.on_step_complete(s, r))
-            
+
         except Exception as e:
             error_msg = str(e)
             self.logger.error(f"Execution failed: {step['name']}")
@@ -1954,15 +1923,15 @@ class DataNormalizationApp:
     def on_step_start(self, step):
         """UI update on step start"""
         index = self.steps.index(step)
-        
+
         self.is_executing = True
         self._set_step_status(index, 'running')
-        
+
         for btn in self.step_buttons:
             btn.config(state='disabled')
-        
+
         self.cancel_btn.config(state='normal')
-        
+
         # Set start progress
         start_progress = index * 25
         self.set_progress(f"{step['name']} Running...", value=start_progress, running=True)
@@ -2041,11 +2010,12 @@ class DataNormalizationApp:
         else:
             self._set_step_status(index, 'success')
 
-        # Enable buttons
-        self.step_excel_buttons[index].config(state='normal')
-        output_plots = self._get_plots_dir(result)
-        if output_plots and os.path.isdir(output_plots):
-            self.step_plot_buttons[index].config(state='normal')
+        # Enable buttons only when the step actually produced artifacts.
+        if not was_skipped:
+            self.step_excel_buttons[index].config(state='normal')
+            output_plots = self._get_plots_dir(result)
+            if output_plots and os.path.isdir(output_plots):
+                self.step_plot_buttons[index].config(state='normal')
 
         self.completed_steps.add(step['name'])
 
@@ -2055,18 +2025,18 @@ class DataNormalizationApp:
         for line in self._build_result_summary_lines(result):
             self.logger.info(line)
         self.logger.info("=" * 80)
-        
+
         # 更新輸入來源標籤 (Chain of Custody)
         self.update_input_source_labels()
-        
+
         self.update_button_states()
-        
+
         self.cancel_btn.config(state='disabled')
-        
+
         # Set end progress
         end_progress = (index + 1) * 25
         self.set_progress(f"{step['name']} Completed", value=end_progress, running=False)
-        
+
         # Auto run logic
         if self.auto_run_mode:
             next_index = index + 1
@@ -2076,7 +2046,6 @@ class DataNormalizationApp:
             else:
                 self.auto_run_mode = False
                 messagebox.showinfo("Auto Run Complete", "All steps completed!")
-                self._offer_metaboanalyst_export()
         else:
             if was_skipped:
                 skip_reason = self._get_skip_reason(result)
@@ -2088,45 +2057,42 @@ class DataNormalizationApp:
                 )
             else:
                 messagebox.showinfo("Complete", f"{step['name']} Successfully Executed!\nTime: {self.current_stats['execution_time']:.2f} s")
-            # Offer export after Step 4 completes
-            if index == len(self.steps) - 1:
-                self._offer_metaboanalyst_export()
-        
+
         # Ensure progress bar shows completion
         self.set_progress(f"{step['name']} Completed", value=end_progress, running=False)
 
     def on_step_error(self, step, error):
         """UI update on step error"""
         index = self.steps.index(step)
-        
+
         self.is_executing = False
         self.auto_run_mode = False # Stop auto run
         self._invalidate_step_and_downstream(step['name'])
         self._set_step_status(index, 'error')
-        
+
         self.logger.error("=" * 80)
         self.logger.error(f"{step['name']} Failed!")
         self.logger.error(f"Error: {error}")
         self.logger.error("=" * 80)
-        
+
         self.update_button_states()
-        
+
         self.cancel_btn.config(state='disabled')
-        
+
         self.set_progress(f"{step['name']} Error", running=False)
-        
+
         retry = messagebox.askyesno(
-            "Execution Failed", 
+            "Execution Failed",
             f"{step['name']} Failed:\n{error}\n\nRetry?"
         )
-        
+
         if retry:
             self.execute_step(step)
 
     def on_step_cancelled(self, step, reason=""):
         """UI update on step cancelled"""
         index = self.steps.index(step)
-        
+
         self.is_executing = False
         self.auto_run_mode = False # Stop auto run
         self._invalidate_step_and_downstream(step['name'])
@@ -2137,9 +2103,9 @@ class DataNormalizationApp:
         if reason:
             self.logger.warning(f"Reason: {reason}")
         self.logger.warning("=" * 80)
-        
+
         self.update_button_states()
-        
+
         self.cancel_btn.config(state='disabled')
         self.set_progress(f"{step['name']} Cancelled", running=False)
 
@@ -2155,9 +2121,9 @@ class DataNormalizationApp:
         if self.is_executing:
             messagebox.showwarning("Cannot Reset", "Task is running, please cancel first")
             return
-        
+
         if messagebox.askyesno(
-            "Confirm Reset", 
+            "Confirm Reset",
             "Are you sure you want to reset all steps?"
         ):
             self.completed_steps.clear()
@@ -2174,7 +2140,7 @@ class DataNormalizationApp:
                 btn.config(state='disabled')
             for btn in self.step_plot_buttons:
                 btn.config(state='disabled')
-            
+
             # Reset file selection
             self.input_file_label.config(
                 text="No file selected...",
@@ -2182,7 +2148,7 @@ class DataNormalizationApp:
             )
             self.selected_file_path = None
             self.run_all_btn.config(state='disabled')
-            
+
             # Reset stats
             self.current_stats = {
                 'step_name': '',
@@ -2193,17 +2159,17 @@ class DataNormalizationApp:
                 'output_folder': '',
                 'execution_time': 0
             }
-            
+
             self.stats_step_label.config(text="Idle")
             self.stats_data_label.config(text="No data loaded")
             if hasattr(self, 'stats_completed_label'):
                 self.stats_completed_label.config(text="0 / 4")
-            
+
             # 更新輸入來源標籤
             self.update_input_source_labels()
-            
+
             self.update_button_states()
-            
+
             self.logger.info("All steps reset")
             self.set_progress("Not started", value=0, running=False)
 
@@ -2220,7 +2186,7 @@ class QueueHandler(logging.Handler):
     def __init__(self, log_queue):
         super().__init__()
         self.log_queue = log_queue
-    
+
     def emit(self, record):
         self.log_queue.put(record)
 
@@ -2232,11 +2198,11 @@ class StreamToLogger:
         self.logger = logger
         self.log_level = log_level
         self.linebuf = ''
-    
+
     def write(self, buf):
         for line in buf.rstrip().splitlines():
             self.logger.log(self.log_level, line.rstrip())
-    
+
     def flush(self):
         pass
 
@@ -2247,7 +2213,7 @@ def main(argv=None):
     app = DataNormalizationApp(root)
     app._ms_session_dir = args.ms_session_dir
     root.after(0, lambda: apply_startup_bridge(app, args.ms_bridge_file))
-    
+
     def on_closing():
         if app.is_executing:
             if messagebox.askokcancel("退出", "有任務正在執行，確定要退出嗎？\n這將強制終止當前任務。"):
@@ -2257,7 +2223,7 @@ def main(argv=None):
         else:
             app.logger.info("程式正常關閉")
             root.destroy()
-    
+
     root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
 

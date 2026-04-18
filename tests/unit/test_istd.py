@@ -116,11 +116,8 @@ class TestISTDCorrectionOutput:
         assert getattr(result, "extra", {}).get("skipped") is True
         assert getattr(result, "extra", {}).get("skip_reason") == "insufficient_good_istd"
 
-        output_path = result.output_path if hasattr(result, "output_path") else result.get("output_path")
-        assert set(workbook_sheet_names(output_path)) == {
-            "RawIntensity",
-            "SampleInfo",
-        }
+        # Skipped: output_path should point to the original input (no new file)
+        assert result.output_path == str(workbook_path)
 
     @pytest.mark.slow
     def test_main_returns_processing_result(self, istd_module, sample_input_file, validate_result_dict):
@@ -169,9 +166,8 @@ class TestISTDCorrectionOutput:
         result = istd_module.main(input_file=sample_input_file)
 
         if getattr(result, "extra", {}).get("skipped"):
-            output_path = result.output_path if hasattr(result, "output_path") else result.get('output_path')
-            workbook = pd.ExcelFile(output_path)
-            assert set(workbook.sheet_names) == {'RawIntensity', 'SampleInfo'}
+            # Skipped: output_path is the original input, no new file produced
+            assert result.output_path == sample_input_file
             return
 
         # Load output
@@ -192,8 +188,12 @@ class TestISTDCorrectionOutput:
 
         session = create_session_dir(output_root=tmp_path)
         result = istd_module.main(input_file=sample_input_file, session_dir=session)
-        assert Path(result.output_path).is_relative_to(session)
-        assert "Step1_" in Path(result.output_path).name
+        if result.extra.get("skipped"):
+            # Skipped: output_path points to original input (no new file produced)
+            assert result.output_path == sample_input_file
+        else:
+            assert Path(result.output_path).is_relative_to(session)
+            assert "Step1_" in Path(result.output_path).name
 
     @pytest.mark.slow
     def test_output_workbook_only_keeps_required_sheets(
@@ -207,12 +207,14 @@ class TestISTDCorrectionOutput:
         input_with_extra_sheet = copy_workbook_with_extra_sheet(sample_input_file)
 
         result = istd_module.main(input_file=input_with_extra_sheet)
+
+        if getattr(result, "extra", {}).get("skipped"):
+            # Skipped: output_path is the original input, no filtering expected
+            assert result.output_path == input_with_extra_sheet
+            return
+
         output_path = result.output_path if hasattr(result, "output_path") else result.get('output_path')
-
-        expected_sheets = {'RawIntensity', 'SampleInfo'}
-        if not getattr(result, "extra", {}).get("skipped"):
-            expected_sheets.add('ISTD_Correction')
-
+        expected_sheets = {'RawIntensity', 'SampleInfo', 'ISTD_Correction'}
         assert set(workbook_sheet_names(output_path)) == expected_sheets
 
 
