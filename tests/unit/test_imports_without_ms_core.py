@@ -9,7 +9,7 @@ def test_imports_succeed_without_ms_core_checkout(tmp_path):
     project_root = Path(__file__).resolve().parents[2]
     source_pkg = project_root / "src" / "metabolomics"
 
-    isolated_root = tmp_path / "isolated_import_checkout"
+    isolated_root = tmp_path
     isolated_src = isolated_root / "src"
     shutil.copytree(source_pkg, isolated_src / "metabolomics")
 
@@ -18,10 +18,12 @@ def test_imports_succeed_without_ms_core_checkout(tmp_path):
 
     code = """
 from metabolomics import utils
+from metabolomics.adapters.dnp_to_metaboanalyst import convert_dnp_to_metaboanalyst
 from metabolomics.processors import istd, qc_lowess, qc_batch_scaling, normalization
 from metabolomics.gui.app import DataNormalizationApp
 
 print("utils", bool(utils))
+print("dnp_to_metaboanalyst", bool(convert_dnp_to_metaboanalyst))
 print("istd", bool(istd))
 print("qc_lowess", bool(qc_lowess))
 print("qc_batch_scaling", bool(qc_batch_scaling))
