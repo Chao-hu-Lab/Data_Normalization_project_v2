@@ -304,27 +304,10 @@ def sample_specific_normalization(data_matrix, sample_info_df, sample_columns,
     )
 
 
-def _per_feature_real_sample_medians(data_matrix, sample_info_df, sample_columns,
-                                     col_to_info_row=None):
-    """Calculate one scale-back median per feature from non-QC real samples."""
-    real_indices = [
-        i for i, sample in enumerate(sample_columns)
-        if _lookup_sample_type(sample, sample_info_df, col_to_info_row) != 'QC'
-    ]
-    if not real_indices:
-        return np.full(data_matrix.shape[0], np.nan, dtype=float)
-
-    real_data = np.asarray(data_matrix[:, real_indices], dtype=float)
-    real_data = np.where(np.isfinite(real_data), real_data, np.nan)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        return np.nanmedian(real_data, axis=1)
-
-
 def specnorm_pqn_normalization(data_matrix, sample_info_df, sample_columns,
                                reference_values, col_to_info_row=None,
                                correction_col_name=None):
-    """Run SpecNorm division, PQN, then per-feature real-sample scale-back."""
+    """Run SpecNorm division, then PQN without post-PQN scale-back."""
     specnorm_data, spec_info = specnorm_reference_division(
         data_matrix,
         sample_info_df,
@@ -339,18 +322,7 @@ def specnorm_pqn_normalization(data_matrix, sample_info_df, sample_columns,
         sample_columns,
         col_to_info_row=col_to_info_row,
     )
-
-    scale_back_medians = _per_feature_real_sample_medians(
-        data_matrix,
-        sample_info_df,
-        sample_columns,
-        col_to_info_row=col_to_info_row,
-    )
-    valid_scale_mask = np.isfinite(scale_back_medians)
     final_data = pqn_data.copy()
-    final_data[valid_scale_mask, :] = (
-        final_data[valid_scale_mask, :] * scale_back_medians[valid_scale_mask, np.newaxis]
-    )
 
     hybrid_info = dict(pqn_info)
     hybrid_info.update({
@@ -360,15 +332,12 @@ def specnorm_pqn_normalization(data_matrix, sample_info_df, sample_columns,
         'ref_col_name': spec_info.get('ref_col_name', correction_col_name or 'reference'),
         'ref_median': spec_info.get('ref_median', np.nan),
         'ref_valid_count': spec_info.get('ref_valid_count', 0),
-        'scale_back_strategy': 'per_feature_real_sample_median',
-        'scale_back_valid_features': int(np.sum(valid_scale_mask)),
-        'scale_back_missing_features': int(np.sum(~valid_scale_mask)),
+        'scale_back_strategy': 'none',
+        'scale_back_valid_features': 0,
+        'scale_back_missing_features': 0,
     })
 
-    print(
-        "  ✓ SpecNorm+PQN 完成"
-        f"（scale-back features={hybrid_info['scale_back_valid_features']}/{len(scale_back_medians)}）"
-    )
+    print("  ✓ SpecNorm+PQN 完成（scale-back=none）")
     return final_data, hybrid_info
 
 
@@ -1474,11 +1443,15 @@ def create_normalization_summary_report(
             report.append(f"QC 樣本數量: {pqn_info['qc_count']}（不參與 SpecNorm division）")
             report.append(f"{ref_label} 中位數: {pqn_info['ref_median']:.2f}")
             report.append(f"有效樣本數: {pqn_info['ref_valid_count']}/{pqn_info['real_count']}")
-            report.append(f"Scale-back: {pqn_info.get('scale_back_strategy', 'unknown')}")
-            report.append(
-                "Scale-back 可用特徵數: "
-                f"{pqn_info.get('scale_back_valid_features', 0)}/{n_features}"
-            )
+            scale_back_strategy = pqn_info.get('scale_back_strategy', 'unknown')
+            report.append(f"Scale-back: {scale_back_strategy}")
+            if scale_back_strategy == 'none':
+                report.append("輸出尺度: SpecNorm division 後 PQN 尺度（不乘回原始 feature 中位數）")
+            else:
+                report.append(
+                    "Scale-back 可用特徵數: "
+                    f"{pqn_info.get('scale_back_valid_features', 0)}/{n_features}"
+                )
         else:
             report.append("【PQN 參考樣本資訊】")
             report.append(f"參考策略: {strategy}")
