@@ -36,8 +36,8 @@ def _make_app():
     app.steps = [
         {"name": "Step 1: ISTD Correction", "module": "metabolomics.processors.istd", "accent": "#1a73e8"},
         {"name": "Step 2: QC Correction", "module": "metabolomics.processors.qc_lowess", "accent": "#34a853"},
-        {"name": "Step 3: QC Batch Scaling", "module": "metabolomics.processors.qc_batch_scaling", "accent": "#f9ab00"},
-        {"name": "Step 4: Conc. Normalization", "module": "metabolomics.processors.normalization", "accent": "#ea4335"},
+        {"name": "Step 3: Conc. Normalization", "module": "metabolomics.processors.normalization", "accent": "#f9ab00"},
+        {"name": "Step 4: QC Batch Scaling", "module": "metabolomics.processors.qc_batch_scaling", "accent": "#ea4335"},
     ]
     app.master = _DummyMaster()
     app.logger = _DummyLogger()
@@ -75,8 +75,8 @@ def test_build_workflow_steps_exposes_four_ordered_steps():
     assert [step["name"] for step in steps] == [
         "Step 1: ISTD Correction",
         "Step 2: QC Correction",
-        "Step 3: QC Batch Scaling",
-        "Step 4: Conc. Normalization",
+        "Step 3: Conc. Normalization",
+        "Step 4: QC Batch Scaling",
     ]
 
 
@@ -131,7 +131,7 @@ def test_build_workspace_defaults_targets_balanced_split():
 
     assert defaults["left_minsize"] == 540
     assert defaults["right_minsize"] == 540
-    assert defaults["split_ratio"] == 0.4
+    assert defaults["split_ratio"] == 0.47
     assert defaults["initial_retry_ms"] == 120
     assert defaults["keep_ratio_on_resize"] is True
     assert defaults["card_rows"] == 4
@@ -160,8 +160,8 @@ def test_ensure_workflow_state_tracks_export_readiness_from_completed_steps():
     assert [step["name"] for step in app.workflow_state["steps"]] == [
         "Step 1: ISTD Correction",
         "Step 2: QC Correction",
-        "Step 3: QC Batch Scaling",
-        "Step 4: Conc. Normalization",
+        "Step 3: Conc. Normalization",
+        "Step 4: QC Batch Scaling",
     ]
 
 
@@ -198,6 +198,7 @@ def test_run_step_uses_previous_step_output_instead_of_last_output_file():
         @staticmethod
         def main(input_file=None, **kwargs):
             captured["input_file"] = input_file
+            captured.update(kwargs)
             return {
                 "output_path": "C:/tmp/step3-output.xlsx",
                 "metabolites": 10,
@@ -215,6 +216,35 @@ def test_run_step_uses_previous_step_output_instead_of_last_output_file():
     app.run_step(step)
 
     assert captured["input_file"] == "C:/tmp/current-step2-output.xlsx"
+    assert captured["normalization_method"] == "PQN"
+
+
+def test_run_step_passes_selected_specnorm_pqn_method_to_normalization():
+    app = _make_app()
+    step = app.steps[2]
+    app.normalization_method = type("DummyVar", (), {"get": lambda _self: "SpecNorm+PQN"})()
+    captured = {}
+
+    class _DummyModule:
+        @staticmethod
+        def main(input_file=None, **kwargs):
+            captured.update(kwargs)
+            return {
+                "output_path": "C:/tmp/step3-output.xlsx",
+                "metabolites": 10,
+                "samples": 5,
+            }
+
+    app.step_outputs = {
+        "Step 2: QC Correction": {
+            "output_path": "C:/tmp/current-step2-output.xlsx",
+        }
+    }
+    app.load_script = lambda _module_name: _DummyModule()
+
+    app.run_step(step)
+
+    assert captured["normalization_method"] == "SpecNorm+PQN"
 
 
 def test_on_step_error_invalidates_failed_step_and_downstream(monkeypatch):
@@ -223,13 +253,13 @@ def test_on_step_error_invalidates_failed_step_and_downstream(monkeypatch):
     app.completed_steps = {
         "Step 1: ISTD Correction",
         "Step 2: QC Correction",
-        "Step 3: QC Batch Scaling",
-        "Step 4: Conc. Normalization",
+        "Step 3: Conc. Normalization",
+        "Step 4: QC Batch Scaling",
     }
     app.step_outputs = {
         "Step 2: QC Correction": {"output_path": "C:/tmp/step2-output.xlsx"},
-        "Step 3: QC Batch Scaling": {"output_path": "C:/tmp/step3-output.xlsx"},
-        "Step 4: Conc. Normalization": {"output_path": "C:/tmp/step4-output.xlsx"},
+        "Step 3: Conc. Normalization": {"output_path": "C:/tmp/step3-output.xlsx"},
+        "Step 4: QC Batch Scaling": {"output_path": "C:/tmp/step4-output.xlsx"},
     }
     app.last_output_file = "C:/tmp/step4-output.xlsx"
     app.update_button_states = lambda: None
@@ -237,8 +267,8 @@ def test_on_step_error_invalidates_failed_step_and_downstream(monkeypatch):
 
     app.on_step_error(step, "boom")
 
-    assert "Step 3: QC Batch Scaling" not in app.completed_steps
-    assert "Step 4: Conc. Normalization" not in app.completed_steps
-    assert "Step 3: QC Batch Scaling" not in app.step_outputs
-    assert "Step 4: Conc. Normalization" not in app.step_outputs
+    assert "Step 3: Conc. Normalization" not in app.completed_steps
+    assert "Step 4: QC Batch Scaling" not in app.completed_steps
+    assert "Step 3: Conc. Normalization" not in app.step_outputs
+    assert "Step 4: QC Batch Scaling" not in app.step_outputs
     assert app.last_output_file == "C:/tmp/step2-output.xlsx"

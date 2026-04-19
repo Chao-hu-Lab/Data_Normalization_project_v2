@@ -4,8 +4,8 @@ Processing modules for metabolomics data normalization.
 Available processors:
 - istd: ISTD (Internal Standard) Correction
 - qc_lowess: QC-LOESS Signal Drift Correction
+- normalization: Concentration Normalization (PQN or SpecNorm+PQN)
 - qc_batch_scaling: QC-based Batch Scaling
-- normalization: Concentration Normalization (PQN)
 """
 
 from importlib import import_module

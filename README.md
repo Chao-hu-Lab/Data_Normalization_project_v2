@@ -41,8 +41,8 @@ The pipeline consists of 4 sequential steps:
 |------|--------|-------------|
 | 1 | ISTD Correction | Internal standard correction using weighted ISTD selection |
 | 2 | QC-LOESS | QC-based trend correction using LOESS smoothing |
-| 3 | QC Batch Scaling | QC batch median alignment and batch-wise scaling |
-| 4 | Concentration Normalization | `PQN` or `SampleSpecific` normalization |
+| 3 | Concentration Normalization | `PQN` or `SpecNorm+PQN` normalization |
+| 4 | QC Batch Scaling | QC batch median alignment after concentration normalization |
 
 ### Step 1: ISTD Correction
 - Selects optimal ISTD for each metabolite based on RT proximity (60%), CV% (25%), intensity (10%), and m/z (5%)
@@ -54,16 +54,16 @@ The pipeline consists of 4 sequential steps:
 - Performs Levene's test and Wilcoxon test for improvement validation
 - Only applies correction when CV% improvement >= 2%
 
-### Step 3: QC Batch Scaling
-- Builds batch membership from `SampleInfo`
-- Aligns batch-level QC medians instead of running ComBat
-- Preserves Step 2 outputs while adding batch diagnostic plots and residual checks
-
-### Step 4: Concentration Normalization
-- Supports both `PQN` and `SampleSpecific`
+### Step 3: Concentration Normalization
+- Supports both `PQN` and `SpecNorm+PQN`
 - `PQN` prefers QC-driven reference behavior when reliable and falls back to robust median summaries
-- `SampleSpecific` uses a reference column from `SampleInfo` such as `Creatinine_mg_dL`
+- `SpecNorm+PQN` divides real samples by a reference column such as `Creatinine_mg_dL`, runs PQN, then scales each feature back by its real-sample non-missing median
 - Sample columns must map reliably to `SampleInfo`; unmapped or ambiguously matched sample names now fail closed
+
+### Step 4: QC Batch Scaling
+- Builds batch membership from `SampleInfo`
+- Aligns batch-level QC medians after Step 3 normalization
+- Preserves Step 3 outputs while adding batch diagnostic plots and residual checks
 
 ## Input File Format
 
@@ -90,7 +90,7 @@ The pipeline consists of 4 sequential steps:
 | `Sample_Name` | Must match the data sheet sample columns reliably |
 | `Sample_Type` | e.g., `QC`, `Control`, `Exposed`, `Blank` |
 | `Batch` | (Optional) Batch number for batch effect correction |
-| `Creatinine_mg_dL` | Optional reference column for `SampleSpecific` normalization |
+| `Creatinine_mg_dL` | Optional reference column for `SpecNorm+PQN` normalization |
 
 ## Output Structure
 
@@ -98,14 +98,14 @@ The pipeline consists of 4 sequential steps:
 output/
 ├── ISTD_Results_[timestamp].xlsx
 ├── QC_LOESS_[timestamp].xlsx
+├── Normalized_PQN_[timestamp].xlsx / Normalized_SpecNorm_PQN_[timestamp].xlsx
 ├── QC_Batch_Scaling_[timestamp].xlsx
-├── Normalized_PQN_[timestamp].xlsx / Normalized_SampleSpecific_[timestamp].xlsx
 ├── ISTD_Correction_plots/
 │   └── [timestamp]/
 │       └── *.png
 ├── QC_LOESS_plots/
-├── QC_Batch_Scaling_plots/
-└── Normalization_Figures/
+├── Normalization_Figures/
+└── QC_Batch_Scaling_plots/
 ```
 
 ## Usage
@@ -127,8 +127,8 @@ from metabolomics.processors import istd, qc_lowess, qc_batch_scaling, normaliza
 
 result1 = istd.main(input_file="your_data.xlsx")
 result2 = qc_lowess.main(input_file=result1.output_path)
-result3 = qc_batch_scaling.main(input_file=result2.output_path)
-result4 = normalization.main(input_file=result3.output_path, normalization_method="PQN")
+result3 = normalization.main(input_file=result2.output_path, normalization_method="PQN")
+result4 = qc_batch_scaling.main(input_file=result3.output_path)
 ```
 
 Each step returns a `ProcessingResult`, so downstream steps should read `.output_path`.
@@ -148,7 +148,7 @@ For the current regression workflow and scenario-based smoke tests, see [docs/TE
 | "Missing RawIntensity sheet" | Ensure Excel file has been VBA-formatted |
 | "No ISTD found" | Mark ISTD FeatureIDs with red font color |
 | "Sample name mismatch" | Verify `SampleInfo.Sample_Name` matches the data sheet columns; Step 1 and Step 4 now stop instead of silently guessing |
-| "`SampleSpecific` cannot start" | Ensure `SampleInfo` contains a usable reference column such as `Creatinine_mg_dL` |
+| "`SpecNorm+PQN` cannot start" | Ensure `SampleInfo` contains a usable reference column such as `Creatinine_mg_dL` |
 
 ## License
 

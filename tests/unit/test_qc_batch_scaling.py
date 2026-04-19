@@ -1,5 +1,5 @@
 """
-Tests for the QC Batch Scaling processor (new Step 3).
+Tests for the QC Batch Scaling processor (Step 4).
 
 These tests lock the intended semantics before implementation:
 1. `Batch` parsing trims whitespace around semicolon-separated labels
@@ -63,10 +63,19 @@ class TestQCBatchScalingHelpers:
         module = load_qc_batch_scaling_module()
 
         sheet_name = module.select_source_sheet(
-            ["QC LOWESS result", SHEET_NAMES["sample_info"]]
+            ["PQN_Result", SHEET_NAMES["sample_info"]]
         )
 
-        assert sheet_name == "QC LOWESS result"
+        assert sheet_name == "PQN_Result"
+
+    def test_select_source_sheet_prefers_specnorm_pqn_before_pqn(self):
+        module = load_qc_batch_scaling_module()
+
+        sheet_name = module.select_source_sheet(
+            ["PQN_Result", "SpecNorm_PQN_Result", SHEET_NAMES["sample_info"]]
+        )
+
+        assert sheet_name == "SpecNorm_PQN_Result"
 
     def test_parse_batch_labels_trims_whitespace(self):
         module = load_qc_batch_scaling_module()
@@ -369,7 +378,7 @@ class TestQCBatchScalingOutput:
 
         plot_names = {path.name for path in Path(plots_dir).glob("*.png")}
         # PCA removed — no PCA plots should be generated
-        assert not plot_names, f"Unexpected Step 3 plots for single batch: {plot_names}"
+        assert not plot_names, f"Unexpected Step 4 plots for single batch: {plot_names}"
 
     def test_generate_step3_plots_writes_batch_diagnostics(self, tmp_path):
         module = load_qc_batch_scaling_module()
@@ -414,11 +423,11 @@ class TestQCBatchScalingOutput:
         plot_names = {path.name for path in Path(plots_dir).glob("*.png")}
 
         # PCA removed — only residual analysis should be generated
-        assert "Step3_Residual_Analysis_20260308_130000.png" in plot_names
-        assert "Step3_Batch_QC_Median_Alignment_20260308_130000.png" in plot_names
-        assert "Step3_Batch_Boxplot_20260308_130000.png" in plot_names
+        assert "Step4_Residual_Analysis_20260308_130000.png" in plot_names
+        assert "Step4_Batch_QC_Median_Alignment_20260308_130000.png" in plot_names
+        assert "Step4_Batch_Boxplot_20260308_130000.png" in plot_names
 
-        residual_plots = list(Path(plots_dir).glob("Step3_Residual_Analysis_*.png"))
+        residual_plots = list(Path(plots_dir).glob("Step4_Residual_Analysis_*.png"))
         assert residual_plots, "Residual Analysis figure should be generated"
 
     def test_generate_step3_plots_closes_figures_after_saving(self, tmp_path):
@@ -548,7 +557,7 @@ class TestQCBatchScalingOutput:
         session = create_session_dir(output_root=tmp_path)
         result = qc_batch_scaling_module.main(input_file=sample_input_file, session_dir=session)
         assert Path(result.output_path).is_relative_to(session)
-        assert "Step3_" in Path(result.output_path).name
+        assert "Step4_" in Path(result.output_path).name
 
     @pytest.mark.slow
     @pytest.mark.integration

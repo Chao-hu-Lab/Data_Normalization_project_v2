@@ -37,8 +37,18 @@ class TestConcentrationNormHelpers:
         conc_norm_module,
     ):
         assert conc_norm_module.get_summary_sheet_name("PQN") == "PQN_summary"
-        assert conc_norm_module.get_summary_sheet_name("SampleSpecific") == "SpecNorm_summary"
+        assert conc_norm_module.get_summary_sheet_name("SpecNorm_PQN") == "SpecNorm_PQN_summary"
+        assert conc_norm_module.get_summary_sheet_name("SampleSpecific") == "SpecNorm_PQN_summary"
         assert conc_norm_module.get_summary_sheet_name("CustomMethod") == "CustomMethod_summary"
+
+    def test_canonicalize_normalization_method_accepts_specnorm_aliases(
+        self,
+        conc_norm_module,
+    ):
+        assert conc_norm_module.canonicalize_normalization_method("PQN") == "PQN"
+        assert conc_norm_module.canonicalize_normalization_method("SpecNorm+PQN") == "SpecNorm_PQN"
+        assert conc_norm_module.canonicalize_normalization_method("SpecNorm_PQN") == "SpecNorm_PQN"
+        assert conc_norm_module.canonicalize_normalization_method("SampleSpecific") == "SpecNorm_PQN"
 
     def test_determine_correction_sheet_accepts_legacy_qc_lowess_name(
         self,
@@ -51,6 +61,23 @@ class TestConcentrationNormHelpers:
 
         assert selected_name == "QC LOWESS result"
         assert selected_df is legacy_df
+
+    def test_determine_correction_sheet_prefers_step2_over_old_qc_batch_scaling(
+        self,
+        conc_norm_module,
+    ):
+        step2_df = pd.DataFrame({"FeatureID": ["100.1/1.0"], "QC_1": [10.0]})
+        old_step4_df = pd.DataFrame({"FeatureID": ["100.1/1.0"], "QC_1": [99.0]})
+        sheets = {
+            SHEET_NAMES["qc_batch_scaling"]: old_step4_df,
+            SHEET_NAMES["qc_lowess"]: step2_df,
+            SHEET_NAMES["sample_info"]: pd.DataFrame(),
+        }
+
+        selected_df, selected_name = conc_norm_module.determine_correction_sheet(sheets)
+
+        assert selected_name == SHEET_NAMES["qc_lowess"]
+        assert selected_df is step2_df
 
     def test_get_all_sample_columns_excludes_ratio_and_stat_columns(
         self,
@@ -296,11 +323,11 @@ class TestConcentrationNormHelpers:
         )
 
         assert np.allclose(corrected[:, 0], data_matrix[:, 0], equal_nan=True)
-        assert corrected[0, 1] == pytest.approx((200.0 / 50.0) * 2525.0)
-        assert corrected[1, 1] == pytest.approx((100.0 / 50.0) * 2525.0)
+        assert corrected[0, 1] == pytest.approx(200.0 / 50.0)
+        assert corrected[1, 1] == pytest.approx(100.0 / 50.0)
         assert np.allclose(corrected[:, 2], data_matrix[:, 2], equal_nan=True)
-        assert corrected[0, 3] == pytest.approx((400.0 / 5000.0) * 2525.0)
-        assert corrected[1, 3] == pytest.approx((200.0 / 5000.0) * 2525.0)
+        assert corrected[0, 3] == pytest.approx(400.0 / 5000.0)
+        assert corrected[1, 3] == pytest.approx(200.0 / 5000.0)
         assert info["ref_valid_count"] == 2
         assert info["ref_median"] == pytest.approx(2525.0)
 
@@ -316,6 +343,73 @@ class TestConcentrationNormHelpers:
         assert info_no_valid["ref_valid_count"] == 0
         assert np.isnan(info_no_valid["ref_median"])
 
+    def test_specnorm_division_does_not_multiply_reference_median(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "A"],
+            }
+        )
+        sample_columns = ["QC_1", "Sample_A", "Sample_B"]
+        data_matrix = np.array([[100.0, 200.0, 300.0]], dtype=float)
+
+        corrected, info = conc_norm_module.specnorm_reference_division(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            np.array([np.nan, 50.0, 150.0], dtype=float),
+            correction_col_name="Creatinine_mg_dL",
+        )
+
+        assert corrected[0, 0] == pytest.approx(100.0)
+        assert corrected[0, 1] == pytest.approx(4.0)
+        assert corrected[0, 2] == pytest.approx(2.0)
+        assert info["ref_median"] == pytest.approx(100.0)
+        assert info["reference_strategy"] == "SpecNorm"
+
+    def test_specnorm_pqn_scales_back_by_per_feature_real_sample_median(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "A"],
+            }
+        )
+        sample_columns = ["QC_1", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 200.0, 400.0],
+                [50.0, 100.0, 300.0],
+            ],
+            dtype=float,
+        )
+
+        normalized, info = conc_norm_module.specnorm_pqn_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            np.array([np.nan, 50.0, 100.0], dtype=float),
+            correction_col_name="Creatinine_mg_dL",
+        )
+
+        assert normalized == pytest.approx(
+            np.array(
+                [
+                    [30000.0, 30000.0, 24000.0],
+                    [10000.0, 10000.0, 12000.0],
+                ]
+            )
+        )
+        assert info["reference_strategy"] == "SpecNorm_PQN"
+        assert info["scale_back_strategy"] == "per_feature_real_sample_median"
+
     def test_build_step4_summary_context_detects_upstream_step_status(
         self,
         conc_norm_module,
@@ -325,14 +419,14 @@ class TestConcentrationNormHelpers:
             available_sheet_names=["RawIntensity", "QC LOESS result", "SampleInfo"],
         )
         context_batch = conc_norm_module.build_step4_summary_context(
-            "QC_Batch_Scaling_result",
-            available_sheet_names=["QC_Batch_Scaling_result", "SampleInfo"],
+            "ISTD_Correction",
+            available_sheet_names=["ISTD_Correction", "SampleInfo"],
         )
 
-        assert "未執行或已跳過" in context_loess["step3_status"]
+        assert "已執行" in context_loess["step2_status"]
         assert "未見 ISTD_Correction" in context_loess["step1_status"]
-        assert "已執行" in context_batch["step3_status"]
-        assert "未保留" in context_batch["step1_status"]
+        assert "未執行或已跳過" in context_batch["step2_status"]
+        assert "可見 ISTD_Correction" in context_batch["step1_status"]
 
     def test_create_normalization_summary_report_uses_context_and_objective_sections(
         self,
@@ -536,23 +630,20 @@ class TestConcentrationNormOutput:
 
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_main_with_step3_output(self, istd_module, qc_lowess_module,
+    def test_main_with_step2_output(self, istd_module, qc_lowess_module,
                                      qc_batch_scaling_module, conc_norm_module,
                                      sample_input_file, validate_result_dict):
-        """Test Concentration Normalization with Step 3 output."""
-        # Run Steps 1-3
+        """Test Concentration Normalization with Step 2 output."""
+        # Run Steps 1-2
         step1_result = istd_module.main(input_file=sample_input_file)
         step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
         step2_result = qc_lowess_module.main(input_file=step1_output)
         step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
-        step3_result = qc_batch_scaling_module.main(input_file=step2_output)
-        step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
 
-        # Run Step 4
-        step4_result = conc_norm_module.main(input_file=step3_output)
+        step3_result = conc_norm_module.main(input_file=step2_output)
 
         validation = validate_result_dict(
-            step4_result,
+            step3_result,
             required_keys=['output_path']
         )
 
@@ -569,11 +660,10 @@ class TestConcentrationNormOutput:
         step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
         step2_result = qc_lowess_module.main(input_file=step1_output)
         step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
-        step3_result = qc_batch_scaling_module.main(input_file=step2_output)
+        step3_result = conc_norm_module.main(input_file=step2_output)
         step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
 
-        # Run Step 4
-        step4_result = conc_norm_module.main(input_file=step3_output)
+        step4_result = qc_batch_scaling_module.main(input_file=step3_output)
 
         assert step4_result is not None
         step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get('output_path')
@@ -589,7 +679,7 @@ class TestConcentrationNormOutput:
 
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_step4_only_generates_first_four_figures(
+    def test_step3_only_generates_first_four_figures(
         self,
         istd_module,
         qc_lowess_module,
@@ -597,35 +687,32 @@ class TestConcentrationNormOutput:
         conc_norm_module,
         sample_input_file,
     ):
-        """Step 4 (PQN) should generate expected figure set in plots directory."""
+        """Step 3 (PQN) should generate expected figure set in plots directory."""
         step1_result = istd_module.main(input_file=sample_input_file)
         step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
         step2_result = qc_lowess_module.main(input_file=step1_output)
         step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
-        step3_result = qc_batch_scaling_module.main(input_file=step2_output)
-        step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
-
-        step4_result = conc_norm_module.main(input_file=step3_output)
-        plots_dir = step4_result.plots_dir if hasattr(step4_result, "plots_dir") else step4_result.get('plots_dir')
+        step3_result = conc_norm_module.main(input_file=step2_output)
+        plots_dir = step3_result.plots_dir if hasattr(step3_result, "plots_dir") else step3_result.get('plots_dir')
 
         plot_files = sorted(
             name for name in os.listdir(plots_dir)
-            if name.startswith("Step4_")
+            if name.startswith("Step3_")
         )
 
-        # Step4 generates: CV, RLE (with Total Intensity), Density, Dratio
+        # Step3 generates: CV, RLE (with Total Intensity), Density, Dratio
         assert any("CV" in name for name in plot_files), f"Missing CV in {plot_files}"
         assert any("RLE" in name for name in plot_files), f"Missing RLE in {plot_files}"
         assert not any("Boxplot" in name for name in plot_files), f"Unexpected Boxplot in {plot_files}"
         assert not any("PCA" in name or "pca" in name.lower() for name in plot_files), f"Unexpected PCA in {plot_files}"
-        # Scatter plot only for SampleSpecific mode — should NOT appear in default PQN
+        # Scatter plot only for SpecNorm+PQN mode — should NOT appear in default PQN
         assert not any("Scatter" in name for name in plot_files), f"Unexpected Scatter in PQN mode: {plot_files}"
 
     @pytest.mark.slow
     @pytest.mark.integration
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_output_workbook_keeps_qc_lowess_sheet_when_step3_is_skipped(
+    def test_output_workbook_keeps_qc_lowess_sheet_for_step3_input(
         self,
         istd_module,
         qc_lowess_module,
@@ -634,17 +721,17 @@ class TestConcentrationNormOutput:
         copy_workbook_with_extra_sheet,
         workbook_sheet_names,
     ):
-        """Step 4 should fall back to the Step 2 data sheet when Step 3 was skipped."""
+        """Step 3 should keep the selected Step 2 data sheet."""
         step1_result = istd_module.main(input_file=sample_input_file)
         step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
         step2_result = qc_lowess_module.main(input_file=step1_output)
         step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
         step2_with_extra_sheet = copy_workbook_with_extra_sheet(step2_output)
 
-        step4_result = conc_norm_module.main(input_file=step2_with_extra_sheet)
-        step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get('output_path')
+        step3_result = conc_norm_module.main(input_file=step2_with_extra_sheet)
+        step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
 
-        assert set(workbook_sheet_names(step4_output)) == {
+        assert set(workbook_sheet_names(step3_output)) == {
             SHEET_NAMES["qc_lowess"],
             'SampleInfo',
             'PQN_Result',
@@ -653,7 +740,7 @@ class TestConcentrationNormOutput:
 
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_output_workbook_keeps_qc_batch_scaling_sheet_when_present(
+    def test_output_workbook_ignores_old_qc_batch_scaling_sheet_when_present(
         self,
         qc_lowess_module,
         conc_norm_module,
@@ -661,7 +748,7 @@ class TestConcentrationNormOutput:
         copy_workbook_with_extra_sheet,
         workbook_sheet_names,
     ):
-        """Step 4 should prefer the new QC batch scaling result sheet."""
+        """Step 3 should prefer Step 2 data over stale QC batch scaling sheets."""
         qc_batch_scaling_module = import_module("metabolomics.processors.qc_batch_scaling")
 
         step2_result = qc_lowess_module.main(input_file=sample_input_file)
@@ -670,11 +757,11 @@ class TestConcentrationNormOutput:
         step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
         step3_with_extra_sheet = copy_workbook_with_extra_sheet(step3_output)
 
-        step4_result = conc_norm_module.main(input_file=step3_with_extra_sheet)
-        step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get('output_path')
+        step3_norm_result = conc_norm_module.main(input_file=step3_with_extra_sheet)
+        step3_norm_output = step3_norm_result.output_path if hasattr(step3_norm_result, "output_path") else step3_norm_result.get('output_path')
 
-        assert set(workbook_sheet_names(step4_output)) == {
-            'QC_Batch_Scaling_result',
+        assert set(workbook_sheet_names(step3_norm_output)) == {
+            SHEET_NAMES["qc_lowess"],
             'SampleInfo',
             'PQN_Result',
             conc_norm_module.get_summary_sheet_name('PQN'),
@@ -682,7 +769,7 @@ class TestConcentrationNormOutput:
 
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_step4_output_uses_mz_rt_as_feature_column(
+    def test_step3_output_uses_mz_rt_as_feature_column(
         self,
         qc_lowess_module,
         conc_norm_module,
@@ -692,14 +779,11 @@ class TestConcentrationNormOutput:
 
         step2_result = qc_lowess_module.main(input_file=sample_input_file)
         step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
-        step3_result = qc_batch_scaling_module.main(input_file=step2_output)
+        step3_result = conc_norm_module.main(input_file=step2_output)
         step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
 
-        step4_result = conc_norm_module.main(input_file=step3_output)
-        step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get('output_path')
-
-        result_df = pd.read_excel(step4_output, sheet_name='PQN_Result', nrows=1)
-        preserved_df = pd.read_excel(step4_output, sheet_name='QC_Batch_Scaling_result', nrows=1)
+        result_df = pd.read_excel(step3_output, sheet_name='PQN_Result', nrows=1)
+        preserved_df = pd.read_excel(step3_output, sheet_name=SHEET_NAMES["qc_lowess"], nrows=1)
 
         assert result_df.columns[0] == 'Mz/RT'
         assert preserved_df.columns[0] == 'Mz/RT'
@@ -723,18 +807,16 @@ class TestConcentrationNormSessionDir:
         from pathlib import Path
         from metabolomics.utils.file_io import create_session_dir
 
-        # Run Steps 1-3 to produce valid Step 4 input
+        # Run Steps 1-2 to produce valid Step 3 input
         step1_result = istd_module.main(input_file=sample_input_file)
         step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
         step2_result = qc_lowess_module.main(input_file=step1_output)
         step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
-        step3_result = qc_batch_scaling_module.main(input_file=step2_output)
-        step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
 
         session = create_session_dir(output_root=tmp_path)
-        result = conc_norm_module.main(input_file=step3_output, session_dir=session)
+        result = conc_norm_module.main(input_file=step2_output, session_dir=session)
         assert Path(result.output_path).is_relative_to(session)
-        assert "Step4_" in Path(result.output_path).name
+        assert "Step3_" in Path(result.output_path).name
 
 
 class TestFullPipeline:

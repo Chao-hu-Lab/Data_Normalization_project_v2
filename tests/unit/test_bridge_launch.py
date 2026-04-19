@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pandas as pd
+
 from metabolomics.bootstrap_paths import find_ms_core_src
 from metabolomics.startup_bridge import apply_startup_bridge, parse_startup_args
 
@@ -63,12 +65,12 @@ def test_export_to_metaboanalyst_uses_shared_session_bridge_and_launch_args(monk
     app.steps = [
         {"name": "Step 1: ISTD Correction"},
         {"name": "Step 2: QC Correction"},
-        {"name": "Step 3: QC Batch Scaling"},
-        {"name": "Step 4: Conc. Normalization"},
+        {"name": "Step 3: Conc. Normalization"},
+        {"name": "Step 4: QC Batch Scaling"},
     ]
     normalized = tmp_path / "Normalized.xlsx"
     normalized.write_text("placeholder", encoding="utf-8")
-    app.step_outputs = {"Step 4: Conc. Normalization": {"output_path": str(normalized)}}
+    app.step_outputs = {"Step 4: QC Batch Scaling": {"output_path": str(normalized)}}
     app._ms_session_dir = tmp_path / "workspace" / "sessions" / "s1"
     app._ms_session_dir.mkdir(parents=True, exist_ok=True)
     (app._ms_session_dir / "manifest.json").write_text('{"stages": {}}', encoding="utf-8")
@@ -110,3 +112,56 @@ def test_export_to_metaboanalyst_uses_shared_session_bridge_and_launch_args(monk
     assert created["path"].parts[-3:-1] == ("dnp", "bridge_to_ma")
     assert "--ms-bridge-file" in created["argv"]
     assert "--ms-session-dir" in created["argv"]
+
+
+def test_dnp_to_metaboanalyst_prefers_final_qc_batch_scaling_sheet(tmp_path):
+    from metabolomics.adapters.dnp_to_metaboanalyst import convert_dnp_to_metaboanalyst
+
+    input_path = tmp_path / "dnp.xlsx"
+    output_path = tmp_path / "ma.xlsx"
+
+    with pd.ExcelWriter(input_path, engine="openpyxl") as writer:
+        pd.DataFrame({"Mz/RT": ["F1"], "Sample_A": [1.0]}).to_excel(
+            writer,
+            sheet_name="PQN_Result",
+            index=False,
+        )
+        pd.DataFrame({"Mz/RT": ["F1"], "Sample_A": [9.0]}).to_excel(
+            writer,
+            sheet_name="QC_Batch_Scaling_result",
+            index=False,
+        )
+        pd.DataFrame({"Sample_Name": ["Sample_A"], "Sample_Type": ["Control"]}).to_excel(
+            writer,
+            sheet_name="SampleInfo",
+            index=False,
+        )
+
+    convert_dnp_to_metaboanalyst(str(input_path), str(output_path))
+
+    converted = pd.read_excel(output_path, sheet_name="Data")
+    assert converted.loc[0, "Sample_A"] == 9.0
+
+
+def test_dnp_to_metaboanalyst_falls_back_to_specnorm_pqn_sheet(tmp_path):
+    from metabolomics.adapters.dnp_to_metaboanalyst import convert_dnp_to_metaboanalyst
+
+    input_path = tmp_path / "dnp_specnorm.xlsx"
+    output_path = tmp_path / "ma_specnorm.xlsx"
+
+    with pd.ExcelWriter(input_path, engine="openpyxl") as writer:
+        pd.DataFrame({"Mz/RT": ["F1"], "Sample_A": [5.0]}).to_excel(
+            writer,
+            sheet_name="SpecNorm_PQN_Result",
+            index=False,
+        )
+        pd.DataFrame({"Sample_Name": ["Sample_A"], "Sample_Type": ["Control"]}).to_excel(
+            writer,
+            sheet_name="SampleInfo",
+            index=False,
+        )
+
+    convert_dnp_to_metaboanalyst(str(input_path), str(output_path))
+
+    converted = pd.read_excel(output_path, sheet_name="Data")
+    assert converted.loc[0, "Sample_A"] == 5.0

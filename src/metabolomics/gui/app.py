@@ -72,8 +72,8 @@ class DataNormalizationApp:
         return [
             {'name': 'Step 1: ISTD Correction', 'module': 'metabolomics.processors.istd', 'enabled': True},
             {'name': 'Step 2: QC Correction', 'module': 'metabolomics.processors.qc_lowess', 'enabled': False},
-            {'name': 'Step 3: QC Batch Scaling', 'module': 'metabolomics.processors.qc_batch_scaling', 'enabled': False},
-            {'name': 'Step 4: Conc. Normalization', 'module': 'metabolomics.processors.normalization', 'enabled': False},
+            {'name': 'Step 3: Conc. Normalization', 'module': 'metabolomics.processors.normalization', 'enabled': False},
+            {'name': 'Step 4: QC Batch Scaling', 'module': 'metabolomics.processors.qc_batch_scaling', 'enabled': False},
         ]
 
     @staticmethod
@@ -131,7 +131,7 @@ class DataNormalizationApp:
         return {
             'left_minsize': 540,
             'right_minsize': 540,
-            'split_ratio': 0.4,
+            'split_ratio': 0.47,
             'initial_retry_ms': 120,
             'keep_ratio_on_resize': True,
             'card_rows': 4,
@@ -216,6 +216,7 @@ class DataNormalizationApp:
         self.last_output_file = None  # 記錄最後一個輸出檔案
         self.steps = self._build_workflow_steps()
         self.step_outputs = {}
+        self.normalization_method = tk.StringVar(value='PQN')
         self.current_session_dir = None
         self.workflow_state = {}
         self.auto_run_mode = False
@@ -517,6 +518,21 @@ class DataNormalizationApp:
         self._refresh_last_output_file()
         if hasattr(self, 'update_input_source_labels'):
             self.update_input_source_labels()
+
+    def _get_normalization_method(self):
+        method_var = getattr(self, 'normalization_method', None)
+        if method_var is None:
+            return 'PQN'
+        try:
+            value = method_var.get()
+        except AttributeError:
+            value = method_var
+        return value or 'PQN'
+
+    def _on_normalization_method_change(self):
+        self.logger.info(f"Step 3 normalization method changed to {self._get_normalization_method()}")
+        self._invalidate_step_and_downstream('Step 3: Conc. Normalization')
+        self.update_button_states()
 
     def _resolve_step_input(self, step):
         if step['name'] == 'Step 1: ISTD Correction':
@@ -1128,6 +1144,34 @@ class DataNormalizationApp:
             input_source_label.pack(side=tk.LEFT)
             self.step_input_labels.append(input_source_label)
 
+            if step['module'] == 'metabolomics.processors.normalization':
+                method_frame = tk.Frame(info_section, bg=self.color_scheme['panel_bg'])
+                method_frame.pack(anchor='w', pady=(6, 0))
+
+                tk.Label(
+                    method_frame,
+                    text="Method:",
+                    font=(FONTS['sans'], 9, 'bold'),
+                    fg=self.color_scheme['danger'],
+                    bg=self.color_scheme['panel_bg'],
+                ).pack(side=tk.LEFT, padx=(0, 8))
+
+                for label, value in (('PQN', 'PQN'), ('SpecNorm+PQN', 'SpecNorm+PQN')):
+                    tk.Radiobutton(
+                        method_frame,
+                        text=label,
+                        variable=self.normalization_method,
+                        value=value,
+                        command=self._on_normalization_method_change,
+                        font=(FONTS['sans'], 9),
+                        fg=self.color_scheme['text_dark'],
+                        bg=self.color_scheme['panel_bg'],
+                        activebackground=self.color_scheme['panel_bg'],
+                        selectcolor=self.color_scheme['panel_bg'],
+                        borderwidth=0,
+                        highlightthickness=0,
+                    ).pack(side=tk.LEFT, padx=(0, 10))
+
 
             # === 右側：控制按鈕區 ===
             control_section = tk.Frame(
@@ -1680,7 +1724,7 @@ class DataNormalizationApp:
         if step4_name not in self.step_outputs:
             messagebox.showwarning(
                 "No Output",
-                "Step 4 (Conc. Normalization) has not been completed yet."
+                "Step 4 (QC Batch Scaling) has not been completed yet."
             )
             return
 
@@ -1876,10 +1920,14 @@ class DataNormalizationApp:
 
             try:
                 # Execute subprocess
-                result = script_module.main(
-                    input_file=current_input,
-                    session_dir=self.current_session_dir,
-                )
+                run_kwargs = {
+                    'input_file': current_input,
+                    'session_dir': self.current_session_dir,
+                }
+                if step['module'] == 'metabolomics.processors.normalization':
+                    run_kwargs['normalization_method'] = self._get_normalization_method()
+
+                result = script_module.main(**run_kwargs)
 
             finally:
                 # Restore stdout and stderr
@@ -1987,10 +2035,10 @@ class DataNormalizationApp:
                 "Red-marked ISTD rows stay in 'RawIntensity' and will be excluded "
                 "from downstream corrected result sheets."
             )
-        if step_name == 'Step 3: QC Batch Scaling' and skip_reason == 'single_batch':
+        if step_name == 'Step 4: QC Batch Scaling' and skip_reason == 'single_batch':
             return (
                 "Only one batch detected — cross-batch scaling is not applicable. "
-                "Step 4 will use the Step 2 output directly."
+                "The final output remains the Step 3 normalized workbook."
             )
         return "Downstream steps will use the best available upstream sheet."
 

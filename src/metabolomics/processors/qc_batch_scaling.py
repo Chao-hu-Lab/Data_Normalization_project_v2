@@ -116,7 +116,10 @@ def scale_feature_by_batch_qc_median(feature_row, batch_to_qc, batch_to_samples)
 
 
 def select_source_sheet(sheet_names):
-    """Pick the best upstream sheet for Step 3."""
+    """Pick the best upstream normalization sheet for Step 4."""
+    for sheet_name in ("SpecNorm_PQN_Result", SHEET_NAMES.get("pqn_result", "PQN_Result")):
+        if sheet_name in sheet_names:
+            return sheet_name
     for sheet_key in ("qc_lowess", "istd_correction", "raw_intensity"):
         sheet_name = resolve_sheet_name(sheet_names, sheet_key)
         if sheet_name is not None:
@@ -596,14 +599,14 @@ def generate_step3_plots(
     unique_batches = sorted({batch for memberships in batch_memberships for batch in memberships if batch})
 
     if len(unique_batches) < 2:
-        print("  - 只有單一 batch，跳過 Step 3 batch diagnostics")
+        print("  - 只有單一 batch，跳過 Step 4 batch diagnostics")
         return str(plots_dir)
 
     qc_feature_medians_before = calculate_batch_qc_feature_medians(source_df, batch_to_qc)
     qc_feature_medians_after = calculate_batch_qc_feature_medians(result_df, batch_to_qc)
     if len(qc_feature_medians_before) >= 2 and len(qc_feature_medians_after) >= 2:
         print("  - 生成 Fig1: Batch QC median alignment")
-        alignment_plot_path = os.path.join(plots_dir, f"Step3_Batch_QC_Median_Alignment_{timestamp}.png")
+        alignment_plot_path = os.path.join(plots_dir, f"Step4_Batch_QC_Median_Alignment_{timestamp}.png")
         fig = plot_batch_qc_median_alignment(
             qc_feature_medians_before,
             qc_feature_medians_after,
@@ -614,7 +617,7 @@ def generate_step3_plots(
             created_figures.append(fig)
 
     print("  - 生成 Fig2: Batch boxplot")
-    batch_boxplot_path = os.path.join(plots_dir, f"Step3_Batch_Boxplot_{timestamp}.png")
+    batch_boxplot_path = os.path.join(plots_dir, f"Step4_Batch_Boxplot_{timestamp}.png")
     fig = plot_batch_boxplot(
         source_df,
         result_df,
@@ -641,7 +644,7 @@ def generate_step3_plots(
         )
         if residuals_before and residuals_after:
             print("  - 生成 Fig3: Residual analysis")
-            residual_plot_path = os.path.join(plots_dir, f"Step3_Residual_Analysis_{timestamp}.png")
+            residual_plot_path = os.path.join(plots_dir, f"Step4_Residual_Analysis_{timestamp}.png")
             fig = plot_batch_residual_analysis(
                 residuals_before,
                 residuals_after,
@@ -753,7 +756,7 @@ def main(input_file=None, session_dir=None):
     if not input_file:
         raise ValueError("input_file is required")
 
-    log_section("開始執行 Step 3: QC Batch Scaling")
+    log_section("開始執行 Step 4: QC Batch Scaling")
     print(f"輸入檔案: {os.path.basename(input_file)}")
 
     data_df, sample_info_df, sample_columns, source_sheet_name, sample_type_row = load_and_process_data(input_file)
@@ -799,7 +802,7 @@ def main(input_file=None, session_dir=None):
     timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
     if session_dir is not None:
         from metabolomics.utils.file_io import session_output_path, session_plots_dir
-        output_file = session_output_path(session_dir, step=3, prefix="QC_Batch_Scaling")
+        output_file = session_output_path(session_dir, step=4, prefix="QC_Batch_Scaling")
         _plots_dir = str(session_plots_dir(session_dir))
     else:
         output_file = build_output_path("QC_Batch_Scaling", input_file=input_file, timestamp=timestamp)
@@ -815,7 +818,7 @@ def main(input_file=None, session_dir=None):
         timestamp,
         plots_dir=_plots_dir,
     )
-    log_section("寫出 Step 3 Excel")
+    log_section("寫出 Step 4 Excel")
     save_results_to_excel(
         data_df,
         result_df,
@@ -826,7 +829,7 @@ def main(input_file=None, session_dir=None):
         source_sheet_name,
         sample_type_row=sample_type_row,
     )
-    print(f"\n  ✓ QC Batch Scaling 完成 → {os.path.basename(str(output_file))}")
+    print(f"\n  ✓ Step 4 QC Batch Scaling 完成 → {os.path.basename(str(output_file))}")
 
     return ProcessingResult(
         file_path=input_file,

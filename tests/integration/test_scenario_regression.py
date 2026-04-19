@@ -215,12 +215,15 @@ def test_mixed_direction_batch_drift_runs_through_step3(
 
     step1_result = istd_module.main(input_file=input_file, session_dir=session_dir)
     step2_result = qc_lowess_module.main(input_file=step1_result.output_path, session_dir=session_dir)
-    step3_result = qc_batch_scaling_module.main(input_file=step2_result.output_path, session_dir=session_dir)
+    from metabolomics.processors import normalization
+    step3_result = normalization.main(input_file=step2_result.output_path, session_dir=session_dir)
+    step4_result = qc_batch_scaling_module.main(input_file=step3_result.output_path, session_dir=session_dir)
 
     _assert_step1_result_allows_skip(step1_result, input_file, session_dir)
     _assert_result_in_session(step2_result, session_dir, "Step2_")
     _assert_result_in_session(step3_result, session_dir, "Step3_")
-    assert any((session_dir / "plots").glob("Step3_*.png"))
+    _assert_result_in_session(step4_result, session_dir, "Step4_")
+    assert any((session_dir / "plots").glob("Step4_*.png"))
 
 
 @pytest.mark.integration
@@ -237,18 +240,18 @@ def test_advanced_step4_regression_scenarios_run_with_pqn(
 
     step1_result = istd_module.main(input_file=input_file, session_dir=session_dir)
     step2_result = qc_lowess_module.main(input_file=step1_result.output_path, session_dir=session_dir)
-    step3_result = qc_batch_scaling_module.main(input_file=step2_result.output_path, session_dir=session_dir)
-    step4_result = conc_norm_module.main(
-        input_file=step3_result.output_path,
+    step3_result = conc_norm_module.main(
+        input_file=step2_result.output_path,
         session_dir=session_dir,
         normalization_method="PQN",
     )
+    step4_result = qc_batch_scaling_module.main(input_file=step3_result.output_path, session_dir=session_dir)
 
     _assert_step1_result_allows_skip(step1_result, input_file, session_dir)
     _assert_result_in_session(step2_result, session_dir, "Step2_")
     _assert_result_in_session(step3_result, session_dir, "Step3_")
     _assert_result_in_session(step4_result, session_dir, "Step4_")
-    assert "Normalized_PQN" in Path(step4_result.output_path).name
+    assert "Normalized_PQN" in Path(step3_result.output_path).name
 
 
 @pytest.mark.integration
@@ -263,15 +266,15 @@ def test_structured_missingness_runs_through_step4_pqn(
 
     step1_result = istd_module.main(input_file=input_file, session_dir=session_dir)
     step2_result = qc_lowess_module.main(input_file=step1_result.output_path, session_dir=session_dir)
-    step3_result = qc_batch_scaling_module.main(input_file=step2_result.output_path, session_dir=session_dir)
-    step4_result = conc_norm_module.main(
-        input_file=step3_result.output_path,
+    step3_result = conc_norm_module.main(
+        input_file=step2_result.output_path,
         session_dir=session_dir,
         normalization_method="PQN",
     )
+    step4_result = qc_batch_scaling_module.main(input_file=step3_result.output_path, session_dir=session_dir)
 
     _assert_step1_result_allows_skip(step1_result, input_file, session_dir)
     _assert_result_in_session(step2_result, session_dir, "Step2_")
     _assert_result_in_session(step3_result, session_dir, "Step3_")
     _assert_result_in_session(step4_result, session_dir, "Step4_")
-    assert "Normalized_PQN" in Path(step4_result.output_path).name
+    assert "Normalized_PQN" in Path(step3_result.output_path).name
