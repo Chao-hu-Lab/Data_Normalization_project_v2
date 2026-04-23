@@ -37,6 +37,7 @@ from metabolomics.utils.file_io import (
     get_output_root,
     resolve_session_dir,
 )
+from metabolomics.utils.excel_colors import cell_has_red_font
 from metabolomics.utils.results import ProcessingResult
 from metabolomics.utils.console import safe_print as print
 from metabolomics.utils.excel_format import (
@@ -57,8 +58,6 @@ setup_matplotlib()
 
 # Sheet name constant
 QC_LOWESS_ADVANCED_SHEET = SHEET_NAMES.get('qc_lowess_advanced', "LOESS_summary")
-RED_FONT_RGBS = {'FFFF0000', 'FF0000'}
-
 # For backward compatibility, alias the old constant names
 DEFAULT_NON_SAMPLE_COLUMNS = NON_SAMPLE_COLUMNS
 
@@ -85,11 +84,9 @@ def collect_red_marked_feature_ids(file_path, sheet_name):
         feature_ids = set()
         for row in worksheet.iter_rows(min_row=2, max_col=1):
             cell = row[0]
-            color = getattr(getattr(cell, 'font', None), 'color', None)
-            rgb = getattr(color, 'rgb', None)
-            if rgb is None or cell.value is None:
+            if cell.value is None:
                 continue
-            if str(rgb).upper() in RED_FONT_RGBS:
+            if cell_has_red_font(cell):
                 feature_ids.add(str(cell.value).strip())
         return feature_ids
     finally:

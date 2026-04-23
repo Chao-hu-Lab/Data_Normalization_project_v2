@@ -46,6 +46,19 @@ def normalize_sample_name(name) -> str:
 
     parts = re.split(r'[\s_\-/*+()]+', value)
     filtered_parts = [part for part in parts if part and part not in {'tissue'}]
+
+    # Pooled QC names sometimes drift between tools:
+    # - pool vs pooled
+    # - pooled_DNA_QC vs pooled_QC
+    # Treat those variants as the same sample identity without affecting
+    # non-QC biological samples that legitimately end with DNA/RNA.
+    if 'qc' in filtered_parts and any(part in {'pool', 'pooled'} for part in filtered_parts):
+        filtered_parts = ['pooled' if part == 'pool' else part for part in filtered_parts]
+        filtered_parts = [
+            part for part in filtered_parts
+            if part not in {'dna', 'rna'}
+        ]
+
     return ''.join(filtered_parts)
 
 

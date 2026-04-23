@@ -57,7 +57,7 @@ The pipeline consists of 4 sequential steps:
 ### Step 3: Concentration Normalization
 - Supports both `PQN` and `SpecNorm+PQN`
 - `PQN` prefers QC-driven reference behavior when reliable and falls back to robust median summaries
-- `SpecNorm+PQN` divides real samples by a reference column such as `Creatinine_mg_dL`, runs PQN, then scales each feature back by its real-sample non-missing median
+- `SpecNorm+PQN` divides real samples by a reference column such as `Creatinine_mg_dL`, runs PQN, and keeps the resulting scale without multiplying values back by raw feature medians
 - Sample columns must map reliably to `SampleInfo`; unmapped or ambiguously matched sample names now fail closed
 
 ### Step 4: QC Batch Scaling

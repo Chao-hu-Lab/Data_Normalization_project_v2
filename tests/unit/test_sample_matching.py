@@ -29,6 +29,15 @@ def test_normalize_sample_name_treats_special_chars_and_dna_rna_variants_as_equi
     )
 
 
+def test_normalize_sample_name_treats_old_pooled_qc_pool_and_pool_dna_variants_as_equivalent():
+    assert normalize_sample_name("Old Breast Cancer Tissue_ pooled_QC_1") == normalize_sample_name(
+        "Old Breast_Cancer_Tissue_pool_DNA_QC_1"
+    )
+    assert normalize_sample_name("Old Breast Cancer Tissue _pooled_QC_2") == normalize_sample_name(
+        "Old Breast_Cancer_Tissue_pool_DNA_QC_2"
+    )
+
+
 def test_identify_sample_columns_matches_mismatched_names_and_ignores_ratio_columns():
     sample_info_df = pd.DataFrame(
         {
@@ -91,6 +100,37 @@ def test_identify_sample_columns_matches_qc_and_rna_names_with_special_chars():
         "Breast_Cancer_Tissue_pooled_QC_2",
         "TumorBC2286_DNAandRNA",
         "TumorBC2304_DNAandRNA",
+    ]
+    assert dropped_columns == []
+
+
+def test_identify_sample_columns_keeps_old_pooled_qc_columns_with_pool_dna_spelling():
+    sample_info_df = pd.DataFrame(
+        {
+            "Sample_Name": [
+                "Old Breast Cancer Tissue_ pooled_QC_1",
+                "Old Breast Cancer Tissue _pooled_QC_2",
+                "Breast Cancer Tissue_pooled_QC_3",
+            ],
+            "Sample_Type": ["QC", "QC", "QC"],
+            "Batch": ["A", "A", "B"],
+        }
+    )
+    df = pd.DataFrame(
+        {
+            "Mz/RT": ["100.1/1.0"],
+            "Old Breast_Cancer_Tissue_pool_DNA_QC_1": [10.0],
+            "Old Breast_Cancer_Tissue_pool_DNA_QC_2": [20.0],
+            "Breast_Cancer_Tissue_pooled_QC_3": [30.0],
+        }
+    )
+
+    sample_columns, dropped_columns = identify_sample_columns(df, sample_info_df)
+
+    assert sample_columns == [
+        "Old Breast_Cancer_Tissue_pool_DNA_QC_1",
+        "Old Breast_Cancer_Tissue_pool_DNA_QC_2",
+        "Breast_Cancer_Tissue_pooled_QC_3",
     ]
     assert dropped_columns == []
 

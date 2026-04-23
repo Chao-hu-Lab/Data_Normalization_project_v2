@@ -371,7 +371,7 @@ class TestConcentrationNormHelpers:
         assert info["ref_median"] == pytest.approx(100.0)
         assert info["reference_strategy"] == "SpecNorm"
 
-    def test_specnorm_pqn_scales_back_by_per_feature_real_sample_median(
+    def test_specnorm_pqn_does_not_apply_feature_median_scale_back(
         self,
         conc_norm_module,
     ):
@@ -402,13 +402,13 @@ class TestConcentrationNormHelpers:
         assert normalized == pytest.approx(
             np.array(
                 [
-                    [30000.0, 30000.0, 24000.0],
-                    [10000.0, 10000.0, 12000.0],
+                    [100.0, 100.0, 80.0],
+                    [50.0, 50.0, 60.0],
                 ]
             )
         )
         assert info["reference_strategy"] == "SpecNorm_PQN"
-        assert info["scale_back_strategy"] == "per_feature_real_sample_median"
+        assert info["scale_back_strategy"] == "none"
 
     def test_build_step4_summary_context_detects_upstream_step_status(
         self,

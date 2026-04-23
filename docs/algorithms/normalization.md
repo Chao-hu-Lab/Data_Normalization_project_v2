@@ -4,7 +4,7 @@
 
 這個工具是專門為代謝組學數據設計的濃度標準化程式。想像一下，當您收集了一大批尿液或血液樣本進行代謝組學分析時，每個樣本的「濃度」可能天差地別：有些人喝了很多水，尿液很稀釋；有些人水喝得少，尿液濃縮。這種濃度差異會掩蓋真正的生物學訊號，讓您難以比較不同樣本之間的代謝物變化。本工具的核心任務，就是將所有樣本調整到相同的「濃度基準」上，讓您可以公平地比較它們。
 
-本工具採用的是**混合標準化策略**。Step 3 可以選擇單獨使用 PQN，或使用 `SpecNorm+PQN`：先用樣本特異性參考值做 SpecNorm division，再使用 PQN 處理整體代謝組學譜的尺度差異，最後以每個 feature 在原始非 QC 實驗樣本中的非缺失中位數乘回尺度。這種策略同時處理「個體特異性變異」和「群體系統性變異」，並讓輸出回到較容易解讀的 feature-specific 強度尺度。
+本工具採用的是**混合標準化策略**。Step 3 可以選擇單獨使用 PQN，或使用 `SpecNorm+PQN`：先用樣本特異性參考值做 SpecNorm division，再使用 PQN 處理整體代謝組學譜的尺度差異，最後保留 SpecNorm+PQN 的輸出尺度，不再以原始 feature 中位數乘回。這種策略同時處理「個體特異性變異」和「群體系統性變異」，並避免在 DNA、蛋白質等小 reference 值情境中把強度再乘一次強度。
 
 ## 🎯 為什麼我們需要濃度標準化？理解問題的本質
 
@@ -81,7 +81,7 @@ SpecNorm 強度 = 原始強度 / 該樣本參考值
 **實例：**
 - 樣本 A 肌酐 = 50 mg/dL（稀釋尿液）
 - 樣本 B 肌酐 = 200 mg/dL（濃縮尿液）
-校正後，樣本 A 的代謝物強度會除以 50，樣本 B 會除以 200。舊版曾在這一步再乘回參考值中位數；新版不在 SpecNorm division 階段乘固定常數，而是在 PQN 完成後才進行 feature-specific scale-back。
+校正後，樣本 A 的代謝物強度會除以 50，樣本 B 會除以 200。舊版曾在這一步再乘回參考值中位數，也曾在 PQN 完成後進行 feature-specific scale-back；新版兩者都不做，避免把已經合理的 SpecNorm+PQN 強度再次放大。
 
 **注意：** QC 樣本不進行肌酐校正，因為 QC 通常已是標準化混合樣本。
 
@@ -108,16 +108,15 @@ PQN 假設大部分代謝物在樣本間應該維持穩定比例，只有少數�
   標準化強度 m'_ij = m_ij / f_j
 ```
 
-#### 步驟 4: SpecNorm+PQN scale-back
+#### 步驟 4: SpecNorm+PQN rescaling
 
-若選擇 `SpecNorm+PQN`，PQN 完成後會對每個 feature 乘回該 feature 在 Step 3 input 的非 QC 實驗樣本非缺失中位數：
+若選擇 `SpecNorm+PQN`，PQN 完成後不再對每個 feature 乘回 Step 3 input 的非 QC 實驗樣本中位數：
 
 ```
-scale_i = median(non-missing real samples of feature i before Step 3)
-final_ij = pqn_after_specnorm_ij × scale_i
+final_ij = pqn_after_specnorm_ij
 ```
 
-若某個 feature 沒有可用的 real-sample 中位數，該 feature 保留 PQN 後的值，並在 summary 中計數。
+這等同於在 rescaling 步驟選擇 `None` 或常數 `1`。在 `DNA_mg`、蛋白質含量等 reference 中位數很小但原始訊號很大的資料中，這能避免把「已除以 reference 後仍是健康大數值」的結果再乘回原始強度中位數，造成尺度災難。
 
 ### 3. 多維度品質評估
 
