@@ -54,6 +54,42 @@ class TestISTDCorrectionInput:
             # Should have at least some ISTDs
             assert istd_count >= 0, "ISTD count should be non-negative"
 
+    def test_istd_detection_accepts_argb_red_font(self, istd_module, tmp_path):
+        """Step 1 should recognize ARGB red font values such as 00FF0000."""
+        raw_df = pd.DataFrame(
+            {
+                "Mz/RT": ["Sample_Type", "100.1/1.0", "200.2/2.0", "300.3/3.0"],
+                "QC_1": ["QC", 10.0, 20.0, 30.0],
+                "QC_2": ["QC", 11.0, 21.0, 31.0],
+                "QC_3": ["QC", 9.0, 19.0, 29.0],
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "QC_2", "QC_3"],
+                "Sample_Type": ["QC", "QC", "QC"],
+            }
+        )
+        workbook_path = tmp_path / "argb_red_istd.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            raw_df.to_excel(writer, sheet_name="RawIntensity", index=False)
+            sample_info_df.to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        workbook = load_workbook(workbook_path)
+        try:
+            sheet = workbook["RawIntensity"]
+            red_font = Font(color="00FF0000")
+            sheet["A3"].font = red_font
+            sheet["A4"].font = red_font
+            workbook.save(workbook_path)
+        finally:
+            workbook.close()
+
+        loaded_raw_df, _, _, _ = istd_module.load_and_process_data(str(workbook_path))
+
+        detected_istds = set(loaded_raw_df.loc[loaded_raw_df["is_ISTD"], "FeatureID"].astype(str))
+        assert detected_istds == {"100.1/1.0", "200.2/2.0"}
+
 
 class TestISTDCorrectionOutput:
     """Tests for output validation."""
