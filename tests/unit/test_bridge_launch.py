@@ -70,7 +70,7 @@ def test_export_to_metaboanalyst_uses_shared_session_bridge_and_launch_args(monk
     ]
     normalized = tmp_path / "Normalized.xlsx"
     normalized.write_text("placeholder", encoding="utf-8")
-    app.step_outputs = {"Step 4: QC Batch Scaling": {"output_path": str(normalized)}}
+    app.step_outputs = {"Step 3: Conc. Normalization": {"output_path": str(normalized)}}
     app._ms_session_dir = tmp_path / "workspace" / "sessions" / "s1"
     app._ms_session_dir.mkdir(parents=True, exist_ok=True)
     (app._ms_session_dir / "manifest.json").write_text('{"stages": {}}', encoding="utf-8")
@@ -114,7 +114,7 @@ def test_export_to_metaboanalyst_uses_shared_session_bridge_and_launch_args(monk
     assert "--ms-session-dir" in created["argv"]
 
 
-def test_dnp_to_metaboanalyst_prefers_final_qc_batch_scaling_sheet(tmp_path):
+def test_dnp_to_metaboanalyst_prefers_step3_result_sheet_before_legacy_step4(tmp_path):
     from metabolomics.adapters.dnp_to_metaboanalyst import convert_dnp_to_metaboanalyst
 
     input_path = tmp_path / "dnp.xlsx"
@@ -140,7 +140,7 @@ def test_dnp_to_metaboanalyst_prefers_final_qc_batch_scaling_sheet(tmp_path):
     convert_dnp_to_metaboanalyst(str(input_path), str(output_path))
 
     converted = pd.read_excel(output_path, sheet_name="Data")
-    assert converted.loc[0, "Sample_A"] == 9.0
+    assert converted.loc[0, "Sample_A"] == 1.0
 
 
 def test_dnp_to_metaboanalyst_falls_back_to_specnorm_pqn_sheet(tmp_path):

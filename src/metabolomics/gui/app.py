@@ -118,7 +118,7 @@ class DataNormalizationApp:
             },
             'export': {
                 'text': 'Export to MetaboAnalyst',
-                'disabled_text': 'Export After Step 4',
+                'disabled_text': 'Export After Step 3',
                 'width': 14,
                 'disabled_bg': '#94a3b8',
                 'disabled_fg': '#f8fafc',
@@ -369,9 +369,15 @@ class DataNormalizationApp:
         return None
 
     def _is_export_ready(self):
-        steps = getattr(self, 'steps', self._build_workflow_steps())
-        completed_steps = getattr(self, 'completed_steps', set())
-        return len(steps) > 0 and len(completed_steps) == len(steps)
+        step3_name = self._get_primary_export_step_name()
+        step3_output = self._get_output_path(getattr(self, 'step_outputs', {}).get(step3_name))
+        return bool(step3_name in getattr(self, 'completed_steps', set()) and step3_output)
+
+    def _get_primary_export_step_name(self):
+        return 'Step 3: Conc. Normalization'
+
+    def _get_auto_run_terminal_step_name(self):
+        return 'Step 3: Conc. Normalization'
 
     def _ensure_workflow_state(self):
         steps = getattr(self, 'steps', None)
@@ -967,7 +973,7 @@ class DataNormalizationApp:
         )
         self.reset_btn.grid(row=0, column=2, padx=4, pady=4, sticky='ew')
 
-        # Export to Metaboanalyst button (disabled until Step 4 complete)
+        # Export to Metaboanalyst button (disabled until Step 3 complete)
         self.export_meta_btn = tk.Button(
             control_grid,
             text=button_tokens['export']['disabled_text'],
@@ -1705,7 +1711,7 @@ class DataNormalizationApp:
         return True
 
     def export_to_metaboanalyst(self):
-        """Export Step 4 result to Metaboanalyst-compatible format."""
+        """Export Step 3 normalized result to Metaboanalyst-compatible format."""
         if not self._is_ms_core_available():
             messagebox.showwarning(
                 "ms-core Not Found",
@@ -1715,25 +1721,24 @@ class DataNormalizationApp:
             )
             return
 
-        # Find Step 4 output
-        step4_name = self.steps[3]['name']
-        if step4_name not in self.step_outputs:
+        export_step_name = self._get_primary_export_step_name()
+        if export_step_name not in self.step_outputs:
             messagebox.showwarning(
                 "No Output",
-                "Step 4 (QC Batch Scaling) has not been completed yet."
+                "Step 3 (Conc. Normalization) has not been completed yet."
             )
             return
 
-        step4_output = self._get_output_path(self.step_outputs[step4_name])
-        if not step4_output or not os.path.exists(step4_output):
-            messagebox.showwarning("File Not Found", "Step 4 output file not found.")
+        export_output = self._get_output_path(self.step_outputs[export_step_name])
+        if not export_output or not os.path.exists(export_output):
+            messagebox.showwarning("File Not Found", "Step 3 output file not found.")
             return
 
         if self._ms_session_dir:
             session_dir = Path(self._ms_session_dir)
             manifest_path = session_dir / "manifest.json"
         else:
-            session = create_session(source_file=step4_output)
+            session = create_session(source_file=export_output)
             session_dir = session.session_dir
             manifest_path = session.manifest_path
             self._ms_session_dir = session_dir
@@ -1742,7 +1747,7 @@ class DataNormalizationApp:
             session_dir,
             stage="dnp",
             bucket="bridge_to_ma",
-            filename=f"Metaboanalyst_import_{Path(step4_output).name}",
+            filename=f"Metaboanalyst_import_{Path(export_output).name}",
         )
 
         self.master.config(cursor='wait')
@@ -1750,8 +1755,8 @@ class DataNormalizationApp:
         self.master.update()
         try:
             convert_dnp_to_metaboanalyst = _load_dnp_to_ma_adapter()
-            self.logger.info(f"Exporting to Metaboanalyst format: {step4_output}")
-            result_path = Path(convert_dnp_to_metaboanalyst(step4_output, str(output_path)))
+            self.logger.info(f"Exporting to Metaboanalyst format: {export_output}")
+            result_path = Path(convert_dnp_to_metaboanalyst(export_output, str(output_path)))
             bridge_ref = str(result_path)
             try:
                 bridge_ref = str(result_path.relative_to(session_dir))
@@ -1810,10 +1815,10 @@ class DataNormalizationApp:
         )
 
     def _offer_metaboanalyst_export(self):
-        """Prompt user to export to Metaboanalyst after all steps complete."""
+        """Prompt user to export to Metaboanalyst after active steps complete."""
         if messagebox.askyesno(
             "Export to Metaboanalyst",
-            "All steps completed!\nWould you like to export the result for Metaboanalyst?"
+            "Active normalization steps completed!\nWould you like to export the Step 3 result for Metaboanalyst?"
         ):
             self.export_to_metaboanalyst()
 
@@ -1922,6 +1927,8 @@ class DataNormalizationApp:
                 }
                 if step['module'] == 'metabolomics.processors.normalization':
                     run_kwargs['normalization_method'] = self._get_normalization_method()
+                elif step['module'] == 'metabolomics.processors.qc_batch_scaling':
+                    run_kwargs['diagnostics_only'] = True
 
                 result = script_module.main(**run_kwargs)
 
@@ -2036,6 +2043,11 @@ class DataNormalizationApp:
                 "Only one batch detected — cross-batch scaling is not applicable. "
                 "The final output remains the Step 3 normalized workbook."
             )
+        if step_name == 'Step 4: QC Batch Scaling' and skip_reason == 'paused_nonshared_qc_design':
+            return (
+                "Step 4 is paused as an active correction step. "
+                "Step 3 remains the primary normalized output, and Step 4 is available only for manual diagnostics."
+            )
         return "Downstream steps will use the best available upstream sheet."
 
     def on_step_complete(self, step, result):
@@ -2083,13 +2095,21 @@ class DataNormalizationApp:
 
         # Auto run logic
         if self.auto_run_mode:
-            next_index = index + 1
-            if next_index < len(self.steps):
-                self.logger.info(f"Auto-running next step in 1s: {self.steps[next_index]['name']}")
-                self.master.after(1000, lambda: self.execute_step(self.steps[next_index]))
-            else:
+            auto_terminal = self._get_auto_run_terminal_step_name()
+            if step['name'] == auto_terminal:
                 self.auto_run_mode = False
-                messagebox.showinfo("Auto Run Complete", "All steps completed!")
+                messagebox.showinfo(
+                    "Auto Run Complete",
+                    "Active workflow completed through Step 3.\nStep 4 remains available as a manual diagnostics-only step."
+                )
+            else:
+                next_index = index + 1
+                if next_index < len(self.steps):
+                    self.logger.info(f"Auto-running next step in 1s: {self.steps[next_index]['name']}")
+                    self.master.after(1000, lambda: self.execute_step(self.steps[next_index]))
+                else:
+                    self.auto_run_mode = False
+                    messagebox.showinfo("Auto Run Complete", "Active workflow completed.")
         else:
             if was_skipped:
                 skip_reason = self._get_skip_reason(result)

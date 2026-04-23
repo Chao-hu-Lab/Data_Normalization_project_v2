@@ -36,6 +36,16 @@ def _assert_step1_result_allows_skip(result, input_file: str, session_dir: Path)
     _assert_result_in_session(result, session_dir, "Step1_")
 
 
+def _assert_step4_diagnostics_result(result, step3_output: str, session_dir: Path) -> None:
+    assert result is not None
+    assert Path(result.output_path).exists()
+    assert Path(result.output_path).parent == session_dir
+    assert Path(result.output_path).name.startswith("Step4_")
+    assert getattr(result, "extra", {}).get("diagnostics_only") is True
+    assert getattr(result, "extra", {}).get("active_scaling") is False
+    assert Path(step3_output).exists()
+
+
 @pytest.mark.integration
 def test_step1_scenario_smoke(istd_module, tmp_path):
     input_file, session_dir = _prepare_scenario_run(tmp_path, "unstable_istd")
@@ -81,7 +91,7 @@ def test_step3_scenario_smoke(istd_module, qc_lowess_module, qc_batch_scaling_mo
         ("specnorm_friendly", "SpecNorm+PQN", "Normalized_SpecNorm_PQN"),
     ],
 )
-def test_step4_scenarios_smoke(
+def test_step4_diagnostics_scenarios_smoke(
     istd_module,
     qc_lowess_module,
     qc_batch_scaling_module,
@@ -100,10 +110,14 @@ def test_step4_scenarios_smoke(
         session_dir=session_dir,
         normalization_method=normalization_method,
     )
-    step4_result = qc_batch_scaling_module.main(input_file=step3_result.output_path, session_dir=session_dir)
+    step4_result = qc_batch_scaling_module.main(
+        input_file=step3_result.output_path,
+        session_dir=session_dir,
+        diagnostics_only=True,
+    )
 
     _assert_step1_result_allows_skip(step1_result, input_file, session_dir)
     _assert_result_in_session(step2_result, session_dir, "Step2_")
     _assert_result_in_session(step3_result, session_dir, "Step3_")
-    _assert_result_in_session(step4_result, session_dir, "Step4_")
+    _assert_step4_diagnostics_result(step4_result, step3_result.output_path, session_dir)
     assert expected_fragment in Path(step3_result.output_path).name

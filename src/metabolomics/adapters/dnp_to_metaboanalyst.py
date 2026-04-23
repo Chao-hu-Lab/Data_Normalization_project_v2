@@ -2,7 +2,7 @@
 Adapter B: Convert DNP output → Metaboanalyst_clone input format.
 
 Transformations:
-1. Read final normalized data from QC_Batch_Scaling_result, SpecNorm_PQN_Result, or PQN_Result
+1. Read final normalized data from SpecNorm_PQN_Result, PQN_Result, or legacy QC_Batch_Scaling_result
 2. Remove statistical columns (Mean, SD, CV%, etc.)
 3. Write cleaned data as the FIRST sheet (Metaboanalyst reads first sheet by default)
 4. Copy SampleInfo sheet (needed for SpecNorm)
@@ -64,9 +64,9 @@ def convert_dnp_to_metaboanalyst(input_path: str, output_path: str) -> str:
     # --- Read available sheets ---
     xls = pd.ExcelFile(str(input_path))
     result_candidates = [
-        SHEET_NAMES.get('qc_batch_scaling', 'QC_Batch_Scaling_result'),
         'SpecNorm_PQN_Result',
         SHEET_NAMES['pqn_result'],
+        SHEET_NAMES.get('qc_batch_scaling', 'QC_Batch_Scaling_result'),
     ]
     result_sheet = next(
         (sheet_name for sheet_name in result_candidates if sheet_name in xls.sheet_names),

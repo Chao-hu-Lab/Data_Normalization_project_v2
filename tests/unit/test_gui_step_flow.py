@@ -111,7 +111,7 @@ def test_build_header_button_tokens_uses_uniform_control_grid_sizing():
     assert tokens["stop"]["width"] == 14
     assert tokens["reset"]["width"] == 14
     assert tokens["export"]["width"] == 14
-    assert tokens["export"]["disabled_text"] == "Export After Step 4"
+    assert tokens["export"]["disabled_text"] == "Export After Step 3"
 
 
 def test_build_header_button_tokens_raise_secondary_action_contrast():
@@ -150,7 +150,14 @@ def test_build_step_card_tokens_reserve_space_for_three_button_actions():
 
 def test_ensure_workflow_state_tracks_export_readiness_from_completed_steps():
     app = _make_app()
-    app.completed_steps = {step["name"] for step in app.steps}
+    app.completed_steps = {
+        "Step 1: ISTD Correction",
+        "Step 2: QC Correction",
+        "Step 3: Conc. Normalization",
+    }
+    app.step_outputs = {
+        "Step 3: Conc. Normalization": {"output_path": "C:/tmp/step3-output.xlsx"},
+    }
 
     app._ensure_workflow_state()
 
@@ -184,9 +191,27 @@ def test_update_button_states_keeps_disabled_export_readable():
 
     app.update_button_states()
 
-    assert app.export_meta_btn.config_calls[-1]["text"] == "Export After Step 4"
+    assert app.export_meta_btn.config_calls[-1]["text"] == "Export After Step 3"
     assert app.export_meta_btn.config_calls[-1]["bg"] == "#94a3b8"
     assert app.export_meta_btn.config_calls[-1]["fg"] == "#f8fafc"
+
+
+def test_update_button_states_enables_export_after_step3_output_exists():
+    app = _make_app()
+    app.pipeline_nav_labels = [_DummyWidget() for _ in app.steps]
+    app.completed_steps = {
+        "Step 1: ISTD Correction",
+        "Step 2: QC Correction",
+        "Step 3: Conc. Normalization",
+    }
+    app.step_outputs = {
+        "Step 3: Conc. Normalization": {"output_path": "C:/tmp/step3-output.xlsx"},
+    }
+
+    app.update_button_states()
+
+    assert app.export_meta_btn.config_calls[-1]["state"] == "normal"
+    assert app.export_meta_btn.config_calls[-1]["text"] == "Export to MetaboAnalyst"
 
 
 def test_run_step_uses_previous_step_output_instead_of_last_output_file():
@@ -245,6 +270,35 @@ def test_run_step_passes_selected_specnorm_pqn_method_to_normalization():
     app.run_step(step)
 
     assert captured["normalization_method"] == "SpecNorm+PQN"
+
+
+def test_run_step_passes_diagnostics_only_to_step4():
+    app = _make_app()
+    step = app.steps[3]
+    captured = {}
+
+    class _DummyModule:
+        @staticmethod
+        def main(input_file=None, **kwargs):
+            captured["input_file"] = input_file
+            captured.update(kwargs)
+            return {
+                "output_path": "C:/tmp/step4-diagnostics.xlsx",
+                "metabolites": 10,
+                "samples": 5,
+            }
+
+    app.step_outputs = {
+        "Step 3: Conc. Normalization": {
+            "output_path": "C:/tmp/current-step3-output.xlsx",
+        }
+    }
+    app.load_script = lambda _module_name: _DummyModule()
+
+    app.run_step(step)
+
+    assert captured["input_file"] == "C:/tmp/current-step3-output.xlsx"
+    assert captured["diagnostics_only"] is True
 
 
 def test_on_step_error_invalidates_failed_step_and_downstream(monkeypatch):

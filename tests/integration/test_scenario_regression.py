@@ -54,6 +54,16 @@ def _assert_step1_result_allows_skip(result, input_file: str, session_dir: Path)
     _assert_result_in_session(result, session_dir, "Step1_")
 
 
+def _assert_step4_diagnostics_result(result, step3_output: str, session_dir: Path) -> None:
+    assert result is not None
+    assert Path(result.output_path).exists()
+    assert Path(result.output_path).parent == session_dir
+    assert Path(result.output_path).name.startswith("Step4_")
+    assert getattr(result, "extra", {}).get("diagnostics_only") is True
+    assert getattr(result, "extra", {}).get("active_scaling") is False
+    assert Path(step3_output).exists()
+
+
 @pytest.mark.integration
 def test_istd_degradation_generator_has_negative_istd_order_slopes():
     _, sample_info_df, feature_df, intensity_matrix = _build_scenario_arrays("istd_degradation")
@@ -217,18 +227,22 @@ def test_mixed_direction_batch_drift_runs_through_step3(
     step2_result = qc_lowess_module.main(input_file=step1_result.output_path, session_dir=session_dir)
     from metabolomics.processors import normalization
     step3_result = normalization.main(input_file=step2_result.output_path, session_dir=session_dir)
-    step4_result = qc_batch_scaling_module.main(input_file=step3_result.output_path, session_dir=session_dir)
+    step4_result = qc_batch_scaling_module.main(
+        input_file=step3_result.output_path,
+        session_dir=session_dir,
+        diagnostics_only=True,
+    )
 
     _assert_step1_result_allows_skip(step1_result, input_file, session_dir)
     _assert_result_in_session(step2_result, session_dir, "Step2_")
     _assert_result_in_session(step3_result, session_dir, "Step3_")
-    _assert_result_in_session(step4_result, session_dir, "Step4_")
+    _assert_step4_diagnostics_result(step4_result, step3_result.output_path, session_dir)
     assert any((session_dir / "plots").glob("Step4_*.png"))
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("scenario_name", ["matrix_effect_suppression", "signal_saturation"])
-def test_advanced_step4_regression_scenarios_run_with_pqn(
+def test_step4_diagnostics_regression_scenarios_run_with_pqn(
     istd_module,
     qc_lowess_module,
     qc_batch_scaling_module,
@@ -245,17 +259,21 @@ def test_advanced_step4_regression_scenarios_run_with_pqn(
         session_dir=session_dir,
         normalization_method="PQN",
     )
-    step4_result = qc_batch_scaling_module.main(input_file=step3_result.output_path, session_dir=session_dir)
+    step4_result = qc_batch_scaling_module.main(
+        input_file=step3_result.output_path,
+        session_dir=session_dir,
+        diagnostics_only=True,
+    )
 
     _assert_step1_result_allows_skip(step1_result, input_file, session_dir)
     _assert_result_in_session(step2_result, session_dir, "Step2_")
     _assert_result_in_session(step3_result, session_dir, "Step3_")
-    _assert_result_in_session(step4_result, session_dir, "Step4_")
+    _assert_step4_diagnostics_result(step4_result, step3_result.output_path, session_dir)
     assert "Normalized_PQN" in Path(step3_result.output_path).name
 
 
 @pytest.mark.integration
-def test_structured_missingness_runs_through_step4_pqn(
+def test_structured_missingness_runs_through_step4_diagnostics_pqn(
     istd_module,
     qc_lowess_module,
     qc_batch_scaling_module,
@@ -271,10 +289,14 @@ def test_structured_missingness_runs_through_step4_pqn(
         session_dir=session_dir,
         normalization_method="PQN",
     )
-    step4_result = qc_batch_scaling_module.main(input_file=step3_result.output_path, session_dir=session_dir)
+    step4_result = qc_batch_scaling_module.main(
+        input_file=step3_result.output_path,
+        session_dir=session_dir,
+        diagnostics_only=True,
+    )
 
     _assert_step1_result_allows_skip(step1_result, input_file, session_dir)
     _assert_result_in_session(step2_result, session_dir, "Step2_")
     _assert_result_in_session(step3_result, session_dir, "Step3_")
-    _assert_result_in_session(step4_result, session_dir, "Step4_")
+    _assert_step4_diagnostics_result(step4_result, step3_result.output_path, session_dir)
     assert "Normalized_PQN" in Path(step3_result.output_path).name
