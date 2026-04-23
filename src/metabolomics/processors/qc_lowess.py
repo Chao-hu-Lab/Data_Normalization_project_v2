@@ -163,9 +163,59 @@ def _loocv_rmse(x: np.ndarray, y: np.ndarray, frac: float, it: int = 2) -> float
     return float(np.sqrt(np.mean(errors)))
 
 
+def filter_qc_outliers_iqr(qc_orders, qc_intensities, *, min_keep=5, min_keep_ratio=0.7):
+    """Filter QC outliers by IQR when enough points remain for a defensible fit."""
+    qc_orders_arr = np.asarray(qc_orders, dtype=float)
+    qc_intensities_arr = np.asarray(qc_intensities, dtype=float)
+    valid_mask = (
+        np.isfinite(qc_orders_arr)
+        & np.isfinite(qc_intensities_arr)
+        & (qc_intensities_arr > 0)
+    )
+    valid_x = qc_orders_arr[valid_mask]
+    valid_y = qc_intensities_arr[valid_mask]
+
+    meta = {
+        'original_valid_count': int(valid_x.size),
+        'valid_qc_count': int(valid_x.size),
+        'removed_outlier_count': 0,
+        'outlier_filter_applied': False,
+        'outlier_filter_blocked': False,
+    }
+
+    if valid_x.size == 0:
+        return valid_x, valid_y, meta
+
+    q1 = np.nanpercentile(valid_y, 25)
+    q3 = np.nanpercentile(valid_y, 75)
+    iqr = q3 - q1
+    if not np.isfinite(iqr) or iqr <= 0:
+        return valid_x, valid_y, meta
+
+    lower = q1 - 1.5 * iqr
+    upper = q3 + 1.5 * iqr
+    keep_mask = (valid_y >= lower) & (valid_y <= upper)
+    removed_count = int((~keep_mask).sum())
+    if removed_count == 0:
+        return valid_x, valid_y, meta
+
+    remaining_count = int(keep_mask.sum())
+    keep_ratio = remaining_count / valid_x.size if valid_x.size else 0.0
+    if remaining_count < min_keep or keep_ratio < min_keep_ratio:
+        meta['outlier_filter_blocked'] = True
+        return valid_x, valid_y, meta
+
+    filtered_x = valid_x[keep_mask]
+    filtered_y = valid_y[keep_mask]
+    meta['valid_qc_count'] = int(filtered_x.size)
+    meta['removed_outlier_count'] = removed_count
+    meta['outlier_filter_applied'] = True
+    return filtered_x, filtered_y, meta
 
 
-def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensities, debug_flag=None, global_qc_median=None):
+
+
+def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensities, debug_flag=None):
     """對單一批次特徵執行 QC-LOWESS 校正並回傳詳細統計。
 
     Args:
@@ -174,13 +224,24 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
         all_orders: 所有樣本的 injection order
         all_intensities: 所有樣本的強度值
         debug_flag: 除錯標記
-        global_qc_median: 全域 QC 中位數（跨所有批次計算）
     """
     info = {
         'status': 'failed',
         'cv_before': np.nan,
         'cv_after': np.nan,
         'cv_improvement': np.nan,
+        'raw_factor_min': np.nan,
+        'raw_factor_max': np.nan,
+        'clamped_factor_min': np.nan,
+        'clamped_factor_max': np.nan,
+        'clamped_count': 0,
+        'clamped_ratio': np.nan,
+        'outside_qc_range_count': 0,
+        'valid_qc_count': 0,
+        'removed_outlier_count': 0,
+        'outlier_filter_applied': False,
+        'target_strategy': 'unknown',
+        'normalized_rmse': np.nan,
         'correction_factor_stats': {},
         'trend_validation': {
             'trend_pvalue': np.nan,
@@ -192,7 +253,6 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
         'qc_cv_for_frac': np.nan,
         'frac_strategy': 'unknown',
         'loocv_rmse': np.nan,
-        'global_median_used': global_qc_median is not None
     }
 
     if all_orders is None or all_intensities is None:
@@ -208,6 +268,24 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
     valid_mask = np.isfinite(qc_orders_arr) & np.isfinite(qc_intensities_arr) & (qc_intensities_arr > 0)
     valid_x = qc_orders_arr[valid_mask]
     valid_y = qc_intensities_arr[valid_mask]
+
+    if valid_x.size == 0:
+        info['status'] = 'all_qc_invalid'
+        info['frac_strategy'] = 'all_qc_invalid'
+        return all_intensities_arr.tolist(), info
+
+    filtered_x, filtered_y, outlier_meta = filter_qc_outliers_iqr(qc_orders, qc_intensities)
+    info['valid_qc_count'] = outlier_meta['valid_qc_count']
+    info['removed_outlier_count'] = outlier_meta['removed_outlier_count']
+    info['outlier_filter_applied'] = outlier_meta['outlier_filter_applied']
+
+    if outlier_meta['outlier_filter_blocked']:
+        info['status'] = 'outlier_filtering_left_too_few_points'
+        info['frac_strategy'] = 'outlier_filtering_left_too_few_points'
+        return all_intensities_arr.tolist(), info
+
+    valid_x = filtered_x
+    valid_y = filtered_y
 
     if valid_x.size < 5 or np.unique(valid_x).size < 2:
         info['status'] = 'insufficient_qc'
@@ -274,23 +352,28 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
     lowess_result = sm.nonparametric.lowess(valid_y, valid_x, frac=frac, it=2, return_sorted=True)
     x_fit, y_fit = lowess_result[:, 0], lowess_result[:, 1]
 
-    # 使用全域 QC 中位數（如果有提供），否則使用批次內中位數
-    if global_qc_median is not None and np.isfinite(global_qc_median) and global_qc_median > 0:
-        median_qc = global_qc_median
-    else:
-        median_qc = np.nanmedian(y_fit)
-        if not np.isfinite(median_qc) or median_qc <= 0:
-            median_qc = np.nanmedian(valid_y)
-        if not np.isfinite(median_qc) or median_qc <= 0:
-            median_qc = 1.0
+    median_qc = np.nanmedian(y_fit)
+    info['target_strategy'] = 'batch_local_fit_median'
+    if not np.isfinite(median_qc) or median_qc <= 0:
+        median_qc = np.nanmedian(valid_y)
+        info['target_strategy'] = 'batch_local_observed_qc_median'
+    if not np.isfinite(median_qc) or median_qc <= 0:
+        median_qc = 1.0
+        info['target_strategy'] = 'unity_fallback'
 
     def predict(x_new):
         if not np.isfinite(x_new):
             return np.nan
         return float(np.interp(x_new, x_fit, y_fit, left=y_fit[0], right=y_fit[-1]))
 
+    min_factor = 0.5
+    max_factor = 2.0
     corrected = []
-    factors = []
+    raw_factors = []
+    clamped_factors = []
+    outside_qc_range_count = 0
+    qc_span_min = float(np.nanmin(valid_x))
+    qc_span_max = float(np.nanmax(valid_x))
     for order, intensity in zip(all_orders_arr, all_intensities_arr):
         if not np.isfinite(intensity):
             corrected.append(np.nan)
@@ -298,17 +381,22 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
         if intensity <= 0:
             corrected.append(float(intensity))
             continue
+        if np.isfinite(order) and (order < qc_span_min or order > qc_span_max):
+            outside_qc_range_count += 1
         fitted = predict(order)
         if not np.isfinite(fitted) or fitted <= 0 or fitted < median_qc * 0.01:
             corrected.append(float(intensity))
             continue
-        factor = median_qc / fitted
-        factors.append(factor)
-        corrected.append(float(intensity * factor))
+        raw_factor = float(median_qc / fitted)
+        clamped_factor = float(np.clip(raw_factor, min_factor, max_factor))
+        raw_factors.append(raw_factor)
+        clamped_factors.append(clamped_factor)
+        corrected.append(float(intensity * clamped_factor))
 
     qc_pred = np.array([predict(x) for x in valid_x], dtype=float)
     qc_pred = np.where(np.isfinite(qc_pred) & (qc_pred > 0), qc_pred, np.nan)
-    qc_factors = np.where(np.isfinite(qc_pred), median_qc / qc_pred, 1.0)
+    qc_raw_factors = np.where(np.isfinite(qc_pred), median_qc / qc_pred, 1.0)
+    qc_factors = np.clip(qc_raw_factors, min_factor, max_factor)
     qc_corrected = valid_y * qc_factors
 
     def calc_cv(values):
@@ -324,7 +412,8 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
     original_cv = calc_cv(valid_y)
     corrected_cv = calc_cv(qc_corrected)
     cv_improvement = original_cv - corrected_cv if np.isfinite(original_cv) and np.isfinite(corrected_cv) else np.nan
-    factor_array = np.asarray(factors, dtype=float)
+    raw_factor_array = np.asarray(raw_factors, dtype=float)
+    factor_array = np.asarray(clamped_factors, dtype=float)
     factor_cv = calc_cv(factor_array) if factor_array.size >= 2 else np.nan
 
     try:
@@ -338,9 +427,35 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
     ss_tot = np.nansum((valid_y - np.nanmean(valid_y)) ** 2)
     r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
     rmse = np.sqrt(np.nanmean((valid_y - qc_predicted) ** 2))
+    median_valid_y = float(np.nanmedian(valid_y)) if valid_y.size else np.nan
+    normalized_rmse = (
+        float(rmse / median_valid_y)
+        if np.isfinite(rmse) and np.isfinite(median_valid_y) and median_valid_y > 0
+        else np.nan
+    )
+    normalized_drift_amplitude = (
+        float((np.nanmax(qc_predicted) - np.nanmin(qc_predicted)) / median_valid_y)
+        if np.isfinite(median_valid_y) and median_valid_y > 0
+        else np.nan
+    )
 
     status = 'success'
-    if not np.isfinite(original_cv) or not np.isfinite(corrected_cv):
+    if (
+        np.isfinite(trend_tau)
+        and np.isfinite(trend_pvalue)
+        and np.isfinite(r_squared)
+        and np.isfinite(normalized_drift_amplitude)
+        and abs(trend_tau) < 0.2
+        and trend_pvalue >= 0.05
+        and r_squared < 0.1
+        and normalized_drift_amplitude < 0.05
+    ):
+        corrected = all_intensities_arr.tolist()
+        qc_corrected = valid_y.copy()
+        corrected_cv = original_cv
+        cv_improvement = 0.0
+        status = 'no_drift_detected'
+    elif not np.isfinite(original_cv) or not np.isfinite(corrected_cv):
         status = 'failed'
     elif cv_improvement < -1:
         status = 'overcorrection_detected'
@@ -353,6 +468,20 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
     info['cv_before'] = original_cv
     info['cv_after'] = corrected_cv
     info['cv_improvement'] = cv_improvement
+    info['raw_factor_min'] = float(np.nanmin(raw_factor_array)) if raw_factor_array.size else np.nan
+    info['raw_factor_max'] = float(np.nanmax(raw_factor_array)) if raw_factor_array.size else np.nan
+    info['clamped_factor_min'] = float(np.nanmin(factor_array)) if factor_array.size else np.nan
+    info['clamped_factor_max'] = float(np.nanmax(factor_array)) if factor_array.size else np.nan
+    info['clamped_count'] = int(
+        np.sum(~np.isclose(raw_factor_array, factor_array, rtol=1e-9, atol=1e-12))
+    ) if raw_factor_array.size and factor_array.size else 0
+    info['clamped_ratio'] = (
+        float(info['clamped_count'] / factor_array.size)
+        if factor_array.size
+        else np.nan
+    )
+    info['outside_qc_range_count'] = outside_qc_range_count
+    info['normalized_rmse'] = normalized_rmse
     info['correction_factor_stats'] = {
         'median': float(np.nanmedian(factor_array)) if factor_array.size else np.nan,
         'cv_percent': factor_cv,
@@ -534,7 +663,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 if matching:
                     print(f"     - {fid} (CV% = {matching[0][1]:.2f}%)")
 
-        def normalize_feature_for_batch(feature_row, batch_name, batch_info, debug_flag, global_median=None):
+        def normalize_feature_for_batch(feature_row, batch_name, batch_info, debug_flag):
             samples = batch_info['samples']
             injection_orders = batch_info['injection_orders']
             valid_samples = [s for s in samples if s in injection_orders]
@@ -567,7 +696,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             qc_intensities = [all_intensities[i] for i in qc_indices]
 
             corrected_intensities, info = apply_lowess_correction(
-                qc_orders, qc_intensities, all_orders, all_intensities, debug_flag, global_median
+                qc_orders, qc_intensities, all_orders, all_intensities, debug_flag
             )
 
             corrected_map = dict(zip(all_sample_names, corrected_intensities))
@@ -575,6 +704,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 'status': info.get('status', 'unknown'),
                 'corrected_samples': corrected_map,
                 'trend_validation': info.get('trend_validation', None),
+                'step2_metrics': info,
                 'qc_samples': qc_batch_samples,
                 'frac_info': {
                     'frac_used': info.get('frac_used', np.nan),
@@ -612,8 +742,17 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                         return strategy
             return strategy_counter.most_common(1)[0][0]
 
+        def choose_target_strategy(strategies):
+            valid_strategies = [s for s in strategies if isinstance(s, str) and s]
+            if not valid_strategies:
+                return 'unknown'
+            strategy_counter = Counter(valid_strategies)
+            return strategy_counter.most_common(1)[0][0]
+
         status_categories = [
-            'success', 'insufficient_qc', 'insufficient_improvement',
+            'success', 'insufficient_qc', 'all_qc_invalid',
+            'outlier_filtering_left_too_few_points', 'no_drift_detected',
+            'insufficient_improvement',
             'unstable_correction_factors', 'overcorrection_detected',
             'failed', 'unknown'
         ]
@@ -624,30 +763,6 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         decision_stats['total_features'] = len(istd_df)
         decision_stats['total_batches'] = len(active_batches)
         decision_stats['total_feature_batch_tasks'] = len(active_batches) * len(istd_df)
-
-        # ===== 計算全域 QC 中位數（跨所有批次）=====
-        print("\n🌐 計算全域 QC 中位數（跨所有批次）...")
-        # Vectorized median calculation - much faster than iterrows()
-        valid_qc_cols = [c for c in qc_samples if c in istd_df.columns]
-        if valid_qc_cols:
-            qc_data = istd_df[valid_qc_cols].apply(pd.to_numeric, errors='coerce').values
-            # Replace non-positive values with NaN
-            qc_data = np.where(qc_data > 0, qc_data, np.nan)
-            # Count valid values per row
-            valid_counts = np.sum(np.isfinite(qc_data), axis=1)
-            # Calculate median for each row
-            medians = np.nanmedian(qc_data, axis=1)
-            # Build dictionary: None for features with <3 valid QC values
-            feature_ids = istd_df['FeatureID'].values
-            global_qc_medians = {
-                fid: (med if cnt >= 3 else None)
-                for fid, med, cnt in zip(feature_ids, medians, valid_counts)
-            }
-        else:
-            global_qc_medians = {fid: None for fid in istd_df['FeatureID']}
-
-        valid_global_medians = sum(1 for v in global_qc_medians.values() if v is not None)
-        print(f"  - 成功計算全域中位數的特徵數: {valid_global_medians}/{len(istd_df)}")
 
         all_results = []
         qc_corrected_values = {}
@@ -662,7 +777,6 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         for idx, row in istd_df.iterrows():
             feature_id = row['FeatureID']
             debug_flag = feature_id if feature_id in debug_features else None
-            global_median = global_qc_medians.get(feature_id)
 
             result_row = {'FeatureID': feature_id}
             for sample in sample_columns:
@@ -671,14 +785,14 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             qc_corrected_dict = {sample: row[sample] for sample in qc_samples if sample in row.index}
             corrected_candidates = {}
             fallback_candidates = {}
-            trend_metric_buffer = []
+            batch_metric_buffer = []
             batch_statuses = []
             frac_value_buffer = []
             frac_cv_buffer = []
             frac_strategy_buffer = []
 
             for batch_name, batch_info in active_batches.items():
-                batch_result = normalize_feature_for_batch(row, batch_name, batch_info, debug_flag, global_median)
+                batch_result = normalize_feature_for_batch(row, batch_name, batch_info, debug_flag)
                 status = batch_result['status']
                 batch_statuses.append(status)
 
@@ -693,8 +807,9 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                     for sample, value in corrected_map.items():
                         target_buffer.setdefault(sample, []).append(value)
 
-                if batch_result['trend_validation']:
-                    trend_metric_buffer.append(batch_result['trend_validation'])
+                step2_metrics = batch_result.get('step2_metrics') or {}
+                if step2_metrics:
+                    batch_metric_buffer.append(step2_metrics)
 
                 frac_info = batch_result.get('frac_info') or {}
                 frac_value_buffer.append(frac_info.get('frac_used'))
@@ -717,7 +832,8 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 elif sample in fallback_candidates:
                     qc_corrected_dict[sample] = safe_nanmedian(fallback_candidates[sample])
 
-            success_batches = batch_statuses.count('success')
+            stable_batch_statuses = {'success', 'no_drift_detected'}
+            success_batches = sum(status in stable_batch_statuses for status in batch_statuses)
             if success_batches == len(active_batches):
                 decision_stats['success'] += 1
                 feature_all_success += 1
@@ -727,7 +843,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             else:
                 failure_priority = [
                     status for status in status_categories
-                    if status != 'success' and status in batch_statuses
+                    if status not in stable_batch_statuses and status in batch_statuses
                 ]
                 failure_key = failure_priority[0] if failure_priority else 'failed'
                 decision_stats[failure_key] += 1
@@ -738,6 +854,11 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             feature_frac_used = safe_nanmedian(frac_values_clean)
             feature_qc_cv = safe_nanmedian(frac_cvs_clean)
             feature_frac_strategy = choose_frac_strategy(frac_strategy_buffer)
+            feature_status = (
+                'success' if success_batches == len(active_batches)
+                else 'partial_success' if success_batches > 0
+                else failure_key
+            )
 
             if np.isfinite(feature_frac_used):
                 frac_value_list.append(feature_frac_used)
@@ -745,9 +866,18 @@ def perform_lowess_normalization(istd_df, sample_info_df):
 
             trend_stats.append({
                 'FeatureID': feature_id,
-                'Kendall_Tau': safe_nanmedian([m.get('trend_tau', np.nan) for m in trend_metric_buffer]),
-                'LOESS_R2': safe_nanmedian([m.get('r_squared', np.nan) for m in trend_metric_buffer]),
-                'LOESS_RMSE': safe_nanmedian([m.get('rmse', np.nan) for m in trend_metric_buffer]),
+                'Valid_QC_Count': safe_nanmedian([m.get('valid_qc_count', np.nan) for m in batch_metric_buffer]),
+                'Removed_QC_Outliers': int(np.nansum([m.get('removed_outlier_count', 0) for m in batch_metric_buffer])),
+                'Outlier_Filter_Applied': any(bool(m.get('outlier_filter_applied', False)) for m in batch_metric_buffer),
+                'Trend_pvalue': safe_nanmedian([m.get('trend_validation', {}).get('trend_pvalue', np.nan) for m in batch_metric_buffer]),
+                'Kendall_Tau': safe_nanmedian([m.get('trend_validation', {}).get('trend_tau', np.nan) for m in batch_metric_buffer]),
+                'LOESS_R2': safe_nanmedian([m.get('trend_validation', {}).get('r_squared', np.nan) for m in batch_metric_buffer]),
+                'LOESS_RMSE': safe_nanmedian([m.get('trend_validation', {}).get('rmse', np.nan) for m in batch_metric_buffer]),
+                'Normalized_RMSE': safe_nanmedian([m.get('normalized_rmse', np.nan) for m in batch_metric_buffer]),
+                'Target_Strategy': choose_target_strategy([m.get('target_strategy') for m in batch_metric_buffer]),
+                'Clamped_Factor_Ratio': safe_nanmedian([m.get('clamped_ratio', np.nan) for m in batch_metric_buffer]),
+                'Outside_QC_Range_Count': int(np.nansum([m.get('outside_qc_range_count', 0) for m in batch_metric_buffer])),
+                'Decision_Status': feature_status,
                 'Frac_Used': feature_frac_used,
                 'QC_CV_for_Frac': feature_qc_cv,
                 'Frac_Strategy': feature_frac_strategy
@@ -1703,7 +1833,14 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         cv_improvement = pd.to_numeric(cv_results_df['CV_Improvement%'], errors='coerce')
         variance_p = pd.to_numeric(cv_results_df['Variance_Test_pvalue'], errors='coerce')
         tau_values = pd.to_numeric(trend_stats_df.get('Kendall_Tau'), errors='coerce')
+        trend_pvalues = pd.to_numeric(trend_stats_df.get('Trend_pvalue'), errors='coerce')
         r2_values = pd.to_numeric(trend_stats_df.get('LOESS_R2'), errors='coerce')
+        rmse_values = pd.to_numeric(trend_stats_df.get('LOESS_RMSE'), errors='coerce')
+        normalized_rmse_values = pd.to_numeric(trend_stats_df.get('Normalized_RMSE'), errors='coerce')
+        valid_qc_counts = pd.to_numeric(trend_stats_df.get('Valid_QC_Count'), errors='coerce')
+        removed_outliers = pd.to_numeric(trend_stats_df.get('Removed_QC_Outliers'), errors='coerce')
+        clamped_ratios = pd.to_numeric(trend_stats_df.get('Clamped_Factor_Ratio'), errors='coerce')
+        outside_range_counts = pd.to_numeric(trend_stats_df.get('Outside_QC_Range_Count'), errors='coerce')
         frac_values = pd.to_numeric(trend_stats_df.get('Frac_Used'), errors='coerce')
         frac_strategy_counts = (
             trend_stats_df['Frac_Strategy'].fillna('unknown').value_counts().to_dict()
@@ -1780,8 +1917,18 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
                 "Variance test p<0.05",
                 _fmt((variance_p < 0.05).mean() * 100 if total_count else np.nan, digits=1, pct=True),
             ),
+            ("Trend p-value median", _fmt(np.nanmedian(trend_pvalues), digits=4)),
             ("Kendall tau median", _fmt(np.nanmedian(tau_values), digits=4)),
             ("LOESS R2 median", _fmt(np.nanmedian(r2_values), digits=4)),
+            ("LOESS RMSE median", _fmt(np.nanmedian(rmse_values), digits=2)),
+            ("Normalized RMSE median", _fmt(np.nanmedian(normalized_rmse_values), digits=4)),
+            ("Valid QC count median", _fmt(np.nanmedian(valid_qc_counts), digits=1)),
+            ("Median removed QC outliers", _fmt(np.nanmedian(removed_outliers), digits=1)),
+            ("Median clamp ratio", _fmt(np.nanmedian(clamped_ratios), digits=4)),
+            (
+                "Features using edge extrapolation",
+                _fmt((outside_range_counts > 0).mean() * 100 if total_count else np.nan, digits=1, pct=True),
+            ),
             ("Frac diagnostics", ""),
             ("Frac median", _fmt(np.nanmedian(frac_values), digits=2)),
             ("Frac range", frac_range_value),

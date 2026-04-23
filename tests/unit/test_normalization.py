@@ -1,5 +1,5 @@
 """
-Tests for Concentration_Normalization_v2 module (Step 4).
+Tests for Concentration_Normalization_v2 module (Step 3).
 
 These tests verify:
 1. Input validation (requires Step 3 output format)
@@ -410,6 +410,216 @@ class TestConcentrationNormHelpers:
         assert info["reference_strategy"] == "SpecNorm_PQN"
         assert info["scale_back_strategy"] == "none"
 
+    def test_enhanced_pqn_normalization_prefers_qc_single_batch_when_step2_stats_are_stable(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "QC_2", "QC_3", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "A", "A", "A"],
+            }
+        )
+        sample_columns = ["QC_1", "QC_2", "QC_3", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 101.0, 99.0, 200.0, 210.0],
+                [50.0, 51.0, 49.0, 80.0, 82.0],
+            ],
+            dtype=float,
+        )
+        step2_advanced_stats_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0", "200.2/2.0"],
+                "Decision_Status": ["success", "no_drift_detected"],
+                "Valid_QC_Count": [6, 6],
+                "Removed_QC_Outliers": [0, 0],
+                "Outside_QC_Range_Count": [0, 0],
+                "Trend_pvalue": [0.42, 0.51],
+                "Kendall_Tau": [0.04, 0.02],
+                "LOESS_R2": [0.03, 0.02],
+                "LOESS_RMSE": [3.2, 1.1],
+                "Normalized_RMSE": [0.03, 0.02],
+            }
+        )
+
+        _, info = conc_norm_module.enhanced_pqn_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            step2_advanced_stats_df=step2_advanced_stats_df,
+        )
+
+        assert info["reference_strategy"] == "QC_SINGLE_BATCH"
+        assert "single-batch" in info["reference_rationale"].lower()
+
+    def test_enhanced_pqn_normalization_falls_back_when_step2_stats_show_unstable_qc(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "QC_2", "QC_3", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "A", "A", "A"],
+            }
+        )
+        sample_columns = ["QC_1", "QC_2", "QC_3", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 130.0, 70.0, 200.0, 210.0],
+                [50.0, 70.0, 30.0, 80.0, 82.0],
+            ],
+            dtype=float,
+        )
+        step2_advanced_stats_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0", "200.2/2.0"],
+                "Decision_Status": ["unstable_correction_factors", "insufficient_improvement"],
+                "Valid_QC_Count": [5, 5],
+                "Removed_QC_Outliers": [1, 0],
+                "Outside_QC_Range_Count": [1, 0],
+                "Trend_pvalue": [0.001, 0.004],
+                "Kendall_Tau": [0.82, 0.76],
+                "LOESS_R2": [0.88, 0.79],
+                "LOESS_RMSE": [52.0, 40.0],
+                "Normalized_RMSE": [0.34, 0.29],
+            }
+        )
+
+        _, info = conc_norm_module.enhanced_pqn_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            step2_advanced_stats_df=step2_advanced_stats_df,
+        )
+
+        assert info["reference_strategy"] == "ROBUST_MEDIAN_FALLBACK"
+        assert "post-loess qc unstable" in info["reference_rationale"].lower()
+
+    def test_enhanced_pqn_normalization_rejects_nonshared_multibatch_qc_reference(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_A1", "QC_A2", "QC_B1", "QC_B2", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "B", "B", "A", "B"],
+            }
+        )
+        sample_columns = ["QC_A1", "QC_A2", "QC_B1", "QC_B2", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 101.0, 98.0, 99.0, 200.0, 180.0],
+                [50.0, 51.0, 49.0, 50.0, 80.0, 78.0],
+            ],
+            dtype=float,
+        )
+        step2_advanced_stats_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0", "200.2/2.0"],
+                "Decision_Status": ["success", "success"],
+                "Valid_QC_Count": [6, 6],
+                "Removed_QC_Outliers": [0, 0],
+                "Outside_QC_Range_Count": [0, 0],
+                "Trend_pvalue": [0.61, 0.55],
+                "Kendall_Tau": [0.02, 0.03],
+                "LOESS_R2": [0.02, 0.04],
+                "LOESS_RMSE": [2.1, 1.5],
+                "Normalized_RMSE": [0.02, 0.03],
+            }
+        )
+
+        _, info = conc_norm_module.enhanced_pqn_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            step2_advanced_stats_df=step2_advanced_stats_df,
+        )
+
+        assert info["reference_strategy"] == "ROBUST_MEDIAN_NONSHARED_MULTIBATCH"
+        assert "non-shared" in info["reference_rationale"].lower()
+
+    def test_enhanced_pqn_normalization_allows_shared_multibatch_qc_only_when_name_family_matches(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": [
+                    "Pooled_QC_1",
+                    "Pooled_QC_2",
+                    "Pooled_QC_3",
+                    "Pooled_QC_4",
+                    "Sample_A",
+                    "Sample_B",
+                ],
+                "Sample_Type": ["QC", "QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "B", "B", "A", "B"],
+            }
+        )
+        sample_columns = ["Pooled_QC_1", "Pooled_QC_2", "Pooled_QC_3", "Pooled_QC_4", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 101.0, 99.0, 100.0, 200.0, 198.0],
+                [50.0, 51.0, 49.0, 50.0, 80.0, 79.0],
+            ],
+            dtype=float,
+        )
+        step2_advanced_stats_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0", "200.2/2.0"],
+                "Decision_Status": ["success", "success"],
+                "Valid_QC_Count": [6, 6],
+                "Removed_QC_Outliers": [0, 0],
+                "Outside_QC_Range_Count": [0, 0],
+                "Trend_pvalue": [0.61, 0.55],
+                "Kendall_Tau": [0.02, 0.03],
+                "LOESS_R2": [0.02, 0.04],
+                "LOESS_RMSE": [2.1, 1.5],
+                "Normalized_RMSE": [0.02, 0.03],
+            }
+        )
+
+        _, info = conc_norm_module.enhanced_pqn_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            step2_advanced_stats_df=step2_advanced_stats_df,
+        )
+
+        assert info["reference_strategy"] == "QC_SHARED_MULTIBATCH"
+        assert info["qc_shared_across_batches"] is True
+        assert "shared qc across batches" in info["reference_rationale"].lower()
+
+    def test_enhanced_pqn_normalization_raises_when_batch_metadata_is_missing(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "QC_2", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC", "Exposure", "Control"],
+            }
+        )
+        sample_columns = ["QC_1", "QC_2", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 101.0, 200.0, 210.0],
+                [50.0, 51.0, 80.0, 82.0],
+            ],
+            dtype=float,
+        )
+
+        with pytest.raises(ValueError, match="Batch"):
+            conc_norm_module.enhanced_pqn_normalization(
+                data_matrix,
+                sample_info_df,
+                sample_columns,
+            )
+
     def test_build_step4_summary_context_detects_upstream_step_status(
         self,
         conc_norm_module,
@@ -501,6 +711,52 @@ class TestConcentrationNormHelpers:
         assert "【整體評分】" not in report
         assert "標準化質量評分" not in report
 
+    def test_create_normalization_summary_report_includes_reference_rationale(
+        self,
+        conc_norm_module,
+    ):
+        quality_metrics = {
+            "median_cv_before": 20.0,
+            "mean_cv_before": 21.0,
+            "median_cv_after": 18.0,
+            "mean_cv_after": 19.0,
+            "cv_improvement": 2.0,
+            "cv_improvement_pct": 10.0,
+            "cv_improved_ratio": 60.0,
+            "cv_wilcoxon_stat": 10.0,
+            "cv_wilcoxon_pvalue": 0.04,
+            "total_cv_before": 40.0,
+            "total_cv_after": 30.0,
+            "total_cv_improvement": 10.0,
+            "sample_corr_mean_before": 0.9,
+            "sample_corr_mean_after": 0.91,
+            "sample_corr_std_before": 0.1,
+            "sample_corr_std_after": 0.09,
+            "data_range_before": 100.0,
+            "data_range_after": 95.0,
+        }
+        pqn_info = {
+            "reference_strategy": "ROBUST_MEDIAN_NONSHARED_MULTIBATCH",
+            "reference_rationale": "Non-shared QC across multiple batches cannot support a global QC reference.",
+            "qc_count": 4,
+            "qc_cv": 12.0,
+            "real_count": 20,
+            "normalization_factors_real": np.array([0.7, 1.0, 1.2]),
+            "normalization_factors_qc": np.array([1.0]),
+        }
+
+        report = conc_norm_module.create_normalization_summary_report(
+            quality_metrics=quality_metrics,
+            method_name="PQN",
+            n_features=10,
+            n_samples=24,
+            pqn_info=pqn_info,
+            summary_context={"source_sheet_name": "QC LOESS result"},
+        )
+
+        assert "參考策略: ROBUST_MEDIAN_NONSHARED_MULTIBATCH" in report
+        assert "參考理由: Non-shared QC across multiple batches cannot support a global QC reference." in report
+
 
 
     def test_save_normalization_results_uses_in_memory_preserved_dataframes(
@@ -578,6 +834,7 @@ class TestConcentrationNormOutput:
             {
                 "Sample_Name": ["QC_1", "QC_2", "Sample_A", "Sample_B"],
                 "Sample_Type": ["QC", "QC", "Exposure", "Normal"],
+                "Batch": ["A", "A", "A", "A"],
             }
         )
 
@@ -825,7 +1082,7 @@ class TestFullPipeline:
     @pytest.mark.slow
     @pytest.mark.integration
     def test_full_pipeline_completes(self, run_full_pipeline):
-        """Test that full pipeline completes without errors."""
+        """Test that the active pipeline completes through Step 3, with optional Step 4 diagnostics."""
         results = run_full_pipeline
 
         assert 'step1' in results, "Step 1 should complete"
@@ -837,8 +1094,10 @@ class TestFullPipeline:
         assert 'step3' in results, "Step 3 should complete"
         assert results['step3'] is not None, "Step 3 result should not be None"
 
-        assert 'step4' in results, "Step 4 should complete"
-        assert results['step4'] is not None, "Step 4 result should not be None"
+        assert 'step4' in results, "Step 4 diagnostics should still be available"
+        assert results['step4'] is not None, "Step 4 diagnostics result should not be None"
+        assert getattr(results['step4'], "extra", {}).get("diagnostics_only") is True
+        assert getattr(results['step4'], "extra", {}).get("active_scaling") is False
 
     @pytest.mark.slow
     @pytest.mark.integration
