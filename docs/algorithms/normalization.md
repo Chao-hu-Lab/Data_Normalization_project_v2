@@ -6,6 +6,8 @@
 
 本工具採用的是**混合標準化策略**。Step 3 可以選擇單獨使用 PQN，或使用 `SpecNorm+PQN`：先用樣本特異性參考值做 SpecNorm division，再使用 PQN 處理整體代謝組學譜的尺度差異，最後保留 SpecNorm+PQN 的輸出尺度，不再以原始 feature 中位數乘回。這種策略同時處理「個體特異性變異」和「群體系統性變異」，並避免在 DNA、蛋白質等小 reference 值情境中把強度再乘一次強度。
 
+新版 Step 3 的責任邊界已明確收斂為 **concentration normalization**。它可以在條件合適時使用 QC 來建構 PQN reference，但不應被實作成 cross-batch correction，更不應把 non-shared QC 擴張成 global harmonization 工具。
+
 ## 🎯 為什麼我們需要濃度標準化？理解問題的本質
 
 ### 代謝組學數據中的「濃度困境」
@@ -45,21 +47,17 @@
 
 ## 🔧 核心功能
 
-### 1. 智能 QC 品質評估
+### 1. Step 2 驅動的 reference strategy selector
 
-工具會自動評估 QC 樣本品質，決定 PQN 標準化的參考策略：
+工具現在會直接讀 Step 2 `LOESS_summary` / advanced statistics sheet，結合 batch 結構與 QC sharedness 決定 PQN 標準化的參考策略，而不是只看 `qc_count` 和 `qc_cv_median`。
 
-**評估標準：**
-```
-IF QC數量 ≥ 3 且 QC中位數CV% < 30%
-  → 使用 QC 作為 PQN 參考（最優策略）
-ELSE IF QC數量 ≥ 1
-  → 使用有限 QC 作為參考（次優策略）
-ELSE
-  → 使用穩健中位數作為參考（備用策略）
-```
+目前的主策略包括：
+- `QC_SINGLE_BATCH`: 單 batch 且 Step 2 顯示 QC 穩定
+- `QC_SHARED_MULTIBATCH`: 多 batch，但只有在 shared QC 設計被明確支持且 Step 2 穩定時才可使用
+- `ROBUST_MEDIAN_FALLBACK`: Step 2 顯示 post-LOESS QC 不穩定
+- `ROBUST_MEDIAN_NONSHARED_MULTIBATCH`: 多 batch 且 non-shared QC，不允許 global QC-derived reference
 
-**為什麼 QC 優先？** QC 樣本是混合的標準樣本，理論上代表「平均代謝組學譜」，作為 PQN 參考比個別樣本更穩定且無偏。
+如果 Step 3 缺少足夠的 Step 2 契約欄位，正確做法是先擴充 Step 2 advanced stats sheet，而不是在 Step 3 內偷偷重算另一套 hidden heuristics。
 
 ### 2. 混合標準化流程
 
@@ -93,7 +91,7 @@ PQN 假設大部分代謝物在樣本間應該維持穩定比例，只有少數�
 
 **演算法步驟：**
 
-1. **選擇參考樣本：** QC 中位數（或穩健中位數）
+1. **選擇參考樣本：** 依 Step 2 advanced stats 與 batch/QC 設計選擇 QC reference 或 robust median
 2. **計算商數矩陣：** 每個樣本的每個代謝物除以參考值
 3. **估算稀釋因子：** 取每個樣本的商數中位數
 4. **標準化：** 每個樣本除以其稀釋因子
@@ -186,7 +184,15 @@ final_ij = pqn_after_specnorm_ij
 - **範圍：** 過大範圍（如 0.1-10）可能表示樣本間稀釋差異極大
 - **離群值：** 極端因子（< 0.5 或 > 2.0）的樣本需要注意
 
-### 4. 豐富的視覺化輸出
+### 4. 與 Step 4 的新邊界
+
+Step 3 現在是 active scientific workflow 的終點。GUI export、bridge export、以及正常的 downstream workbook 選擇都應以 Step 3 output 為主：
+- `SpecNorm_PQN_Result`
+- `PQN_Result`
+
+`QC_Batch_Scaling_result` 只保留 legacy fallback 意義，不能再被當成預設 final normalized output。
+
+### 5. 豐富的視覺化輸出
 
 工具自動生成 6 類圖表，全面評估標準化效果：
 
@@ -221,16 +227,24 @@ final_ij = pqn_after_specnorm_ij
 ### 必要工作表
 
 **1. 數據工作表（按優先順序）：**
-- `Combat_Corrected`（ComBat 校正後，最優先）
 - `QC LOWESS result`（LOWESS 校正後）
 - `ISTD_Correction`（ISTD 校正後）
 - `RawIntensity`（原始數據）
+
+新版 active path 不再把 `Combat_Corrected` 或其他 cross-batch correction sheet 視為 Step 3 的預設上游。
 
 **2. SampleInfo 工作表：**
 必要欄位：
 - 第一欄：樣本名稱（必須與數據工作表列名匹配）
 - `Sample_Type`: 樣本類型（標記 QC 樣本，如 "QC", "QC1"）
+- `Batch`: 供 Step 3 判斷 batch 結構與 QC sharedness
 - 肌酐欄位：包含 "creatinine" 或 "肌酐" 關鍵字的欄位（用於肌酐校正）
+
+**3. Step 2 advanced statistics sheet：**
+- `LOESS_summary`（canonical）
+- 或 legacy `QC_LOESS_Advanced Statistics`
+
+Step 3 會從這張表讀取 `Decision_Status`, `Kendall_Tau`, `Trend_pvalue`, `LOESS_R2`, `LOESS_RMSE`, `Normalized_RMSE`, `Valid_QC_Count`, `Removed_QC_Outliers`, `Outside_QC_Range_Count` 等欄位。
 
 ### 注意事項
 
@@ -251,7 +265,7 @@ python normalization.py
 ```python
 from normalization import main
 
-results = main(input_file="Combat_Corrected_20251027.xlsx")
+results = main(input_file="QC_LOESS_20251027.xlsx")
 if results:
     print(f"處理了 {results['metabolites']} 個代謝物")
     print(f"CV% 改善: {quality_metrics['cv_improvement']:.2f}%")
@@ -398,12 +412,12 @@ pandas, numpy, scipy, scikit-learn, matplotlib, seaborn, openpyxl
 1. **樣本類型：** 肌酐校正僅適用於尿液樣本
 2. **肌酐值品質：** 確保肌酐測量準確（藥物、腎病可能影響）
 3. **QC 樣本：** 建議至少 3 個 QC 樣本以獲得穩定的 PQN 參考
-4. **數據前處理：** 建議先完成 ISTD、LOWESS、ComBat 校正
+4. **數據前處理：** 建議先完成 ISTD 與 QC-LOWESS。新版 active path 不再預設依賴 ComBat 或其他 cross-batch correction sheet
 5. **離群值處理：** 標準化前應先移除明顯的技術離群值
 
 ## 🔄 數據預處理流程建議
 
-完整的代謝組學數據預處理流程：
+完整的新版 active workflow：
 
 ```
 RawIntensity
@@ -412,9 +426,9 @@ RawIntensity
     ↓
 [2] QC-LOWESS (消除時間相關漂移)
     ↓
-[3] ComBat (消除批次效應) ← 多批次實驗需要
+[3] Normalization (標準化樣本濃度和尺度) ← 本工具
     ↓
-[4] Normalization (標準化樣本濃度和尺度) ← 本工具
+[4] QC Batch Scaling diagnostics-only (可選，不是 active correction)
     ↓
 [5] Data Transformation (log, Pareto) ← 統計分析前
     ↓
