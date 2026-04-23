@@ -397,6 +397,20 @@ class TestConcentrationNormHelpers:
             sample_columns,
             np.array([np.nan, 50.0, 100.0], dtype=float),
             correction_col_name="Creatinine_mg_dL",
+            step2_advanced_stats_df=pd.DataFrame(
+                {
+                    "Mz/RT": ["100.1/1.0", "200.2/2.0"],
+                    "Decision_Status": ["success", "no_drift_detected"],
+                    "Valid_QC_Count": [5, 5],
+                    "Removed_QC_Outliers": [0, 0],
+                    "Outside_QC_Range_Count": [0, 0],
+                    "Trend_pvalue": [0.42, 0.51],
+                    "Kendall_Tau": [0.04, 0.02],
+                    "LOESS_R2": [0.03, 0.02],
+                    "LOESS_RMSE": [3.2, 1.1],
+                    "Normalized_RMSE": [0.03, 0.02],
+                }
+            ),
         )
 
         assert normalized == pytest.approx(
@@ -619,6 +633,68 @@ class TestConcentrationNormHelpers:
                 sample_info_df,
                 sample_columns,
             )
+
+    def test_enhanced_pqn_normalization_falls_back_when_step2_contract_is_missing_in_single_batch(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "QC_2", "QC_3", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "A", "A", "A"],
+            }
+        )
+        sample_columns = ["QC_1", "QC_2", "QC_3", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 101.0, 99.0, 200.0, 210.0],
+                [50.0, 51.0, 49.0, 80.0, 82.0],
+            ],
+            dtype=float,
+        )
+
+        _, info = conc_norm_module.enhanced_pqn_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            step2_advanced_stats_df=None,
+        )
+
+        assert info["reference_strategy"] == "ROBUST_MEDIAN_FALLBACK"
+        assert info["step2_contract_available"] is False
+        assert "step 2 contract unavailable" in info["reference_rationale"].lower()
+
+    def test_enhanced_pqn_normalization_falls_back_when_step2_contract_is_missing_in_nonshared_multibatch(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_A1", "QC_A2", "QC_B1", "QC_B2", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "B", "B", "A", "B"],
+            }
+        )
+        sample_columns = ["QC_A1", "QC_A2", "QC_B1", "QC_B2", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 101.0, 98.0, 99.0, 200.0, 180.0],
+                [50.0, 51.0, 49.0, 50.0, 80.0, 78.0],
+            ],
+            dtype=float,
+        )
+
+        _, info = conc_norm_module.enhanced_pqn_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            step2_advanced_stats_df=None,
+        )
+
+        assert info["reference_strategy"] == "ROBUST_MEDIAN_NONSHARED_MULTIBATCH"
+        assert info["step2_contract_available"] is False
+        assert "step 2 contract unavailable" in info["reference_rationale"].lower()
 
     def test_build_step4_summary_context_detects_upstream_step_status(
         self,

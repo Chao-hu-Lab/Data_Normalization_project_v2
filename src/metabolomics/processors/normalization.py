@@ -404,14 +404,21 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns,
                 reference_rationale = (
                     "Shared multi-batch QC is present but Step 2 stability signals are not strong enough."
                 )
-        elif qc_count >= VALIDATION_THRESHOLDS['min_qc_samples'] and qc_cv_median < CV_QUALITY_THRESHOLDS['acceptable']:
-            reference_strategy = 'QC'
-            reference_rationale = "Legacy fallback: sufficient QC count with acceptable QC CV."
-        elif qc_count >= 1:
-            reference_strategy = 'QC_LIMITED'
-            reference_rationale = "Legacy fallback: QC exists but Step 2 contract was unavailable."
+        elif batch_design['batch_count'] <= 1:
+            reference_strategy = 'ROBUST_MEDIAN_FALLBACK'
+            reference_rationale = (
+                "Step 2 contract unavailable, fallback to all-sample robust median instead of QC-derived reference."
+            )
+        elif not batch_design['qc_shared_across_batches']:
+            reference_strategy = 'ROBUST_MEDIAN_NONSHARED_MULTIBATCH'
+            reference_rationale = (
+                "Step 2 contract unavailable and QC is not proven shared across batches, use all-sample robust median."
+            )
         else:
-            reference_strategy = 'ROBUST_MEDIAN'
+            reference_strategy = 'ROBUST_MEDIAN_FALLBACK'
+            reference_rationale = (
+                "Step 2 contract unavailable, shared-QC evidence is insufficient for a QC-derived reference."
+            )
     else:
         reference_strategy = 'ROBUST_MEDIAN'
         reference_rationale = "No QC samples available, use robust median reference."
@@ -557,7 +564,8 @@ def sample_specific_normalization(data_matrix, sample_info_df, sample_columns,
 
 def specnorm_pqn_normalization(data_matrix, sample_info_df, sample_columns,
                                reference_values, col_to_info_row=None,
-                               correction_col_name=None):
+                               correction_col_name=None,
+                               step2_advanced_stats_df=None):
     """Run SpecNorm division, then PQN without post-PQN scale-back."""
     specnorm_data, spec_info = specnorm_reference_division(
         data_matrix,
@@ -572,6 +580,7 @@ def specnorm_pqn_normalization(data_matrix, sample_info_df, sample_columns,
         sample_info_df,
         sample_columns,
         col_to_info_row=col_to_info_row,
+        step2_advanced_stats_df=step2_advanced_stats_df,
     )
     final_data = pqn_data.copy()
 
@@ -2167,6 +2176,7 @@ def perform_normalization(data_df, sample_info_df, file_path,
             data_matrix, sample_info_df, sample_columns,
             reference_values, col_to_info_row=col_to_info_row,
             correction_col_name=correction_col,
+            step2_advanced_stats_df=step2_advanced_stats_df,
         )
     else:
         # PQN（預設）
