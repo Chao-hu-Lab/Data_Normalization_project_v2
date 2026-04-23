@@ -53,9 +53,9 @@
 
 目前的主策略包括：
 - `QC_SINGLE_BATCH`: 單 batch 且 Step 2 顯示 QC 穩定
-- `QC_SHARED_MULTIBATCH`: 多 batch，但只有在 shared QC 設計被明確支持且 Step 2 穩定時才可使用
-- `ROBUST_MEDIAN_FALLBACK`: Step 2 顯示 post-LOESS QC 不穩定
-- `ROBUST_MEDIAN_NONSHARED_MULTIBATCH`: 多 batch 且 non-shared QC，不允許 global QC-derived reference
+- `ROBUST_MEDIAN_FALLBACK`: Step 2 顯示 post-LOESS QC 不穩定，或 multi-batch 情境下不使用 QC-based reference
+
+多 batch 情境一律不採用 QC-based reference；即使 shared QC 名稱看起來有重疊，也只會作為證據保留在報告裡，不會進入 reference selection。這樣可以避免把 batch-specific QC 混進 global QC median。
 
 如果 Step 3 缺少足夠的 Step 2 契約欄位，正確做法是先擴充 Step 2 advanced stats sheet，而不是在 Step 3 內偷偷重算另一套 hidden heuristics。
 

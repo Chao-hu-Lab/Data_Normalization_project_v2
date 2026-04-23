@@ -77,6 +77,14 @@ class DataNormalizationApp:
         ]
 
     @staticmethod
+    def _get_step_card_label(step_name):
+        if step_name == 'Step 4: QC Batch Scaling':
+            return 'QC Batch Scaling (paused / diagnostics-only)'
+        if ':' in step_name:
+            return step_name.split(':', 1)[1].strip()
+        return step_name
+
+    @staticmethod
     def _build_window_defaults():
         return {
             'geometry': '1480x940+80+20',
@@ -1109,7 +1117,7 @@ class DataNormalizationApp:
             # 步驟名稱
             step_name_label = tk.Label(
                 info_section,
-                text=step['name'].split(':')[1].strip(),
+                text=self._get_step_card_label(step['name']),
                 font=(FONTS['sans'], 13, 'bold'),
                 fg=self.color_scheme['text_dark'],
                 bg=self.color_scheme['panel_bg'],

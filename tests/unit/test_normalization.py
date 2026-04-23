@@ -512,7 +512,7 @@ class TestConcentrationNormHelpers:
         assert info["reference_strategy"] == "ROBUST_MEDIAN_FALLBACK"
         assert "post-loess qc unstable" in info["reference_rationale"].lower()
 
-    def test_enhanced_pqn_normalization_rejects_nonshared_multibatch_qc_reference(
+    def test_enhanced_pqn_normalization_falls_back_for_nonshared_multibatch_qc_design(
         self,
         conc_norm_module,
     ):
@@ -553,10 +553,10 @@ class TestConcentrationNormHelpers:
             step2_advanced_stats_df=step2_advanced_stats_df,
         )
 
-        assert info["reference_strategy"] == "ROBUST_MEDIAN_NONSHARED_MULTIBATCH"
-        assert "non-shared" in info["reference_rationale"].lower()
+        assert info["reference_strategy"] == "ROBUST_MEDIAN_FALLBACK"
+        assert "non-shared qc across multiple batches cannot support a global qc reference" in info["reference_rationale"].lower()
 
-    def test_enhanced_pqn_normalization_allows_shared_multibatch_qc_only_when_name_family_matches(
+    def test_enhanced_pqn_normalization_falls_back_for_shared_multibatch_qc_names(
         self,
         conc_norm_module,
     ):
@@ -604,9 +604,9 @@ class TestConcentrationNormHelpers:
             step2_advanced_stats_df=step2_advanced_stats_df,
         )
 
-        assert info["reference_strategy"] == "QC_SHARED_MULTIBATCH"
+        assert info["reference_strategy"] == "ROBUST_MEDIAN_FALLBACK"
         assert info["qc_shared_across_batches"] is True
-        assert "shared qc across batches" in info["reference_rationale"].lower()
+        assert "multi-batch designs do not use qc-based references" in info["reference_rationale"].lower()
 
     def test_enhanced_pqn_normalization_raises_when_batch_metadata_is_missing(
         self,
@@ -665,7 +665,7 @@ class TestConcentrationNormHelpers:
         assert info["step2_contract_available"] is False
         assert "step 2 contract unavailable" in info["reference_rationale"].lower()
 
-    def test_enhanced_pqn_normalization_falls_back_when_step2_contract_is_missing_in_nonshared_multibatch(
+    def test_enhanced_pqn_normalization_falls_back_when_step2_contract_is_missing_in_multibatch(
         self,
         conc_norm_module,
     ):
@@ -692,7 +692,7 @@ class TestConcentrationNormHelpers:
             step2_advanced_stats_df=None,
         )
 
-        assert info["reference_strategy"] == "ROBUST_MEDIAN_NONSHARED_MULTIBATCH"
+        assert info["reference_strategy"] == "ROBUST_MEDIAN_FALLBACK"
         assert info["step2_contract_available"] is False
         assert "step 2 contract unavailable" in info["reference_rationale"].lower()
 
@@ -812,8 +812,8 @@ class TestConcentrationNormHelpers:
             "data_range_after": 95.0,
         }
         pqn_info = {
-            "reference_strategy": "ROBUST_MEDIAN_NONSHARED_MULTIBATCH",
-            "reference_rationale": "Non-shared QC across multiple batches cannot support a global QC reference.",
+            "reference_strategy": "ROBUST_MEDIAN_FALLBACK",
+            "reference_rationale": "Multi-batch designs do not use QC-based references; use all-sample robust median instead.",
             "qc_count": 4,
             "qc_cv": 12.0,
             "real_count": 20,
@@ -830,8 +830,8 @@ class TestConcentrationNormHelpers:
             summary_context={"source_sheet_name": "QC LOESS result"},
         )
 
-        assert "參考策略: ROBUST_MEDIAN_NONSHARED_MULTIBATCH" in report
-        assert "參考理由: Non-shared QC across multiple batches cannot support a global QC reference." in report
+        assert "參考策略: ROBUST_MEDIAN_FALLBACK" in report
+        assert "參考理由: Multi-batch designs do not use QC-based references; use all-sample robust median instead." in report
 
 
 

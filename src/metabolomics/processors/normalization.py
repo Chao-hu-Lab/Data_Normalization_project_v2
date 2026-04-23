@@ -378,53 +378,40 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns,
         qc_cv_median = np.nanmedian(qc_cv)
 
         if step2_contract['available']:
-            if batch_design['batch_count'] <= 1:
-                if step2_contract['qc_stable']:
-                    reference_strategy = 'QC_SINGLE_BATCH'
-                    reference_rationale = (
-                        "Single-batch design with stable post-LOESS QC supports a QC-based reference."
-                    )
-                else:
-                    reference_strategy = 'ROBUST_MEDIAN_FALLBACK'
-                    reference_rationale = (
-                        "Post-LOESS QC unstable, fallback to robust median instead of QC-derived reference."
-                    )
-            elif not batch_design['qc_shared_across_batches']:
-                reference_strategy = 'ROBUST_MEDIAN_NONSHARED_MULTIBATCH'
+            if batch_design['batch_count'] <= 1 and step2_contract['qc_stable']:
+                reference_strategy = 'QC_SINGLE_BATCH'
                 reference_rationale = (
-                    "Non-shared QC across multiple batches cannot support a global QC reference."
+                    "Single-batch design with stable post-LOESS QC supports a QC-based reference."
                 )
-            elif step2_contract['qc_stable']:
-                reference_strategy = 'QC_SHARED_MULTIBATCH'
+            elif batch_design['batch_count'] <= 1:
+                reference_strategy = 'ROBUST_MEDIAN_FALLBACK'
                 reference_rationale = (
-                    "Shared QC across batches remained stable after Step 2, allowing a QC-derived reference."
+                    "Post-LOESS QC unstable, fallback to robust median instead of QC-derived reference."
                 )
             else:
                 reference_strategy = 'ROBUST_MEDIAN_FALLBACK'
-                reference_rationale = (
-                    "Shared multi-batch QC is present but Step 2 stability signals are not strong enough."
-                )
+                if batch_design['qc_shared_across_batches']:
+                    reference_rationale = (
+                        "Multi-batch designs do not use QC-based references; use all-sample robust median instead."
+                    )
+                else:
+                    reference_rationale = (
+                        "Non-shared QC across multiple batches cannot support a global QC reference, so use all-sample robust median."
+                    )
         elif batch_design['batch_count'] <= 1:
             reference_strategy = 'ROBUST_MEDIAN_FALLBACK'
             reference_rationale = (
                 "Step 2 contract unavailable, fallback to all-sample robust median instead of QC-derived reference."
             )
-        elif not batch_design['qc_shared_across_batches']:
-            reference_strategy = 'ROBUST_MEDIAN_NONSHARED_MULTIBATCH'
-            reference_rationale = (
-                "Step 2 contract unavailable and QC is not proven shared across batches, use all-sample robust median."
-            )
         else:
             reference_strategy = 'ROBUST_MEDIAN_FALLBACK'
-            reference_rationale = (
-                "Step 2 contract unavailable, shared-QC evidence is insufficient for a QC-derived reference."
-            )
+            reference_rationale = "Step 2 contract unavailable, use all-sample robust median for multi-batch designs."
     else:
         reference_strategy = 'ROBUST_MEDIAN'
         reference_rationale = "No QC samples available, use robust median reference."
 
     # 決定參考譜
-    if reference_strategy in ('QC', 'QC_LIMITED', 'QC_SINGLE_BATCH', 'QC_SHARED_MULTIBATCH'):
+    if reference_strategy in ('QC', 'QC_LIMITED', 'QC_SINGLE_BATCH'):
         reference_sample = np.nanmedian(data_matrix[:, qc_indices], axis=1)
         print(f"  參考策略: {reference_strategy}（QC median CV%={qc_cv_median:.1f}%）")
     else:

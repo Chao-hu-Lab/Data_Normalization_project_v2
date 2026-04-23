@@ -25,7 +25,7 @@ What they cover:
 
 - `test_file_io.py`: output root routing, session directory naming, and test-data isolation
 - `test_sample_matching.py`: sample column detection and `SampleInfo` alignment fail-closed behavior
-- `test_scenario_smoke.py`: representative Step 1, Step 2, Step 3, and Step 4 end-to-end scenarios
+- `test_scenario_smoke.py`: representative Step 1, Step 2, Step 3, and Step 4 diagnostics-only scenarios
 
 After larger algorithm changes, scenario-generator changes, or before a release, also run:
 
@@ -41,7 +41,7 @@ This second-layer regression suite covers:
 - Step 3 PQN regression for `structured_missingness`
 - advanced generator signatures for `matrix_effect_suppression`, `istd_sample_interference`, `mixed_direction_batch_drift`, and `signal_saturation`
 - Step 1 regression for `istd_sample_interference`
-- Step 4 QC Batch Scaling regression for `mixed_direction_batch_drift`
+- Step 4 diagnostics-only regression for `mixed_direction_batch_drift`
 - Step 3 PQN regression for `matrix_effect_suppression` and `signal_saturation`
 
 Current scenario coverage in `test_scenario_smoke.py`:
@@ -52,7 +52,7 @@ Current scenario coverage in `test_scenario_smoke.py`:
 | `strong_drift` | Step 2 |
 | `random_jump` | Step 2 |
 | `order_confounding` | Step 2 and Step 3 PQN |
-| `strong_batch` | Step 4 QC Batch Scaling |
+| `strong_batch` | Step 4 diagnostics-only |
 | `balanced_pipeline` | Step 3 PQN |
 | `specnorm_friendly` | Step 3 SpecNorm+PQN |
 
@@ -68,13 +68,13 @@ Common validation targets:
 - `nonlinear_drift`: Step 2 piecewise / non-linear drift behavior
 - `carryover_memory`: Step 2 local carryover tails after strong injections
 - `order_confounding`: order-biased biology risk in Step 2 / Step 3
-- `strong_batch`: Step 4 batch alignment diagnostics
-- `structured_missingness`: Step 3 / Step 4 NaN-heavy structured missingness
+- `strong_batch`: Step 4 diagnostics-only batch alignment checks
+- `structured_missingness`: Step 3 / Step 4 diagnostics-only NaN-heavy structured missingness
 - `balanced_pipeline`: full pipeline smoke test with PQN
 - `specnorm_friendly`: Step 3 SpecNorm+PQN behavior
 - `matrix_effect_suppression`: Step 1 / Step 3 matrix-effect bias on one sample class
 - `istd_sample_interference`: Step 1 real-sample-only ISTD interference with QC looking better
-- `mixed_direction_batch_drift`: Step 2 / Step 4 opposite QC drift directions by batch
+- `mixed_direction_batch_drift`: Step 2 / Step 4 diagnostics-only opposite QC drift directions by batch
 - `signal_saturation`: Step 3 nonlinear upper-tail compression / detector saturation
 
 To regenerate the full scenario set:
@@ -142,7 +142,7 @@ When this happens, treat it as a temp-directory harness issue first, not an imme
 
 1. Run the focused unit suites above.
 2. Run `python -m pytest .\tests\integration\test_scenario_regression.py -q`.
-3. Run the scenario workflow manually from a PowerShell-created workspace to verify Step 1 through Step 4 end to end.
+3. Run the scenario workflow manually from a PowerShell-created workspace to verify Step 1 through Step 3 end to end, then invoke Step 4 only in diagnostics-only mode if you need its reports.
 
 Current repo rule:
 
