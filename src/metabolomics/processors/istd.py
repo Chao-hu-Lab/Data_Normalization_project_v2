@@ -36,6 +36,7 @@ from metabolomics.utils.file_io import (
     get_output_root,
     resolve_session_dir,
 )
+from metabolomics.utils.excel_colors import cell_has_red_font
 from metabolomics.utils.results import ProcessingResult
 from metabolomics.utils.console import safe_print as print
 from metabolomics.utils.excel_format import (
@@ -126,15 +127,11 @@ def load_and_process_data(file_path):
 
         workbook = load_workbook(file_path, read_only=True)
         worksheet = workbook[SHEET_NAMES['raw_intensity']]
-        istd_feature_ids = []  # 收集紅色 FeatureID 的值
-        red_colors = ['FFFF0000', 'FF0000']  # 只檢查紅色變體，全大寫
+        istd_feature_ids = []  # 收集紅色標記的特徵 ID
         for row in worksheet.iter_rows(min_row=2, max_col=1):  # 只讀第一欄
-            cell = row[0]  # 第一欄 (FeatureID)
-            if cell.font and cell.font.color and cell.font.color.rgb is not None:
-                rgb_str = str(cell.font.color.rgb).upper()  # 強制轉 str 並 upper
-                if rgb_str in red_colors:
-                    if cell.value:  # 確保有值
-                        istd_feature_ids.append(str(cell.value).strip())  # 轉 str 以匹配
+            cell = row[0]  # 第一欄特徵 ID（例如 Mz/RT）
+            if cell_has_red_font(cell) and cell.value:
+                istd_feature_ids.append(str(cell.value).strip())  # 轉 str 以匹配
         workbook.close()
 
         raw_df = all_sheets[SHEET_NAMES['raw_intensity']]
@@ -208,60 +205,37 @@ def load_and_process_data(file_path):
                         'dna', 'rna', 'dnaandrna', 'program1', 'and'}
             return tokens - generic
 
-        sample_names_in_info = set(sample_info_df['Sample_Name'].str.strip().str.lower())
-        sample_names_in_raw = set([col.strip().lower() for col in sample_columns])
+        info_names_by_norm = {
+            normalize_sample_name(name): str(name).strip()
+            for name in sample_info_df['Sample_Name'].tolist()
+            if normalize_sample_name(name)
+        }
+        raw_names_by_norm = {
+            normalize_sample_name(col): str(col).strip()
+            for col in sample_columns
+            if normalize_sample_name(col)
+        }
 
-        # 先嘗試精確匹配
-        missing_in_raw = sample_names_in_info - sample_names_in_raw
-        missing_in_info = sample_names_in_raw - sample_names_in_info
+        aligned_count = len(set(info_names_by_norm) & set(raw_names_by_norm))
+        if aligned_count > 0:
+            print(f"✓ 樣本名稱正規化對齊成功：{aligned_count} 個樣本")
 
-        if missing_in_raw and missing_in_info:
-            # 嘗試模糊匹配：提取關鍵 token（類別+編號），若交集夠大則視為匹配
-            fuzzy_matched = 0
-            unmatched_info = []
-            unmatched_raw = list(missing_in_info)
-            raw_tokens_map = {name: _extract_key_tokens(name) for name in unmatched_raw}
+        missing_in_raw_norm = set(info_names_by_norm) - set(raw_names_by_norm)
+        missing_in_info_norm = set(raw_names_by_norm) - set(info_names_by_norm)
 
-            for info_name in missing_in_raw:
-                info_tokens = _extract_key_tokens(info_name)
-                best_match = None
-                best_overlap = 0
-                for raw_name, raw_tokens in raw_tokens_map.items():
-                    overlap = len(info_tokens & raw_tokens)
-                    if overlap > best_overlap:
-                        best_overlap = overlap
-                        best_match = raw_name
-                # 至少有 2 個 token 匹配（類別+編號）才算成功
-                if best_overlap >= 2 and best_match:
-                    fuzzy_matched += 1
-                    raw_tokens_map.pop(best_match)
-                else:
-                    unmatched_info.append(info_name)
+        if missing_in_raw_norm:
+            print(f"⚠️ 警告：以下 {len(missing_in_raw_norm)} 個樣本在 SampleInfo 中有記錄，但無法匹配到 RawIntensity:")
+            for norm_name in list(missing_in_raw_norm)[:5]:
+                print(f"  - {info_names_by_norm[norm_name]}")
+            if len(missing_in_raw_norm) > 5:
+                print(f"  ... 還有 {len(missing_in_raw_norm) - 5} 個樣本")
 
-            if fuzzy_matched > 0:
-                print(f"✓ 樣本名稱模糊匹配成功：{fuzzy_matched} 個樣本（SampleInfo 與 RawIntensity 名稱格式不同但關鍵字匹配）")
-
-            if unmatched_info:
-                print(f"⚠️ 警告：以下 {len(unmatched_info)} 個樣本在 SampleInfo 中有記錄，但無法匹配到 RawIntensity:")
-                for name in unmatched_info[:5]:
-                    print(f"  - {name}")
-            if raw_tokens_map:
-                print(f"⚠️ 警告：以下 {len(raw_tokens_map)} 個樣本在 RawIntensity 中有數據，但無法匹配到 SampleInfo:")
-                for name in list(raw_tokens_map.keys())[:5]:
-                    print(f"  - {name}")
-        else:
-            if missing_in_raw:
-                print(f"⚠️ 警告：以下樣本在 SampleInfo 中有記錄，但在 RawIntensity 中找不到:")
-                for name in list(missing_in_raw)[:5]:
-                    print(f"  - {name}")
-                if len(missing_in_raw) > 5:
-                    print(f"  ... 還有 {len(missing_in_raw) - 5} 個樣本")
-            if missing_in_info:
-                print(f"⚠️ 警告：以下樣本在 RawIntensity 中有數據，但在 SampleInfo 中找不到:")
-                for name in list(missing_in_info)[:5]:
-                    print(f"  - {name}")
-                if len(missing_in_info) > 5:
-                    print(f"  ... 還有 {len(missing_in_info) - 5} 個樣本")
+        if missing_in_info_norm:
+            print(f"⚠️ 警告：以下 {len(missing_in_info_norm)} 個樣本在 RawIntensity 中有數據，但無法匹配到 SampleInfo:")
+            for norm_name in list(missing_in_info_norm)[:5]:
+                print(f"  - {raw_names_by_norm[norm_name]}")
+            if len(missing_in_info_norm) > 5:
+                print(f"  ... 還有 {len(missing_in_info_norm) - 5} 個樣本")
 
         # 防呆：強制轉換 RawIntensity 的樣本欄位為數值 (向量化)
         raw_df[sample_columns] = raw_df[sample_columns].apply(pd.to_numeric, errors='coerce')
@@ -316,10 +290,13 @@ def load_and_process_data(file_path):
         print(f"\n{'='*70}")
         print(f"ISTD 識別結果:")
         print(f"{'='*70}")
-        print(f"識別到 {len(istd_feature_ids)} 個ISTD（紅色標記的 FeatureID）")
+        print(f"識別到 {len(istd_feature_ids)} 個 ISTD（紅色標記的特徵 ID）")
 
         if len(istd_feature_ids) == 0:
-            raise ValueError("錯誤：未找到任何 ISTD（請在 RawIntensity 工作表的 FeatureID 欄位中，將內標物質的 FeatureID 標記為紅色字體）")
+            raise ValueError(
+                f"錯誤：未找到任何 ISTD（請在 RawIntensity 工作表第一欄的特徵 ID，例如 '{FEATURE_ID_COLUMN}'，"
+                "以紅色字體標記內標物質）"
+            )
         elif len(istd_feature_ids) < 3:
             print(f"⚠️ 警告：ISTD 數量較少（{len(istd_feature_ids)} 個），建議至少使用 3 個以上的 ISTD")
             print(f"   以確保校正效果的穩定性")

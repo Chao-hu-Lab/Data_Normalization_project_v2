@@ -7,7 +7,7 @@
 ## 🎯 核心功能
 
 ### 1. 自動化 ISTD 識別
-從 Excel 的 `RawIntensity` 工作表中自動識別紅色標記的 FeatureID 作為內標物質。支援紅色字體標記 (`FFFF0000`, `FF0000`)，並自動解析 `FeatureID` 格式 (如 `123.456/1.23`) 為 m/z 和保留時間 (RT)。
+從 Excel 的 `RawIntensity` 工作表中自動識別第一欄紅色字體標記的特徵 ID 作為內標物質。支援 openpyxl 常見的紅色 RGB/ARGB 寫法，並自動解析 `Mz/RT` 或相容的 `FeatureID` 格式 (如 `123.456/1.23`) 為 m/z 和保留時間 (RT)。
 
 ### 2. 智能 ISTD 匹配演算法
 採用多因素加權評分系統為每個代謝物選擇最佳內標：
@@ -107,8 +107,8 @@ Score = 0.60 × RT差異(標準化)
 輸入檔案必須為 **Excel 格式** (`.xlsx` 或 `.xls`)，包含以下工作表：
 
 ### 1. `RawIntensity` 工作表
-- **FeatureID 格式:** `m/z/RT` (例: `123.456/1.23`)
-- **內標標記:** 內標的 FeatureID 必須為紅色字體
+- **第一欄格式:** `m/z/RT` (例: `123.456/1.23`)，欄名通常為 `Mz/RT`，也相容舊版 `FeatureID`
+- **內標標記:** 內標的特徵 ID 必須以紅色字體標記在第一欄
 - **數據欄位:** 各樣本的原始強度值
 
 ### 2. `SampleInfo` 工作表
@@ -217,9 +217,9 @@ pandas, numpy, openpyxl, scikit-learn, matplotlib, scipy
 
 ## 📝 注意事項
 
-1. **內標標記:** 確保 RawIntensity 工作表中內標 FeatureID 已標記為紅色字體
+1. **內標標記:** 確保 RawIntensity 工作表第一欄的內標特徵 ID 已標記為紅色字體
 2. **QC 樣本:** SampleInfo 必須正確標記 QC 樣本（Type 欄位）
-3. **FeatureID 格式:** 必須為 `m/z/RT` 格式，例如 `123.456/1.23`
+3. **特徵 ID 格式:** 必須為 `m/z/RT` 格式，例如 `123.456/1.23`
 4. **最低樣本數:** 建議至少 5 個 QC 樣本以確保統計檢定有效
 
 ## 🔄 後續流程

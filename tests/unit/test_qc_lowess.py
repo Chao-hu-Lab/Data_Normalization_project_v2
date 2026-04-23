@@ -13,6 +13,7 @@ import numpy as np
 import os
 import shutil
 from openpyxl import load_workbook
+from openpyxl.styles import Font
 
 from metabolomics.utils.constants import SHEET_NAMES
 
@@ -43,6 +44,42 @@ class TestQCLOWESSInput:
         captured = capsys.readouterr().out
         assert "成功讀取 'RawIntensity' 工作表" in captured
         assert "成功讀取 'ISTD_Correction' 工作表" not in captured
+
+    def test_collect_red_marked_feature_ids_accepts_argb_red(self, qc_lowess_module, tmp_path):
+        """Fallback red-font parsing should accept ARGB red strings from openpyxl."""
+        raw_df = pd.DataFrame(
+            {
+                "Mz/RT": ["Sample_Type", "100.1/1.0", "200.2/2.0"],
+                "QC_1": ["QC", 10.0, 20.0],
+                "QC_2": ["QC", 11.0, 21.0],
+                "QC_3": ["QC", 9.0, 19.0],
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "QC_2", "QC_3"],
+                "Sample_Type": ["QC", "QC", "QC"],
+            }
+        )
+        workbook_path = tmp_path / "argb_red_fallback.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            raw_df.to_excel(writer, sheet_name="RawIntensity", index=False)
+            sample_info_df.to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        workbook = load_workbook(workbook_path)
+        try:
+            sheet = workbook["RawIntensity"]
+            sheet["A3"].font = Font(color="00FF0000")
+            workbook.save(workbook_path)
+        finally:
+            workbook.close()
+
+        detected = qc_lowess_module.collect_red_marked_feature_ids(
+            str(workbook_path),
+            SHEET_NAMES["raw_intensity"],
+        )
+
+        assert detected == {"100.1/1.0"}
 
 
 class TestQCLOWESSOutput:

@@ -294,7 +294,9 @@ class DataValidator:
         result.info['istd_count'] = istd_count
 
         if istd_count == 0:
-            result.add_error("未找到 ISTD 訊號 (無紅色標記的 FeatureID)")
+            result.add_error(
+                f"未找到 ISTD 訊號 (RawIntensity 第一欄的特徵 ID，例如 '{FEATURE_ID_COLUMN}'，沒有紅色字體標記)"
+            )
             return result
 
         min_istd = VALIDATION_THRESHOLDS.get('min_istd_count', 1)
