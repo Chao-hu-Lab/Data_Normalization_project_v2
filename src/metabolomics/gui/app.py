@@ -1604,7 +1604,7 @@ class DataNormalizationApp:
 
     def display_log(self, record):
         """Display log message"""
-        msg = self.format_log_message(record)
+        msg = record.getMessage()
 
         # Choose tag based on log level
         if record.levelno >= logging.ERROR:
@@ -1618,10 +1618,6 @@ class DataNormalizationApp:
 
         self.result_text.insert(tk.END, msg + '\n', tag)
         self.result_text.see(tk.END)
-
-    def format_log_message(self, record):
-        """Format log message"""
-        return f"{record.getMessage()}"
 
 
     def load_script(self, module_name):
@@ -2245,7 +2241,6 @@ class StreamToLogger:
     def __init__(self, logger, log_level=logging.INFO):
         self.logger = logger
         self.log_level = log_level
-        self.linebuf = ''
 
     def write(self, buf):
         for line in buf.rstrip().splitlines():
