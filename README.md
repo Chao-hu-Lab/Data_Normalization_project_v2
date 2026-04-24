@@ -57,9 +57,9 @@ The pipeline keeps four visible cards in the GUI, but the active scientific work
 
 ### Step 3: Concentration Normalization
 - Supports both `PQN` and `SpecNorm+PQN`
-- `PQN` reads Step 2 advanced statistics to choose an explicit reference strategy
-- Single-batch stable QC may use a QC-based reference
-- Multi-batch non-shared QC defaults to robust median rather than global QC-derived reference
+- `PQN` uses QC samples as the reference spectrum for adductomics-oriented trace analysis
+- Step 2 advanced statistics and batch design are reported as context, but do not trigger all-sample fallback
+- Workbooks without QC samples fail closed because all-sample robust median fallback is disabled
 - `SpecNorm+PQN` divides real samples by a reference column such as `Creatinine_mg_dL`, runs PQN, and keeps the resulting scale without multiplying values back by raw feature medians
 - Sample columns must map reliably to `SampleInfo`; unmapped or ambiguously matched sample names now fail closed
 

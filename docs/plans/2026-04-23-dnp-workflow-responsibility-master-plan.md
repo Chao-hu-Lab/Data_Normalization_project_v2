@@ -205,19 +205,16 @@ PASS
 
 Add regression coverage for:
 
-- single-batch post-LOESS stable QC -> QC-based reference
-- single-batch post-LOESS unstable QC -> robust median fallback
-- multi-batch with non-shared QC -> robust median fallback
-- shared-QC multi-batch case -> QC-based strategy allowed only when explicitly supported
+- adductomics PQN with QC samples -> QC-derived reference
+- single-batch post-LOESS unstable QC -> QC-derived reference with warning rationale
+- multi-batch with non-shared QC -> QC-derived reference with explicit warning rationale
+- missing QC samples -> hard error because all-sample fallback is disabled
 - Step 3 reading required QC stability signals from the Step 2 advanced statistics sheet
 - summary/report output reflecting the chosen strategy and rationale
 
 Prefer strategy labels that encode the workflow intent explicitly, for example:
 
-- `QC_SINGLE_BATCH`
-- `QC_SHARED_MULTIBATCH`
-- `ROBUST_MEDIAN_FALLBACK`
-- `ROBUST_MEDIAN_NONSHARED_MULTIBATCH`
+- `QC_REFERENCE`
 
 **Step 2: Run focused tests to confirm failure**
 
@@ -251,9 +248,10 @@ If Step 3 lacks enough information to make the decision cleanly, add the missing
 
 **Step 2: Keep Step 3 within the normalization boundary**
 
-- Step 3 may use QC for reference construction when justified
+- Step 3 uses QC for PQN reference construction in adductomics mode
 - Step 3 must not act like batch correction
-- multi-batch non-shared QC must default to robust median rather than global QC-derived PQN
+- Step 3 must not fall back to all-sample robust median for adductomics trace analysis
+- missing QC samples must stop Step 3 with an explicit error
 
 **Step 3: Update Step 3 summary/report wording**
 
@@ -261,7 +259,7 @@ Make the generated report explain:
 
 - which reference strategy was chosen
 - why it was chosen
-- when QC was intentionally excluded from the primary PQN reference
+- when Step 2 or batch-design signals are cautionary but QC reference is still used
 
 **Step 4: Run focused tests**
 

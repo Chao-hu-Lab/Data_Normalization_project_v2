@@ -465,10 +465,10 @@ class TestConcentrationNormHelpers:
             step2_advanced_stats_df=step2_advanced_stats_df,
         )
 
-        assert info["reference_strategy"] == "QC_SINGLE_BATCH"
+        assert info["reference_strategy"] == "QC_REFERENCE"
         assert "single-batch" in info["reference_rationale"].lower()
 
-    def test_enhanced_pqn_normalization_falls_back_when_step2_stats_show_unstable_qc(
+    def test_enhanced_pqn_normalization_uses_qc_reference_when_step2_stats_show_unstable_qc(
         self,
         conc_norm_module,
     ):
@@ -509,10 +509,10 @@ class TestConcentrationNormHelpers:
             step2_advanced_stats_df=step2_advanced_stats_df,
         )
 
-        assert info["reference_strategy"] == "ROBUST_MEDIAN_FALLBACK"
-        assert "post-loess qc unstable" in info["reference_rationale"].lower()
+        assert info["reference_strategy"] == "QC_REFERENCE"
+        assert "all-sample fallback" in info["reference_rationale"].lower()
 
-    def test_enhanced_pqn_normalization_falls_back_for_nonshared_multibatch_qc_design(
+    def test_enhanced_pqn_normalization_uses_qc_reference_for_nonshared_multibatch_qc_design(
         self,
         conc_norm_module,
     ):
@@ -553,10 +553,11 @@ class TestConcentrationNormHelpers:
             step2_advanced_stats_df=step2_advanced_stats_df,
         )
 
-        assert info["reference_strategy"] == "ROBUST_MEDIAN_FALLBACK"
-        assert "non-shared qc across multiple batches cannot support a global qc reference" in info["reference_rationale"].lower()
+        assert info["reference_strategy"] == "QC_REFERENCE"
+        assert "not proven shared" in info["reference_rationale"].lower()
+        assert "all-sample fallback" in info["reference_rationale"].lower()
 
-    def test_enhanced_pqn_normalization_falls_back_for_shared_multibatch_qc_names(
+    def test_enhanced_pqn_normalization_uses_qc_reference_for_shared_multibatch_qc_names(
         self,
         conc_norm_module,
     ):
@@ -604,9 +605,10 @@ class TestConcentrationNormHelpers:
             step2_advanced_stats_df=step2_advanced_stats_df,
         )
 
-        assert info["reference_strategy"] == "ROBUST_MEDIAN_FALLBACK"
+        assert info["reference_strategy"] == "QC_REFERENCE"
         assert info["qc_shared_across_batches"] is True
-        assert "multi-batch designs do not use qc-based references" in info["reference_rationale"].lower()
+        assert "shared-qc evidence" in info["reference_rationale"].lower()
+        assert "all-sample fallback" in info["reference_rationale"].lower()
 
     def test_enhanced_pqn_normalization_raises_when_batch_metadata_is_missing(
         self,
@@ -634,7 +636,7 @@ class TestConcentrationNormHelpers:
                 sample_columns,
             )
 
-    def test_enhanced_pqn_normalization_falls_back_when_step2_contract_is_missing_in_single_batch(
+    def test_enhanced_pqn_normalization_uses_qc_reference_when_step2_contract_is_missing_in_single_batch(
         self,
         conc_norm_module,
     ):
@@ -661,11 +663,12 @@ class TestConcentrationNormHelpers:
             step2_advanced_stats_df=None,
         )
 
-        assert info["reference_strategy"] == "ROBUST_MEDIAN_FALLBACK"
+        assert info["reference_strategy"] == "QC_REFERENCE"
         assert info["step2_contract_available"] is False
         assert "step 2 contract unavailable" in info["reference_rationale"].lower()
+        assert "all-sample fallback" in info["reference_rationale"].lower()
 
-    def test_enhanced_pqn_normalization_falls_back_when_step2_contract_is_missing_in_multibatch(
+    def test_enhanced_pqn_normalization_uses_qc_reference_when_step2_contract_is_missing_in_multibatch(
         self,
         conc_norm_module,
     ):
@@ -692,9 +695,36 @@ class TestConcentrationNormHelpers:
             step2_advanced_stats_df=None,
         )
 
-        assert info["reference_strategy"] == "ROBUST_MEDIAN_FALLBACK"
+        assert info["reference_strategy"] == "QC_REFERENCE"
         assert info["step2_contract_available"] is False
         assert "step 2 contract unavailable" in info["reference_rationale"].lower()
+
+    def test_enhanced_pqn_normalization_raises_without_qc_samples(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Sample_A", "Sample_B"],
+                "Sample_Type": ["Exposure", "Control"],
+                "Batch": ["A", "A"],
+            }
+        )
+        sample_columns = ["Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [200.0, 210.0],
+                [80.0, 82.0],
+            ],
+            dtype=float,
+        )
+
+        with pytest.raises(ValueError, match="QC samples"):
+            conc_norm_module.enhanced_pqn_normalization(
+                data_matrix,
+                sample_info_df,
+                sample_columns,
+            )
 
     def test_build_step4_summary_context_detects_upstream_step_status(
         self,
@@ -812,8 +842,8 @@ class TestConcentrationNormHelpers:
             "data_range_after": 95.0,
         }
         pqn_info = {
-            "reference_strategy": "ROBUST_MEDIAN_FALLBACK",
-            "reference_rationale": "Multi-batch designs do not use QC-based references; use all-sample robust median instead.",
+            "reference_strategy": "QC_REFERENCE",
+            "reference_rationale": "Post-LOESS QC stability is limited; adductomics policy still uses QC-derived reference and disables all-sample fallback.",
             "qc_count": 4,
             "qc_cv": 12.0,
             "real_count": 20,
@@ -830,8 +860,8 @@ class TestConcentrationNormHelpers:
             summary_context={"source_sheet_name": "QC LOESS result"},
         )
 
-        assert "參考策略: ROBUST_MEDIAN_FALLBACK" in report
-        assert "參考理由: Multi-batch designs do not use QC-based references; use all-sample robust median instead." in report
+        assert "參考策略: QC_REFERENCE" in report
+        assert "參考理由: Post-LOESS QC stability is limited; adductomics policy still uses QC-derived reference and disables all-sample fallback." in report
 
 
 

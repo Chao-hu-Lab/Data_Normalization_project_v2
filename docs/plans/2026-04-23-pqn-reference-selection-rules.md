@@ -10,6 +10,17 @@ This document defines how DNP should choose the `PQN` reference spectrum under d
 
 It is intentionally operational. The goal is to avoid silent misuse of QC-derived PQN references when batch structure or QC design makes them scientifically unreliable.
 
+## 2026-04-24 Adductomics Policy Update
+
+After review with the project PI, DNP currently targets adductomics-oriented trace analysis rather than endogenous metabolomics. Because all-sample robust median references can be dominated by sparse, low-abundance, exposure-driven features, Step 3 no longer falls back to all samples.
+
+Current operational rule:
+
+- if QC samples exist, build PQN reference from QC samples
+- Step 2 `LOESS_summary`, QC stability, and batch sharedness remain report context
+- if QC samples do not exist, stop with an explicit error
+- do not use all-sample robust median as an automatic fallback
+
 ## Core Principle
 
 `PQN` is a **sample-wise dilution / scaling normalization** method, not a batch-correction method.
@@ -24,27 +35,24 @@ Therefore:
 
 | Scenario | QC design | Recommended PQN reference | QC allowed in reference? | Confidence | Notes |
 |----------|-----------|---------------------------|--------------------------|------------|-------|
-| single-batch raw matrix | one batch, regular pooled QC inserts | **not default**; prefer QC only after drift review | conditional | medium | raw QC may still carry strong run-order drift |
-| single-batch after QC-LOESS | one batch, regular pooled QC inserts | **QC-based reference** preferred when QC stability is acceptable | yes | high | best match to DNP's intended single-batch workflow |
-| single-batch after QC-LOESS but QC still unstable | one batch, pooled QC exists but remains noisy | **real-sample robust median** | no, or QC as secondary sensitivity run only | medium | keep QC out of the main reference if post-LOESS QC dispersion is still high |
-| cross-batch merged matrix with truly shared QC | same QC material spans all batches | **QC-based global reference** can be considered | yes | medium | only valid when QC is genuinely comparable across batches |
-| cross-batch merged matrix with non-shared QC | each batch has its own pooled QC | **real-sample robust median** | no | high | do not let batch-specific QC define a global PQN reference |
-| cross-batch merged matrix with non-shared QC but strong desire to retain QC information | each batch has its own pooled QC | **real-sample robust median** as primary; optional batch-equalized QC sensitivity analysis only | not in primary workflow | medium | any QC-based merged reference must be treated as exploratory, not default |
+| single-batch raw matrix | one batch, regular pooled QC inserts | **QC-based reference with warning** | yes | medium | raw QC may still carry strong run-order drift |
+| single-batch after QC-LOESS | one batch, regular pooled QC inserts | **QC-based reference** | yes | high | Step 2 stability is report context |
+| single-batch after QC-LOESS but QC still unstable | one batch, pooled QC exists but remains noisy | **QC-based reference with warning** | yes | medium | adductomics policy disables all-sample fallback |
+| cross-batch merged matrix with truly shared QC | same QC material spans all batches | **QC-based global reference** | yes | medium | report sharedness evidence; do not call this batch correction |
+| cross-batch merged matrix with non-shared QC | each batch has its own pooled QC | **QC-based reference with warning** | yes | medium | all-sample fallback is disabled; report non-shared QC risk |
+| no QC samples | no usable QC reference | **stop with error** | no | high | do not build all-sample robust median reference |
 
 ## Detailed Rules
 
 ### Rule 1: Single-batch raw matrix
 
-If the data contains only one batch and QC injections are distributed across run order, QC can be a candidate PQN reference, but it should not be assumed safe before drift is evaluated.
+If the data contains only one batch and QC injections are distributed across run order, QC is still the PQN reference source in the current adductomics workflow.
 
 Recommended handling:
 
 - first inspect QC drift evidence
-- if the raw matrix still shows clear order-dependent QC instability, do not build the final PQN reference directly from raw QC
-- prefer:
-  1. `ISTD` if applicable
-  2. `QC-LOESS`
-  3. then decide PQN reference
+- prefer `ISTD` if applicable, then `QC-LOESS`, then `PQN`
+- if QC drift remains visible, report it as a warning instead of switching to all-sample reference
 
 ### Rule 2: Single-batch after QC-LOESS
 
@@ -64,22 +72,13 @@ Recommended default:
 
 ### Rule 3: Single-batch after QC-LOESS but QC remains unstable
 
-If LOESS reduces drift but QC remains too noisy, do not force a QC-derived PQN reference.
+For the current adductomics workflow, QC instability after LOESS is a reporting warning, not a trigger for all-sample fallback.
 
-Use `real-sample robust median` when any of the following remain concerning after LOESS:
+Use:
 
-- QC CV median is still high
-- too many features worsen after correction
-- QC outliers dominate reference construction
-- QC sample-level abundance is still visibly unstable
-
-Suggested interpretation bands:
-
-- `post-LOESS QC CV median < 20%`: QC reference strongly supported
-- `20% to 30%`: QC reference allowed, but compare against robust-median reference
-- `> 30%`: robust-median reference preferred unless there is strong additional evidence that QC remains reliable
-
-These bands are workflow guidance, not rigid statistical laws.
+- QC median spectrum as the PQN reference
+- Step 2 stability fields in the summary report to warn the user
+- no automatic all-sample robust median fallback
 
 ### Rule 4: Cross-batch merged matrix with truly shared QC
 
@@ -92,29 +91,19 @@ Even in this case:
 
 ### Rule 5: Cross-batch merged matrix with non-shared QC
 
-If each batch uses its own pooled QC and those QCs are not truly shared across batches, do **not** use global QC-derived PQN as the default reference.
+If each batch uses its own pooled QC and those QCs are not truly shared across batches, report the design risk explicitly.
 
-Use:
-
-- `real-sample robust median reference`
-
-Reason:
-
-- pooled QC from different batches is not a common anchor
-- a global QC median can silently encode batch composition into the PQN reference spectrum
-- unequal QC counts by batch make the problem worse
-
-This is the default rule for DNP cross-batch merged matrices unless a stronger shared-QC design is explicitly demonstrated.
+Current adductomics policy still uses the available QC samples as the PQN reference because all-sample robust median is considered scientifically inappropriate for trace adductomics features. This must be described as a normalization reference choice, not as cross-batch correction.
 
 ## Recommended Reference Strategies by Workflow State
 
 | Workflow state | Reference choice |
 |----------------|------------------|
-| Step 2 not run yet, single batch | provisional QC allowed only after manual review; otherwise robust median |
+| Step 2 not run yet, single batch | QC median spectrum with warning |
 | Step 2 complete, single batch, QC improved | QC median spectrum |
-| Step 2 complete, single batch, QC still unstable | real-sample robust median |
-| merged multi-batch, non-shared QC | real-sample robust median |
-| merged multi-batch, shared QC proven | QC median spectrum may be used |
+| Step 2 complete, single batch, QC still unstable | QC median spectrum with warning |
+| merged multi-batch, non-shared QC | QC median spectrum with warning |
+| merged multi-batch, shared QC proven | QC median spectrum |
 
 ## DNP-Specific Policy
 
@@ -122,13 +111,13 @@ For DNP, use the following default policy:
 
 1. **Single-batch workflow**
    - preferred sequence: `ISTD -> QC-LOESS -> PQN`
-   - preferred PQN reference after successful LOESS: `QC-based median spectrum`
-   - fallback when QC remains unstable: `real-sample robust median`
+   - PQN reference: `QC-based median spectrum`
+   - unstable QC remains a report warning, not an all-sample fallback trigger
 
 2. **Cross-batch merged workflow with non-shared QC**
-   - do not use global QC-derived PQN as the main workflow default
-   - use `real-sample robust median`
-   - keep QC for diagnostics and batch-local drift review, not for global PQN anchoring
+   - use available QC samples as the PQN reference
+   - report non-shared QC risk explicitly
+   - do not describe PQN as cross-batch correction
 
 ## Current Example-Based Interpretation
 
@@ -149,7 +138,7 @@ Observed pattern:
 Interpretation:
 
 - QC-based PQN is allowed
-- but if post-LOESS QC CV remains around the caution band, compare it against robust-median PQN as a sensitivity check
+- if post-LOESS QC CV remains around the caution band, report it as a warning rather than switching to all-sample robust median
 
 ### Example B: cross-batch merged workbook with non-shared QC
 
@@ -166,8 +155,8 @@ Observed pattern:
 
 Interpretation:
 
-- do not use global QC-derived PQN as default
-- use `real-sample robust median` as the main PQN reference
+- use available QC samples as the PQN reference
+- report that QC is non-shared and that this is not cross-batch correction
 
 ## Implementation Guidance for DNP
 
@@ -180,13 +169,13 @@ When Step 3 chooses a PQN reference strategy, the decision logic should inspect 
 
 A future implementation can encode this with explicit strategy labels such as:
 
-- `QC_SINGLE_BATCH`
-- `QC_SHARED_MULTIBATCH`
-- `ROBUST_MEDIAN_FALLBACK`
-- `ROBUST_MEDIAN_NONSHARED_MULTIBATCH`
+- `QC_REFERENCE`
+- `QC_REFERENCE_WITH_WARNING`
+- `QC_REQUIRED_BUT_MISSING`
 
 ## Bottom Line
 
-- `single-batch + LOESS-corrected QC -> QC-based PQN is usually reasonable`
-- `cross-batch merged + non-shared QC -> use real-sample robust median`
+- `single-batch + LOESS-corrected QC -> QC-based PQN`
+- `cross-batch merged + non-shared QC -> QC-based PQN with explicit warning`
+- `missing QC -> stop; do not use all-sample reference`
 - `PQN` should never be allowed to become an accidental substitute for explicit batch correction

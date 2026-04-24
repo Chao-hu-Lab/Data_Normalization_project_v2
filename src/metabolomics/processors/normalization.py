@@ -372,51 +372,42 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns,
     )
     step2_contract = _summarize_step2_contract(step2_advanced_stats_df)
 
-    if qc_count > 0:
-        qc_data = data_matrix[:, qc_indices]
-        qc_cv = calculate_rsd(qc_data)
-        qc_cv_median = np.nanmedian(qc_cv)
+    if qc_count <= 0:
+        raise ValueError(
+            "PQN requires QC samples for adductomics mode; all-sample robust median fallback is disabled."
+        )
 
-        if step2_contract['available']:
-            if batch_design['batch_count'] <= 1 and step2_contract['qc_stable']:
-                reference_strategy = 'QC_SINGLE_BATCH'
-                reference_rationale = (
-                    "Single-batch design with stable post-LOESS QC supports a QC-based reference."
-                )
-            elif batch_design['batch_count'] <= 1:
-                reference_strategy = 'ROBUST_MEDIAN_FALLBACK'
-                reference_rationale = (
-                    "Post-LOESS QC unstable, fallback to robust median instead of QC-derived reference."
-                )
-            else:
-                reference_strategy = 'ROBUST_MEDIAN_FALLBACK'
-                if batch_design['qc_shared_across_batches']:
-                    reference_rationale = (
-                        "Multi-batch designs do not use QC-based references; use all-sample robust median instead."
-                    )
-                else:
-                    reference_rationale = (
-                        "Non-shared QC across multiple batches cannot support a global QC reference, so use all-sample robust median."
-                    )
-        elif batch_design['batch_count'] <= 1:
-            reference_strategy = 'ROBUST_MEDIAN_FALLBACK'
-            reference_rationale = (
-                "Step 2 contract unavailable, fallback to all-sample robust median instead of QC-derived reference."
-            )
-        else:
-            reference_strategy = 'ROBUST_MEDIAN_FALLBACK'
-            reference_rationale = "Step 2 contract unavailable, use all-sample robust median for multi-batch designs."
+    qc_data = data_matrix[:, qc_indices]
+    qc_cv = calculate_rsd(qc_data)
+    qc_cv_median = np.nanmedian(qc_cv)
+    reference_strategy = 'QC_REFERENCE'
+    if not step2_contract['available']:
+        reference_rationale = (
+            "Step 2 contract unavailable; adductomics policy still uses QC-derived reference and disables all-sample fallback."
+        )
+    elif batch_design['batch_count'] > 1 and not batch_design['qc_shared_across_batches']:
+        reference_rationale = (
+            "Multi-batch QC is not proven shared; adductomics policy still uses available QC samples as reference and disables all-sample fallback."
+        )
+    elif batch_design['batch_count'] > 1:
+        reference_rationale = (
+            "Multi-batch shared-QC evidence recorded; adductomics policy uses QC-derived reference and disables all-sample fallback."
+        )
+    elif step2_contract['qc_stable']:
+        reference_rationale = (
+            "Single-batch design with stable post-LOESS QC uses a QC-derived reference."
+        )
     else:
-        reference_strategy = 'ROBUST_MEDIAN'
-        reference_rationale = "No QC samples available, use robust median reference."
+        reference_rationale = (
+            "Post-LOESS QC stability is limited; adductomics policy still uses QC-derived reference and disables all-sample fallback."
+        )
 
     # 決定參考譜
-    if reference_strategy in ('QC', 'QC_LIMITED', 'QC_SINGLE_BATCH'):
+    if reference_strategy in ('QC', 'QC_LIMITED', 'QC_REFERENCE'):
         reference_sample = np.nanmedian(data_matrix[:, qc_indices], axis=1)
         print(f"  參考策略: {reference_strategy}（QC median CV%={qc_cv_median:.1f}%）")
     else:
-        reference_sample = np.nanmedian(data_matrix, axis=1)
-        print(f"  參考策略: {reference_strategy}（全樣本中位數）")
+        raise RuntimeError(f"Unsupported PQN reference strategy in adductomics mode: {reference_strategy}")
     if reference_rationale:
         print(f"  參考理由: {reference_rationale}")
 

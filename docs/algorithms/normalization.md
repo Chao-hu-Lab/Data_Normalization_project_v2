@@ -49,15 +49,14 @@
 
 ### 1. Step 2 驅動的 reference strategy selector
 
-工具現在會直接讀 Step 2 `LOESS_summary` / advanced statistics sheet，結合 batch 結構與 QC sharedness 決定 PQN 標準化的參考策略，而不是只看 `qc_count` 和 `qc_cv_median`。
+工具現在會直接讀 Step 2 `LOESS_summary` / advanced statistics sheet，結合 batch 結構與 QC sharedness 回報 PQN 標準化的參考脈絡，而不是只看 `qc_count` 和 `qc_cv_median`。
 
 目前的主策略包括：
-- `QC_SINGLE_BATCH`: 單 batch 且 Step 2 顯示 QC 穩定
-- `ROBUST_MEDIAN_FALLBACK`: Step 2 顯示 post-LOESS QC 不穩定，或 multi-batch 情境下不使用 QC-based reference
+- `QC_REFERENCE`: 有 QC 樣本時，以 QC median spectrum 作為 PQN reference
 
-多 batch 情境一律不採用 QC-based reference；即使 shared QC 名稱看起來有重疊，也只會作為證據保留在報告裡，不會進入 reference selection。這樣可以避免把 batch-specific QC 混進 global QC median。
+Adductomics 目前採微量分析政策：不論 Step 2 LOESS 後的穩定性如何，都不退回 all-sample robust median。Step 2 contract、QC sharedness 與 batch 設計會保留在 report 中作為解讀脈絡，但不再觸發全樣本 reference fallback。
 
-如果 Step 3 缺少足夠的 Step 2 契約欄位，正確做法是先擴充 Step 2 advanced stats sheet，而不是在 Step 3 內偷偷重算另一套 hidden heuristics。
+如果工作簿沒有 QC 樣本，Step 3 會明確中止，而不是用所有樣本建立 robust median reference。
 
 ### 2. 混合標準化流程
 
@@ -91,7 +90,7 @@ PQN 假設大部分代謝物在樣本間應該維持穩定比例，只有少數�
 
 **演算法步驟：**
 
-1. **選擇參考樣本：** 依 Step 2 advanced stats 與 batch/QC 設計選擇 QC reference 或 robust median
+1. **選擇參考樣本：** 使用 QC median spectrum；Step 2 advanced stats 與 batch/QC 設計只作為 report context
 2. **計算商數矩陣：** 每個樣本的每個代謝物除以參考值
 3. **估算稀釋因子：** 取每個樣本的商數中位數
 4. **標準化：** 每個樣本除以其稀釋因子
