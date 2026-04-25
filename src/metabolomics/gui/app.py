@@ -32,11 +32,6 @@ except ModuleNotFoundError:
     build_bridge_path = _missing_ms_core
     create_session = _missing_ms_core
     update_manifest = _missing_ms_core
-# TODO: adapters removed, use ms_core pipeline
-# from metabolomics.adapters.preprocessing_to_dnp import convert_preprocessing_to_dnp
-# from metabolomics.adapters.dnp_to_metaboanalyst import convert_dnp_to_metaboanalyst
-
-
 # ========== Platform-Aware Font Settings ==========
 def get_system_fonts():
     """Return platform-appropriate fonts for cross-platform compatibility"""
