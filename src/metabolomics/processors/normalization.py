@@ -840,72 +840,6 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
 
 # ==================== 輔助函數 ====================
 
-def is_numeric_value(value):
-    """檢查值是否為有效的數值"""
-    if pd.isna(value):
-        return False
-    try:
-        float_val = float(value)
-        return float_val > 0
-    except (ValueError, TypeError):
-        return False
-
-def get_non_qc_columns(df, sample_info_df):
-    """獲取非QC樣本的欄位列表"""
-    non_qc_columns = []
-
-    # Vectorized sample type dict building (faster than iterrows)
-    sample_names = sample_info_df.iloc[:, 0].astype(str)
-    sample_types = sample_info_df.get('Sample_Type', pd.Series([''] * len(sample_info_df))).fillna('').astype(str).str.upper()
-    sample_type_dict = dict(zip(sample_names, sample_types))
-
-    for col in df.columns:
-        if col != df.columns[0]:
-            if col in sample_type_dict:
-                if sample_type_dict[col] != 'QC':
-                    non_qc_columns.append(col)
-            else:
-                if not col.upper().startswith('QC'):
-                    non_qc_columns.append(col)
-
-    return non_qc_columns
-
-def get_sample_columns_only(df, sample_info_df):
-    """
-    獲取純樣本欄位（排除QC和統計欄位）
-    """
-    # 排除的統計欄位關鍵字
-    exclude_keywords = [
-        'CV', 'Silhouette', 'Permutation', 'Correlation',
-        'R_squared', 'Improvement', 'Before', 'After',
-        'Original', 'Corrected', 'pvalue', 'p_value'
-    ]
-
-    sample_columns = []
-
-    # Vectorized sample type dict building (faster than iterrows)
-    sample_names = sample_info_df.iloc[:, 0].astype(str)
-    sample_types = sample_info_df.get('Sample_Type', pd.Series(['Unknown'] * len(sample_info_df))).fillna('Unknown').astype(str).str.upper()
-    sample_type_dict = dict(zip(sample_names, sample_types))
-
-    for col in df.columns:
-        if col == df.columns[0]:  # 跳過第一欄（特徵ID）
-            continue
-
-        # 檢查是否包含排除關鍵字
-        is_stat_column = any(keyword.lower() in str(col).lower() for keyword in exclude_keywords)
-
-        if not is_stat_column:
-            # 檢查是否為QC樣本
-            if col in sample_type_dict:
-                if sample_type_dict[col] != 'QC':
-                    sample_columns.append(col)
-            else:
-                if not col.upper().startswith('QC'):
-                    sample_columns.append(col)
-
-    return sample_columns
-
 def calculate_cv_per_feature(data_matrix):
     """
     計算每個特徵的CV%
@@ -1903,9 +1837,6 @@ def create_normalization_summary_report(
     return "\n".join(report)
 
 # ==================== 檔案處理函數 ====================
-
-def select_file():
-    raise RuntimeError("input_file is required; GUI must provide the file path.")
 
 def load_excel_sheets(file_path):
     """載入Excel檔案的所有工作表"""

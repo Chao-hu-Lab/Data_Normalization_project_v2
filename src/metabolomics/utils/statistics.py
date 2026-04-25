@@ -81,58 +81,6 @@ def calculate_hotelling_t2_outliers(qc_scores, all_scores=None, alpha=0.05):
     return t2_values, threshold, outliers
 
 
-def calculate_hotelling_t2_outliers_internal(scores, alpha=0.05):
-    """
-    使用 Hotelling T² 檢測樣本內部的異常值
-
-    使用樣本自身的內部統計量。
-
-    Parameters:
-    -----------
-    scores : np.ndarray
-        樣本的 PCA 分數 (n x n_components)
-    alpha : float
-        顯著性水準 (預設 0.05)
-
-    Returns:
-    --------
-    tuple : (t2_values, threshold, outliers)
-    """
-    n, p = scores.shape
-
-    if n < 3:
-        return np.zeros(n), 0, np.zeros(n, dtype=bool)
-
-    # 使用內部統計量
-    mean = np.mean(scores, axis=0)
-    cov = np.cov(scores, rowvar=False)
-
-    # 正則化協方差矩陣
-    cov_reg = cov + np.eye(p) * 1e-6
-
-    try:
-        cov_inv = np.linalg.inv(cov_reg)
-    except np.linalg.LinAlgError:
-        cov_inv = np.linalg.pinv(cov_reg)
-
-    # 計算 Hotelling T² 值
-    t2_values = np.zeros(n)
-    for i in range(n):
-        diff = scores[i] - mean
-        t2_values[i] = np.dot(np.dot(diff, cov_inv), diff.T)
-
-    # 使用正確的閾值公式
-    if n - p - 1 > 0:
-        f_critical = f_dist.ppf(1 - alpha, p, n - p - 1)
-        threshold = (p * (n + 1) * (n - 1)) / (n * (n - p - 1)) * f_critical
-    else:
-        threshold = chi2.ppf(1 - alpha, p)
-
-    outliers = t2_values > threshold
-
-    return t2_values, threshold, outliers
-
-
 def draw_hotelling_t2_ellipse(ax, scores, alpha=0.05, label=None,
                                edgecolor='red', linestyle='-', linewidth=2.5):
     """

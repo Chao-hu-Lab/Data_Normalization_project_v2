@@ -1707,29 +1707,6 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
     print(f"  {output_file}")
     print(f"{'='*70}\n")
 
-    # P 值分佈圖 (disabled: provides limited diagnostic value)
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-    # plot_pvalue_distribution(cv_results_df, plot_output_dir, timestamp)
-
-def save_skipped_istd_results_to_excel(output_file, all_sheets, original_workbook):
-    """Save a minimal Step 1 workbook when ISTD correction is skipped.
-
-    Even when ISTD correction is skipped, ISTD rows must be removed from
-    RawIntensity — they are exogenous spiked-in compounds, not biological
-    features, and would pollute downstream statistical analyses.
-    """
-    raw_df = all_sheets[SHEET_NAMES['raw_intensity']].copy()
-    if 'is_ISTD' in raw_df.columns:
-        raw_df = raw_df[~raw_df['is_ISTD']].drop(columns=['is_ISTD'])
-    retained_sheets = {
-        SHEET_NAMES['raw_intensity']: raw_df,
-        SHEET_NAMES['sample_info']: all_sheets[SHEET_NAMES['sample_info']],
-    }
-
-    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-        for sheet_name, df in retained_sheets.items():
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
-
 
 def main(input_file=None, session_dir=None):
     """
