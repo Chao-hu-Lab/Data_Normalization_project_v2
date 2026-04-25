@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,8 +50,23 @@ def _as_number(value: object) -> float | None:
         return None
 
 
+def _is_volatile_timestamp_pair(left: object, right: object) -> bool:
+    """Ignore generated-at timestamps while still comparing scientific values."""
+    left_text = str(left).strip()
+    right_text = str(right).strip()
+
+    if left_text.startswith("報告生成時間:") and right_text.startswith("報告生成時間:"):
+        return True
+
+    timestamp_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$")
+    return bool(timestamp_pattern.match(left_text) and timestamp_pattern.match(right_text))
+
+
 def _values_equal(left: object, right: object, *, rtol: float, atol: float) -> bool:
     if _is_blank(left) and _is_blank(right):
+        return True
+
+    if _is_volatile_timestamp_pair(left, right):
         return True
 
     left_number = _as_number(left)
