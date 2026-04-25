@@ -210,11 +210,11 @@ SCENARIO_LIBRARY = {
     "specnorm_friendly": replace(
         BASE_CONFIG,
         name="specnorm_friendly",
-        description="Creatinine values are linked to the dominant sample-wise dilution factor so SampleSpecific normalization is meaningful.",
-        recommended_steps=("Step 4 SampleSpecific", "Step 4 PQN"),
+        description="Creatinine values are linked to the dominant sample-wise dilution factor so SpecNorm+PQN normalization is meaningful.",
+        recommended_steps=("Step 3 SpecNorm+PQN", "Step 3 PQN"),
         primary_checks=(
-            "Preferred matrix for validating SampleSpecific / SpecNorm behavior.",
-            "Compare SampleSpecific against PQN on a matrix with meaningful reference values.",
+            "Preferred matrix for validating SpecNorm+PQN behavior.",
+            "Compare SpecNorm+PQN against PQN on a matrix with meaningful reference values.",
         ),
         creatinine_mode="linked",
         creatinine_noise_sigma=0.05,
@@ -237,7 +237,7 @@ SCENARIO_LIBRARY = {
         BASE_CONFIG,
         name="signal_saturation",
         description="Highest-intensity analytes enter a compressed response regime, simulating detector saturation and nonlinear response.",
-        recommended_steps=("Step 4 PQN", "Step 4 SampleSpecific"),
+        recommended_steps=("Step 3 PQN", "Step 3 SpecNorm+PQN"),
         primary_checks=(
             "Upper-tail intensities should be visibly compressed relative to balanced_pipeline.",
             "Normalization quality metrics should not look unrealistically perfect under nonlinear response.",

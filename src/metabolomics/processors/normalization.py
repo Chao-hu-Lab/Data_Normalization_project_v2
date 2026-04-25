@@ -19,7 +19,6 @@ from metabolomics.utils.sample_classification import (
     SampleClassifier,
     build_sample_info_mapping as shared_build_sample_info_mapping,
     identify_candidate_sample_columns,
-    identify_sample_columns,
     normalize_sample_name,
     normalize_sample_type,
 )
@@ -44,13 +43,11 @@ METHOD_ALIASES = {
     'SPECNORM+PQN': 'SpecNorm_PQN',
     'SPECNORM_PQN': 'SpecNorm_PQN',
     'SPECNORM PQN': 'SpecNorm_PQN',
-    'SAMPLESPECIFIC': 'SpecNorm_PQN',
 }
 
 NORMALIZATION_SUMMARY_SHEETS = {
     'PQN': 'PQN_summary',
     'SpecNorm_PQN': 'SpecNorm_PQN_summary',
-    'SampleSpecific': 'SpecNorm_PQN_summary',
 }
 SUMMARY_REPORT_SEPARATOR = "-" * 80
 
@@ -526,20 +523,6 @@ def specnorm_reference_division(data_matrix, sample_info_df, sample_columns,
     return final_data, spec_info
 
 
-def sample_specific_normalization(data_matrix, sample_info_df, sample_columns,
-                                  reference_values, col_to_info_row=None,
-                                  correction_col_name=None):
-    """Backward-compatible alias for the SpecNorm division stage."""
-    return specnorm_reference_division(
-        data_matrix,
-        sample_info_df,
-        sample_columns,
-        reference_values,
-        col_to_info_row=col_to_info_row,
-        correction_col_name=correction_col_name,
-    )
-
-
 def specnorm_pqn_normalization(data_matrix, sample_info_df, sample_columns,
                                reference_values, col_to_info_row=None,
                                correction_col_name=None,
@@ -578,13 +561,6 @@ def specnorm_pqn_normalization(data_matrix, sample_info_df, sample_columns,
     print("  ✓ SpecNorm+PQN 完成（scale-back=none）")
     return final_data, hybrid_info
 
-
-def get_all_sample_columns(df, sample_info_df):
-    """
-    獲取所有樣本欄位（包含 QC，但排除統計欄位）
-    """
-    sample_columns, _ = identify_sample_columns(df, sample_info_df)
-    return [col for col in sample_columns if col in df.columns]
 
 def calculate_cohens_d(group1, group2):
     """
@@ -2417,7 +2393,7 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
     session_dir : str or Path, optional
         Session directory for pipeline-aware output.
     normalization_method : str
-        'PQN' or 'SpecNorm_PQN'（由 GUI 傳入；SampleSpecific 為 legacy alias）
+        'PQN' or 'SpecNorm_PQN'（由 GUI 傳入）
 
     Returns:
     --------

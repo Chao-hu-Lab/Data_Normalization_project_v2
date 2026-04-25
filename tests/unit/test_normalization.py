@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from metabolomics.utils.constants import SHEET_NAMES
+from metabolomics.utils.sample_classification import identify_sample_columns
 
 
 class TestConcentrationNormInput:
@@ -38,7 +39,6 @@ class TestConcentrationNormHelpers:
     ):
         assert conc_norm_module.get_summary_sheet_name("PQN") == "PQN_summary"
         assert conc_norm_module.get_summary_sheet_name("SpecNorm_PQN") == "SpecNorm_PQN_summary"
-        assert conc_norm_module.get_summary_sheet_name("SampleSpecific") == "SpecNorm_PQN_summary"
         assert conc_norm_module.get_summary_sheet_name("CustomMethod") == "CustomMethod_summary"
 
     def test_canonicalize_normalization_method_accepts_specnorm_aliases(
@@ -48,7 +48,6 @@ class TestConcentrationNormHelpers:
         assert conc_norm_module.canonicalize_normalization_method("PQN") == "PQN"
         assert conc_norm_module.canonicalize_normalization_method("SpecNorm+PQN") == "SpecNorm_PQN"
         assert conc_norm_module.canonicalize_normalization_method("SpecNorm_PQN") == "SpecNorm_PQN"
-        assert conc_norm_module.canonicalize_normalization_method("SampleSpecific") == "SpecNorm_PQN"
 
     def test_determine_correction_sheet_accepts_legacy_qc_lowess_name(
         self,
@@ -79,7 +78,7 @@ class TestConcentrationNormHelpers:
         assert selected_name == SHEET_NAMES["qc_lowess"]
         assert selected_df is step2_df
 
-    def test_get_all_sample_columns_excludes_ratio_and_stat_columns(
+    def test_identify_sample_columns_excludes_ratio_and_stat_columns(
         self,
         conc_norm_module,
     ):
@@ -105,11 +104,11 @@ class TestConcentrationNormHelpers:
             }
         )
 
-        sample_columns = conc_norm_module.get_all_sample_columns(data_df, sample_info_df)
+        sample_columns, _ = identify_sample_columns(data_df, sample_info_df)
 
         assert sample_columns == ["Normal_A", "Benign_A", "Exposure_A", "QC_1"]
 
-    def test_get_all_sample_columns_avoids_unknown_ratio_pseudo_samples(
+    def test_identify_sample_columns_avoids_unknown_ratio_pseudo_samples(
         self,
         conc_norm_module,
     ):
@@ -133,7 +132,7 @@ class TestConcentrationNormHelpers:
             }
         )
 
-        sample_columns = conc_norm_module.get_all_sample_columns(data_df, sample_info_df)
+        sample_columns, _ = identify_sample_columns(data_df, sample_info_df)
         col_to_info_row = conc_norm_module.build_sample_info_mapping(sample_columns, sample_info_df)
         sample_types = [
             conc_norm_module._lookup_sample_type(sample, sample_info_df, col_to_info_row, default="Unknown")
@@ -142,7 +141,7 @@ class TestConcentrationNormHelpers:
 
         assert "UNKNOWN" not in sample_types
 
-    def test_get_all_sample_columns_excludes_presence_absence_marker(
+    def test_identify_sample_columns_excludes_presence_absence_marker(
         self,
         conc_norm_module,
     ):
@@ -162,7 +161,7 @@ class TestConcentrationNormHelpers:
             }
         )
 
-        sample_columns = conc_norm_module.get_all_sample_columns(data_df, sample_info_df)
+        sample_columns, _ = identify_sample_columns(data_df, sample_info_df)
 
         assert sample_columns == ["Sample_A", "Sample_B", "QC_1"]
 
@@ -295,7 +294,7 @@ class TestConcentrationNormHelpers:
         assert cleaned["Metric"].dtype.kind in {"f", "i"}
         assert cleaned.loc[1, "Metric"] == pytest.approx(3.2)
 
-    def test_sample_specific_normalization_handles_pathological_reference_values(
+    def test_specnorm_reference_division_handles_pathological_reference_values(
         self,
         conc_norm_module,
     ):
@@ -314,7 +313,7 @@ class TestConcentrationNormHelpers:
             ]
         )
 
-        corrected, info = conc_norm_module.sample_specific_normalization(
+        corrected, info = conc_norm_module.specnorm_reference_division(
             data_matrix,
             sample_info_df,
             sample_columns,
@@ -331,7 +330,7 @@ class TestConcentrationNormHelpers:
         assert info["ref_valid_count"] == 2
         assert info["ref_median"] == pytest.approx(2525.0)
 
-        corrected_no_valid, info_no_valid = conc_norm_module.sample_specific_normalization(
+        corrected_no_valid, info_no_valid = conc_norm_module.specnorm_reference_division(
             data_matrix,
             sample_info_df,
             sample_columns,

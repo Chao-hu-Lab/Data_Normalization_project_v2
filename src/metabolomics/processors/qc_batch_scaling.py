@@ -673,11 +673,6 @@ def generate_step3_plots(
     return str(plots_dir)
 
 
-def generate_pca_plots(*args, **kwargs):
-    """Backward-compatible alias for the Step 3 diagnostics entry point."""
-    return generate_step3_plots(*args, **kwargs)
-
-
 def save_results_to_excel(
     source_df,
     result_df,
