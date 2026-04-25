@@ -12,18 +12,14 @@ warnings.filterwarnings('ignore')
 from metabolomics.utils.data_helpers import get_valid_values
 from metabolomics.utils.plotting import setup_matplotlib
 from metabolomics.utils.constants import (
-    FONT_SIZES,
-    COLORBLIND_COLORS,
     SHEET_NAMES,
     DATETIME_FORMAT_FULL,
     FEATURE_ID_COLUMN,
     NON_SAMPLE_COLUMNS,
     STAT_COLUMN_KEYWORDS,
-    VALIDATION_THRESHOLDS,
     CV_QUALITY_THRESHOLDS,
 )
 from metabolomics.utils.sample_classification import (
-    SampleClassifier,
     build_sample_info_mapping,
     identify_candidate_sample_columns,
     identify_sample_columns,
@@ -177,7 +173,7 @@ def load_and_process_data(file_path):
 
         # ===== 防呆12: 样本名称匹配检查（支援模糊匹配）=====
         import re
-        from metabolomics.utils.sample_classification import normalize_sample_type, normalize_sample_name
+        from metabolomics.utils.sample_classification import normalize_sample_name
 
         def _extract_key_tokens(name):
             """從樣本名稱中提取關鍵字和編號用於模糊匹配。

@@ -5,22 +5,18 @@ import warnings
 import os
 import re
 from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, Border
+from openpyxl.styles import Font, Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
 from datetime import datetime
 import matplotlib.pyplot as plt
-import seaborn as sns
-from copy import copy
-from scipy.stats import gaussian_kde, spearmanr, levene, wilcoxon
+from scipy.stats import gaussian_kde, spearmanr, wilcoxon
 
 from metabolomics.utils.plotting import setup_matplotlib
-from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS, NON_SAMPLE_COLUMNS, resolve_sheet_name
+from metabolomics.utils.constants import SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS, NON_SAMPLE_COLUMNS, resolve_sheet_name
 from metabolomics.utils.sample_classification import (
-    SampleClassifier,
     build_sample_info_mapping as shared_build_sample_info_mapping,
     identify_candidate_sample_columns,
     normalize_sample_name,
-    normalize_sample_type,
 )
 from metabolomics.utils.file_io import (
     build_plots_dir,

@@ -1,6 +1,5 @@
 import tkinter as tk
 from tkinter import messagebox, ttk, scrolledtext, filedialog
-import importlib.util
 import os
 import sys
 import traceback
@@ -9,9 +8,6 @@ import queue
 import logging
 from datetime import datetime
 import subprocess
-import psutil
-import re
-import tempfile
 from pathlib import Path
 from metabolomics.bootstrap_paths import ensure_ms_core_src_on_path
 

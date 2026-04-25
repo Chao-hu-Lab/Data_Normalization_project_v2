@@ -7,14 +7,12 @@ Transformations:
 3. Write cleaned data as the FIRST sheet (Metaboanalyst reads first sheet by default)
 4. Copy SampleInfo sheet (needed for SpecNorm)
 
-Uses openpyxl to preserve formatting and pandas for column filtering logic.
+Uses pandas ExcelWriter with the openpyxl engine for workbook output.
 """
 
 from pathlib import Path
 
 import pandas as pd
-import openpyxl
-from openpyxl.utils.dataframe import dataframe_to_rows
 
 from metabolomics.utils.constants import (
     FEATURE_ID_COLUMN,
