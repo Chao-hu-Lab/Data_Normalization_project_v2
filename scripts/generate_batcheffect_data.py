@@ -131,11 +131,11 @@ SCENARIO_LIBRARY = {
     "strong_batch": replace(
         BASE_CONFIG,
         name="strong_batch",
-        description="Large batch offsets persist after Step 1/2 and should be very visible in Step 3 diagnostics.",
-        recommended_steps=("Step 3 PQN",),
+        description="Large batch offsets persist after Step 1/2 and should be very visible in manual Step 4 diagnostics.",
+        recommended_steps=("Step 3 PQN", "Step 4 diagnostics (manual)"),
         primary_checks=(
-            "Step 3 batch alignment and by-batch boxplots should show clear pre/post separation.",
-            "Residual analysis should visibly tighten after batch scaling.",
+            "Manual Step 4 batch diagnostics should show clear pre/post separation when explicitly run.",
+            "Residual analysis should visibly tighten after manual QC batch scaling diagnostics.",
         ),
         batch_factors=(1.00, 1.45, 0.70),
         residual_batch_factors=(1.00, 1.22, 0.78),
