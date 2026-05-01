@@ -511,6 +511,51 @@ class TestConcentrationNormHelpers:
         assert info["reference_strategy"] == "QC_REFERENCE"
         assert "all-sample fallback" in info["reference_rationale"].lower()
 
+    def test_step2_contract_edge_ratio_ignores_missing_outside_range_counts(
+        self,
+        conc_norm_module,
+    ):
+        step2_advanced_stats_df = pd.DataFrame(
+            {
+                "Decision_Status": ["success", "success", "success"],
+                "Valid_QC_Count": [6, 6, 6],
+                "Removed_QC_Outliers": [0, 0, 0],
+                "Outside_QC_Range_Count": [0, np.nan, 1],
+                "Trend_pvalue": [0.42, 0.51, 0.48],
+                "Kendall_Tau": [0.04, 0.02, 0.03],
+                "LOESS_R2": [0.03, 0.02, 0.04],
+                "LOESS_RMSE": [3.2, 1.1, 2.4],
+                "Normalized_RMSE": [0.03, 0.02, 0.04],
+            }
+        )
+
+        summary = conc_norm_module._summarize_step2_contract(step2_advanced_stats_df)
+
+        assert summary["edge_extrapolation_ratio"] == pytest.approx(0.5)
+
+    def test_step2_contract_edge_ratio_fails_closed_when_outside_range_counts_missing(
+        self,
+        conc_norm_module,
+    ):
+        step2_advanced_stats_df = pd.DataFrame(
+            {
+                "Decision_Status": ["success", "no_drift_detected"],
+                "Valid_QC_Count": [6, 6],
+                "Removed_QC_Outliers": [0, 0],
+                "Outside_QC_Range_Count": [np.nan, np.nan],
+                "Trend_pvalue": [0.42, 0.51],
+                "Kendall_Tau": [0.04, 0.02],
+                "LOESS_R2": [0.03, 0.02],
+                "LOESS_RMSE": [3.2, 1.1],
+                "Normalized_RMSE": [0.03, 0.02],
+            }
+        )
+
+        summary = conc_norm_module._summarize_step2_contract(step2_advanced_stats_df)
+
+        assert np.isnan(summary["edge_extrapolation_ratio"])
+        assert summary["qc_stable"] is False
+
     def test_enhanced_pqn_normalization_uses_qc_reference_for_nonshared_multibatch_qc_design(
         self,
         conc_norm_module,

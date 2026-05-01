@@ -1,6 +1,6 @@
 # DNP Workflow Responsibility Refactor Master Execution Plan
 
-> **For Claude:** Treat this file as the single execution plan for the refactor. Use the three 2026-04-23 planning docs as design references, but drive implementation order, test updates, and documentation updates from this file only.
+> **Implementation note:** Treat this file as the single execution plan for the refactor. Use the three 2026-04-23 planning docs as design references, but drive implementation order, test updates, and documentation updates from this file only.
 
 **Status:** Implemented on `refactor/dnp-workflow-responsibility-core-overhaul` as of 2026-04-25. Keep this file as the execution record for the refactor; use README, `docs/algorithms/*.md`, and `docs/plans/2026-04-23-pqn-reference-selection-rules.md` for current user/developer guidance.
 

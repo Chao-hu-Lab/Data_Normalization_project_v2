@@ -276,7 +276,12 @@ def _summarize_step2_contract(step2_advanced_stats_df):
     median_abs_tau = float(np.nanmedian(tau_values))
     median_trend_pvalue = float(np.nanmedian(trend_pvalues))
     median_valid_qc_count = float(np.nanmedian(valid_qc_counts))
-    edge_extrapolation_ratio = float((outside_counts > 0).mean())
+    valid_outside_counts = outside_counts.dropna()
+    edge_extrapolation_ratio = (
+        float((valid_outside_counts > 0).mean())
+        if not valid_outside_counts.empty
+        else np.nan
+    )
     qc_stable = bool(
         np.isfinite(stable_ratio)
         and stable_ratio >= 0.7

@@ -611,8 +611,8 @@ class TestFracFloorAndLoocv:
         assert info["status"] == "insufficient_qc"
 
 
-class TestUpcomingStep2ResponsibilityContract:
-    """Failing tests that lock the upcoming Step 2 contract before refactor."""
+class TestStep2ResponsibilityContract:
+    """Canonical Step 2 contract tests for current LOWESS correction responsibilities."""
 
     def test_apply_lowess_correction_no_longer_accepts_global_qc_median(self, qc_lowess_module):
         qc_orders = [1.0, 2.0, 3.0, 4.0, 5.0]
@@ -796,6 +796,83 @@ class TestStep2HardeningContract:
         assert decision_stats["success"] == 1
         assert decision_stats["partial_success"] == 0
         assert trend_stats_df.loc[0, "Decision_Status"] == "success"
+
+    def test_perform_lowess_normalization_surfaces_all_no_drift_feature_status(
+        self,
+        qc_lowess_module,
+        monkeypatch,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": [
+                    "A_QC1", "A_QC2", "A_QC3", "A_QC4", "A_QC5", "SampleA",
+                    "B_QC1", "B_QC2", "B_QC3", "B_QC4", "B_QC5", "SampleB",
+                ],
+                "Sample_Type": [
+                    "QC", "QC", "QC", "QC", "QC", "Exposure",
+                    "QC", "QC", "QC", "QC", "QC", "Control",
+                ],
+                "Batch": ["A", "A", "A", "A", "A", "A", "B", "B", "B", "B", "B", "B"],
+                "Injection_Order": list(range(1, 13)),
+            }
+        )
+        istd_df = pd.DataFrame(
+            [
+                {
+                    "FeatureID": "100.1/5.0",
+                    "A_QC1": 100.0,
+                    "A_QC2": 100.5,
+                    "A_QC3": 99.8,
+                    "A_QC4": 100.1,
+                    "A_QC5": 100.2,
+                    "SampleA": 101.0,
+                    "B_QC1": 99.7,
+                    "B_QC2": 100.1,
+                    "B_QC3": 100.0,
+                    "B_QC4": 100.4,
+                    "B_QC5": 99.9,
+                    "SampleB": 100.8,
+                }
+            ]
+        )
+        istd_df.attrs["sample_columns"] = list(istd_df.columns[1:])
+
+        def fake_apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensities, debug_flag=None):
+            return list(all_intensities), {
+                "status": "no_drift_detected",
+                "trend_validation": {
+                    "trend_pvalue": 0.5,
+                    "trend_tau": 0.02,
+                    "r_squared": 0.02,
+                    "rmse": 1.0,
+                },
+                "valid_qc_count": len(qc_orders),
+                "removed_outlier_count": 0,
+                "outlier_filter_applied": False,
+                "normalized_rmse": 0.02,
+                "target_strategy": "batch_local_fit_median",
+                "clamped_ratio": 0.0,
+                "outside_qc_range_count": 0,
+                "frac_used": 0.5,
+                "qc_cv_for_frac": 10.0,
+                "frac_strategy": "moderate_cv",
+            }
+
+        monkeypatch.setattr(
+            qc_lowess_module,
+            "apply_lowess_correction",
+            fake_apply_lowess_correction,
+        )
+
+        _, _, _, trend_stats_df, decision_stats, _ = qc_lowess_module.perform_lowess_normalization(
+            istd_df,
+            sample_info_df,
+        )
+
+        assert decision_stats["success"] == 0
+        assert decision_stats["no_drift_detected"] == 1
+        assert decision_stats["partial_success"] == 0
+        assert trend_stats_df.loc[0, "Decision_Status"] == "no_drift_detected"
 
     @pytest.mark.slow
     @pytest.mark.integration

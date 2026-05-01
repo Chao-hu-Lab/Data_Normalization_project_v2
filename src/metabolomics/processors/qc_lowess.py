@@ -768,6 +768,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         qc_corrected_values = {}
         trend_stats = []
         feature_all_success = 0
+        feature_no_drift = 0
         feature_partial_success = 0
         feature_no_success = 0
         frac_usage_counter = Counter()
@@ -834,7 +835,14 @@ def perform_lowess_normalization(istd_df, sample_info_df):
 
             stable_batch_statuses = {'success', 'no_drift_detected'}
             success_batches = sum(status in stable_batch_statuses for status in batch_statuses)
-            if success_batches == len(active_batches):
+            all_batches_no_drift = (
+                len(batch_statuses) == len(active_batches)
+                and all(status == 'no_drift_detected' for status in batch_statuses)
+            )
+            if all_batches_no_drift:
+                decision_stats['no_drift_detected'] += 1
+                feature_no_drift += 1
+            elif success_batches == len(active_batches):
                 decision_stats['success'] += 1
                 feature_all_success += 1
             elif success_batches > 0:
@@ -854,11 +862,14 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             feature_frac_used = safe_nanmedian(frac_values_clean)
             feature_qc_cv = safe_nanmedian(frac_cvs_clean)
             feature_frac_strategy = choose_frac_strategy(frac_strategy_buffer)
-            feature_status = (
-                'success' if success_batches == len(active_batches)
-                else 'partial_success' if success_batches > 0
-                else failure_key
-            )
+            if all_batches_no_drift:
+                feature_status = 'no_drift_detected'
+            elif success_batches == len(active_batches):
+                feature_status = 'success'
+            elif success_batches > 0:
+                feature_status = 'partial_success'
+            else:
+                feature_status = failure_key
 
             if np.isfinite(feature_frac_used):
                 frac_value_list.append(feature_frac_used)
@@ -892,6 +903,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         print("\n  ✓ 批次化 LOESS 校正完成")
         print("\n  📊 特徵層級統計：")
         print(f"     ✅ 全批次均成功: {feature_all_success} ({feature_all_success/len(istd_df)*100:.1f}%)")
+        print(f"     ○ 全批次無需校正: {feature_no_drift} ({feature_no_drift/len(istd_df)*100:.1f}%)")
         print(f"     ⚠️ 部分批次成功: {feature_partial_success} ({feature_partial_success/len(istd_df)*100:.1f}%)")
         print(f"     ❌ 無成功批次: {feature_no_success} ({feature_no_success/len(istd_df)*100:.1f}%)")
 
@@ -1907,10 +1919,14 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             ("Worsened features", int((cv_improvement < 0).sum()) if total_count else 0),
             ("Batch execution", ""),
             ("All-batch success", decision_stats.get('success', 0)),
+            ("All-batch no drift detected", decision_stats.get('no_drift_detected', 0)),
             ("Partial success", decision_stats.get('partial_success', 0)),
             (
                 "No successful batch",
-                total_count - decision_stats.get('success', 0) - decision_stats.get('partial_success', 0),
+                total_count
+                - decision_stats.get('success', 0)
+                - decision_stats.get('no_drift_detected', 0)
+                - decision_stats.get('partial_success', 0),
             ),
             ("Variance and fit diagnostics", ""),
             (
@@ -2156,14 +2172,19 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         # 校正決策統計
         feature_total = decision_stats.get('total_features', total_count)
         feature_success = decision_stats.get('success', 0)
+        feature_no_drift = decision_stats.get('no_drift_detected', 0)
         feature_partial = decision_stats.get('partial_success', 0)
-        feature_no_success = max(feature_total - feature_success - feature_partial, 0)
+        feature_no_success = max(
+            feature_total - feature_success - feature_no_drift - feature_partial,
+            0,
+        )
 
         def pct(value, base):
             return (value / base * 100) if base else 0
 
         print(f"\n📊 校正決策統計:")
         print(f"  ✅ 全批次成功: {feature_success} ({pct(feature_success, feature_total):.1f}%)")
+        print(f"  ○ 全批次無需校正: {feature_no_drift} ({pct(feature_no_drift, feature_total):.1f}%)")
         print(f"  ⚠️ 部分批次成功: {feature_partial} ({pct(feature_partial, feature_total):.1f}%)")
         print(f"  ❌ 無成功批次: {feature_no_success} ({pct(feature_no_success, feature_total):.1f}%)")
 
