@@ -184,31 +184,38 @@ LOWESS 校正的主要數據來源通常是 `ISTD_Correction`；若 Step 1 因 g
 
 ### 2. `SampleInfo` 工作表
 必要欄位：
-- **Type:** 必須包含 `QC` 標記
-- **Run_Order:** 記錄樣本分析順序（LOWESS 建模的關鍵）
+- **Sample_Name:** 必須能可靠對應資料工作表中的樣本欄
+- **Sample_Type:** 必須包含 `QC` 標記
+- **Injection_Order:** 記錄樣本分析順序（LOWESS 建模的關鍵）
+- **Batch:** 批次欄位；Step 2 會在 batch 內各自做 drift correction
 
-無正確 Run_Order 資訊，LOWESS 無法建立時間趨勢模型。
+無正確 `Injection_Order` 資訊，LOWESS 無法建立可靠的時間趨勢模型。若資料缺少部分 injection order，程式可補遞增序號並提出警告，但正式分析應在 `SampleInfo` 補齊。
 
 ## 🚀 使用方法
 
-### 獨立執行
-```bash
-python qc_lowess_correction.py
-```
-
 ### 程式化調用
 ```python
-from qc_lowess_correction import main
+from metabolomics.processors import qc_lowess
 
-results = main(input_file="ISTD_Results_20251027.xlsx")
-if results:
-    print(f"處理了 {results['metabolites']} 個代謝物")
+result = qc_lowess.main(input_file="Step1_ISTD_Results.xlsx")
+print(f"處理了 {result.metabolites} 個代謝物")
+print(f"輸出檔案: {result.output_path}")
 ```
 
 ## 📁 輸出結果
 
 ### Excel 檔案
-`QC_LOWESS_YYYYMMDD_HHMMSS.xlsx`
+GUI / workflow session output:
+
+```text
+Step2_QC_LOESS.xlsx
+```
+
+Direct processor output without `session_dir`:
+
+```text
+QC_LOESS_YYYYMMDD_HHMMSS.xlsx
+```
 
 **`QC LOESS result` 工作表**
 - 校正後主輸出

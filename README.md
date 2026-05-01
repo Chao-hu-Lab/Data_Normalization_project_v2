@@ -9,23 +9,20 @@ Metabolomics data normalization pipeline for mass spectrometry data processing.
 
 ### Dependencies
 
-```text
-pandas
-numpy
-scipy
-scikit-learn
-matplotlib
-openpyxl
-tkinter (built-in)
-psutil
-```
+Runtime dependencies are tracked in `requirements.txt`; developer/test dependencies are
+tracked in `requirements-dev.txt`. The core runtime includes pandas, NumPy, SciPy,
+statsmodels, scikit-learn, matplotlib, seaborn, openpyxl, and Tkinter.
 
 ## Installation
 
 1. Clone or download this repository
 2. Install dependencies:
    ```powershell
-   pip install pandas numpy scipy scikit-learn matplotlib openpyxl psutil
+   pip install -r requirements.txt
+   ```
+   For development and tests, use:
+   ```powershell
+   pip install -r requirements-dev.txt
    ```
 3. Run the GUI:
    ```powershell
@@ -93,24 +90,25 @@ The pipeline keeps four visible cards in the GUI, but the active scientific work
 |--------|-------------|
 | `Sample_Name` | Must match the data sheet sample columns reliably |
 | `Sample_Type` | e.g., `QC`, `Control`, `Exposed`, `Blank` |
+| `Injection_Order` | Run order used by Step 2 QC-LOESS |
 | `Batch` | Batch membership used for Step 2 batch-local QC handling and Step 4 diagnostics |
-| `Creatinine_mg_dL` | Optional reference column for `SpecNorm+PQN` normalization |
+| sixth column or later numeric reference | Optional reference column for `SpecNorm+PQN`, e.g. `Creatinine_mg_dL`, `DNA_mg/20uL`, protein amount, or another normalization adduct reference |
 
 ## Output Structure
 
 ```
 output/
-├── ISTD_Results_[timestamp].xlsx
-├── QC_LOESS_[timestamp].xlsx
-├── Normalized_PQN_[timestamp].xlsx / Normalized_SpecNorm_PQN_[timestamp].xlsx
-├── QC_Batch_Scaling_[timestamp].xlsx  # diagnostics-only, optional
-├── ISTD_Correction_plots/
-│   └── [timestamp]/
-│       └── *.png
-├── QC_LOESS_plots/
-├── Normalization_Figures/
-└── QC_Batch_Scaling_plots/
+└── run_[timestamp]/
+    ├── Step1_ISTD_Results.xlsx
+    ├── Step2_QC_LOESS.xlsx
+    ├── Step3_Normalized_PQN.xlsx / Step3_Normalized_SpecNorm_PQN.xlsx
+    ├── Step4_QC_Batch_Scaling.xlsx  # diagnostics-only, optional
+    └── plots/
+        └── *.png
 ```
+
+When individual processors are called without a session directory, they fall back to
+timestamped files under `output/`. GUI and workflow runs use the session layout above.
 
 ## Usage
 
@@ -147,6 +145,16 @@ Sample test files are provided in `data/`:
 
 For the current regression workflow and scenario-based smoke tests, see [docs/TESTING.md](docs/TESTING.md).
 
+## Documentation
+
+- [Testing Guide](docs/TESTING.md): recommended pytest layers and scenario validation order
+- [ISTD Algorithm](docs/algorithms/istd.md): Step 1 input contract, ISTD matching, and output interpretation
+- [QC-LOWESS Algorithm](docs/algorithms/qc_lowess.md): Step 2 batch-local drift correction contract
+- [Normalization Algorithm](docs/algorithms/normalization.md): Step 3 `PQN` / `SpecNorm+PQN` behavior and output sheets
+- [ComBat Archive](docs/algorithms/combat.md): historical note explaining why ComBat is outside the active DNP boundary
+- [Scenario Matrix Guide](data/scenario_matrices/SCENARIO_MATRIX_GUIDE.md): generated synthetic scenario matrix index
+- [PQN Reference Rules](docs/plans/2026-04-23-pqn-reference-selection-rules.md): current adductomics QC-reference policy
+
 ## Troubleshooting
 
 | Issue | Solution |
@@ -154,7 +162,7 @@ For the current regression workflow and scenario-based smoke tests, see [docs/TE
 | "Missing RawIntensity sheet" | Ensure Excel file has been VBA-formatted |
 | "No ISTD found" | Mark ISTD FeatureIDs with red font color |
 | "Sample name mismatch" | Verify `SampleInfo.Sample_Name` matches the data sheet columns; the workflow now fails closed instead of silently guessing |
-| "`SpecNorm+PQN` cannot start" | Ensure `SampleInfo` contains a usable reference column such as `Creatinine_mg_dL` |
+| "`SpecNorm+PQN` cannot start" | Ensure `SampleInfo` contains a usable numeric reference column in the sixth column or later, such as `Creatinine_mg_dL`, `DNA_mg/20uL`, protein amount, or another normalization adduct reference |
 | "Why didn't Auto Run execute Step 4?" | This is expected. The active workflow ends at Step 3; Step 4 is paused and available only for manual diagnostics |
 
 ## License

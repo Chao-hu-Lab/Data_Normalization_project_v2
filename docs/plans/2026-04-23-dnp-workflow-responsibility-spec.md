@@ -4,15 +4,20 @@
 
 - 2026-04-23
 
+**Status**
+
+- Implemented on `refactor/dnp-workflow-responsibility-core-overhaul` as of 2026-04-25.
+- Treat this as the design rationale for the current boundary, not as an open implementation TODO.
+
 **Context**
 
 `Data_Normalization_project_v2` (DNP) should focus on normalization and within-batch technical stabilization. Cross-batch statistical alignment is no longer part of DNP's active responsibility boundary.
 
-The current codebase still contains behaviors that blur these boundaries:
+This document was written before the responsibility refactor landed. The current branch now implements the intended boundaries:
 
-- Step 2 `QC-LOESS` is already batch-wise in its LOWESS fitting path, but it can still use a cross-batch `global_qc_median` target.
+- Step 2 `QC-LOESS` uses batch-local LOWESS targets and reports advanced per-feature status in `LOESS_summary`.
 - Step 3 `SpecNorm+PQN` uses QC samples when building a PQN reference spectrum, but it is not a batch-correction module.
-- Step 4 `QC Batch Scaling` performs cross-batch alignment using per-batch QC medians, which is not theoretically valid when each batch uses its own pooled QC material rather than a shared QC reference.
+- Step 4 `QC Batch Scaling` is paused for active scientific correction and remains available only through explicit diagnostics-only execution.
 
 This document defines the intended responsibility boundary for each active DNP step.
 
@@ -84,7 +89,8 @@ Step 2 is valid even when each batch has its own pooled QC material, because the
 
 - `SpecNorm` divides only real samples by a per-sample reference value from `SampleInfo`.
 - QC samples are excluded from the `SpecNorm` division stage.
-- `PQN` currently prefers a QC-derived global reference spectrum when QC quality is acceptable; otherwise it falls back to a global median reference.
+- `PQN` uses a QC-derived reference when QC samples exist.
+- If QC samples are missing, Step 3 stops with an explicit error; the all-sample robust median fallback is disabled for adductomics.
 
 **Must not do**
 
@@ -129,16 +135,16 @@ The current method assumes that per-batch QC medians are comparable across batch
 4. Step 4 should be **disabled or clearly labeled experimental / paused** until shared-QC assumptions are actually satisfied.
 5. Cross-batch model-based correction such as `ComBat` belongs outside DNP's active normalization boundary.
 
-## Immediate Consequences for the Codebase
+## Implementation Outcome
 
-- Remove or disable active workflow dependence on Step 4 scaling outputs.
-- Retain Step 4 diagnostic plots only if they are relabeled as diagnostics rather than normalization proof.
-- Refactor Step 2 so its correction target is batch-local instead of global.
-- Clarify in Step 3 reporting that `SpecNorm+PQN` is not a batch-correction stage.
+- Active workflow dependence on Step 4 scaling output has been removed.
+- Step 4 diagnostic plots are retained behind explicit diagnostics-only execution.
+- Step 2 correction targets are batch-local.
+- Step 3 reporting states which PQN reference strategy was used and warns that QC use does not imply batch correction.
 
-## Documentation Updates Required
+## Documentation Contract
 
-- README workflow description should mark Step 4 as paused / deprecated.
+- README workflow description should mark Step 4 as paused / diagnostics-only.
 - Step 2 docs should describe QC-LOESS as batch-local drift correction only.
 - Step 3 docs should clarify that QC use in PQN does not imply batch-aware correction.
-- Any legacy language that implies DNP performs mature cross-batch correction should be removed.
+- Any legacy language that implies DNP performs mature cross-batch correction should remain archived or be removed from active docs.

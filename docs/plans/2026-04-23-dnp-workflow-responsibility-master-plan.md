@@ -2,6 +2,8 @@
 
 > **For Claude:** Treat this file as the single execution plan for the refactor. Use the three 2026-04-23 planning docs as design references, but drive implementation order, test updates, and documentation updates from this file only.
 
+**Status:** Implemented on `refactor/dnp-workflow-responsibility-core-overhaul` as of 2026-04-25. Keep this file as the execution record for the refactor; use README, `docs/algorithms/*.md`, and `docs/plans/2026-04-23-pqn-reference-selection-rules.md` for current user/developer guidance.
+
 **Goal:** Refactor DNP so the active workflow cleanly matches the new responsibility boundary: Step 2 is a batch-local QC drift correction module, Step 3 is a concentration normalization module with explicit PQN reference selection rules, and Step 4 is paused as an active scientific correction step while retaining diagnostics where justified.
 
 **Architecture:** Keep the current processor split (`istd.py`, `qc_lowess.py`, `normalization.py`, `qc_batch_scaling.py`) and refactor in place. Do not introduce a new workflow framework. Instead, tighten each step's contract, then rewire GUI, adapter, README, and tests so all workflow surfaces agree on the new scientific boundary.
@@ -46,7 +48,7 @@ uv run pytest tests/unit/test_qc_lowess.py -q
 ```
 
 Expected:
-FAIL because the current implementation still accepts `global_qc_median`, lacks pre-apply drift gating, and does not expose the required reporting fields.
+Originally expected to fail because the pre-refactor implementation still accepted `global_qc_median`, lacked pre-apply drift gating, and did not expose the required reporting fields.
 
 ### Task 2: Remove cross-batch target leakage from Step 2
 

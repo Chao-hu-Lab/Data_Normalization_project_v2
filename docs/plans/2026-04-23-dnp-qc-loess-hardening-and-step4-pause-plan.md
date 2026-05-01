@@ -4,9 +4,14 @@
 
 - 2026-04-23
 
+**Status**
+
+- Implemented on `refactor/dnp-workflow-responsibility-core-overhaul` as of 2026-04-25.
+- This file is retained as historical implementation rationale, not as the current open work queue.
+
 **Context**
 
-This plan converts the current DNP implementation into a cleaner responsibility split:
+This plan converted the DNP implementation into a cleaner responsibility split:
 
 - Step 2 remains the active QC-based drift-correction stage, but is hardened so the implementation matches the scientific intent and its own documentation more closely.
 - Step 4 `QC Batch Scaling` is paused as an active scaling step because its cross-batch anchor assumption is not satisfied in the current experimental design.
@@ -38,7 +43,7 @@ The plan below is implementation-oriented and intended for a follow-up coding se
    - docs claim IQR-based QC outlier handling
    - docs claim weak-trend features should skip correction
    - docs claim correction-factor limits should be enforced
-   - current implementation does not fully enforce those behaviors
+   - pre-refactor implementation did not fully enforce those behaviors
 
 3. **Edge extrapolation risk**
    - interpolation outside fitted QC range currently uses edge values directly

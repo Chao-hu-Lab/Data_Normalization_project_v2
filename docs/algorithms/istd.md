@@ -112,29 +112,35 @@ Score = 0.60 × RT差異(標準化)
 - **數據欄位:** 各樣本的原始強度值
 
 ### 2. `SampleInfo` 工作表
-- **必要欄位:** `SampleName`, `Type`
-- **Type 標記:** 必須包含 `QC` 標記以識別品質管制樣本
+- **必要欄位:** `Sample_Name`, `Sample_Type`
+- **建議欄位:** `Injection_Order`, `Batch`，供後續 Step 2/Step 4 使用
+- **Sample_Type 標記:** 必須包含 `QC` 標記以識別品質管制樣本
 
 ## 🚀 使用方法
 
-### 獨立執行
-```bash
-python istd_correction.py
-```
-
 ### 程式化調用
 ```python
-from istd_correction import main
+from metabolomics.processors import istd
 
-results = main(input_file="your_data.xlsx")
-if results:
-    print(f"處理完成: {results['metabolites']} 個代謝物")
+result = istd.main(input_file="your_data.xlsx")
+print(f"處理完成: {result.metabolites} 個代謝物")
+print(f"輸出檔案: {result.output_path}")
 ```
 
 ## 📁 輸出結果
 
 ### Excel 結果檔案
-`ISTD_Results_YYYYMMDD_HHMMSS.xlsx`
+GUI / workflow session output:
+
+```text
+Step1_ISTD_Results.xlsx
+```
+
+Direct processor output without `session_dir`:
+
+```text
+ISTD_Results_YYYYMMDD_HHMMSS.xlsx
+```
 
 **ISTD_Correction 工作表:**
 - 校正前後強度數據
@@ -218,7 +224,7 @@ pandas, numpy, openpyxl, scikit-learn, matplotlib, scipy
 ## 📝 注意事項
 
 1. **內標標記:** 確保 RawIntensity 工作表第一欄的內標特徵 ID 已標記為紅色字體
-2. **QC 樣本:** SampleInfo 必須正確標記 QC 樣本（Type 欄位）
+2. **QC 樣本:** SampleInfo 必須正確標記 QC 樣本（`Sample_Type` 欄位）
 3. **特徵 ID 格式:** 必須為 `m/z/RT` 格式，例如 `123.456/1.23`
 4. **最低樣本數:** 建議至少 5 個 QC 樣本以確保統計檢定有效
 
