@@ -1068,7 +1068,7 @@ class TestConcentrationNormOutput:
         step4_result = conc_norm_module.main(input_file=str(input_path))
         step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get("output_path")
 
-        result_df = pd.read_excel(step4_output, sheet_name="PQN_Result")
+        result_df = pd.read_excel(step4_output, sheet_name="PQN_Result", keep_default_na=False)
 
         assert result_df["Mz/RT"].tolist() == ["Sample_Type", "100.1/1.0", "200.2/2.0", "300.3/3.0"]
         assert result_df["tumor_ratio"].tolist() == ["na", 0.75, 0.25, 0.50]

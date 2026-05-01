@@ -8,7 +8,12 @@ import pandas as pd
 import re
 from typing import Collection, Dict, List, Optional, Tuple
 
-from .constants import NON_SAMPLE_COLUMNS, STAT_COLUMN_KEYWORDS, SAMPLE_TYPE_ALIASES
+from .constants import (
+    NON_SAMPLE_COLUMNS,
+    STAT_COLUMN_KEYWORDS,
+    SAMPLE_TYPE_ALIASES,
+    is_non_sample_column,
+)
 
 
 def _normalized_stat_keywords() -> List[str]:
@@ -391,7 +396,7 @@ def identify_sample_columns(
         col_norm = normalize_sample_name(col)
 
         # Skip known non-sample columns
-        if col_norm in non_sample_lower:
+        if is_non_sample_column(col) or col_norm in non_sample_lower:
             continue
 
         # Match against SampleInfo
@@ -435,7 +440,7 @@ def identify_candidate_sample_columns(
     for col in df.columns:
         col_norm = normalize_sample_name(col)
 
-        if col_norm in non_sample_lower:
+        if is_non_sample_column(col) or col_norm in non_sample_lower:
             continue
 
         if any(keyword and keyword in col_norm for keyword in stat_keywords):

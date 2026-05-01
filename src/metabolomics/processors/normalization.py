@@ -12,7 +12,16 @@ import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde, spearmanr, wilcoxon
 
 from metabolomics.utils.plotting import setup_matplotlib
-from metabolomics.utils.constants import SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS, NON_SAMPLE_COLUMNS, resolve_sheet_name
+from metabolomics.utils.constants import (
+    SHEET_NAMES,
+    DATETIME_FORMAT_FULL,
+    VALIDATION_THRESHOLDS,
+    COHENS_D_THRESHOLDS,
+    CV_QUALITY_THRESHOLDS,
+    NON_SAMPLE_COLUMNS,
+    is_non_sample_column,
+    resolve_sheet_name,
+)
 from metabolomics.utils.sample_classification import (
     build_sample_info_mapping as shared_build_sample_info_mapping,
     identify_candidate_sample_columns,
@@ -2290,7 +2299,7 @@ def save_normalization_results(
         normalized_headers = [cell.value for cell in ws_normalized[1]]
         normalized_header_map = {name: idx + 1 for idx, name in enumerate(normalized_headers) if name}
         for col_name in normalized_headers:
-            if not col_name or col_name in NON_SAMPLE_COLUMNS:
+            if not col_name or is_non_sample_column(col_name):
                 continue
             apply_number_format(ws_normalized, normalized_header_map[col_name], '0.00E+00')
 
@@ -2352,7 +2361,7 @@ def save_normalization_results(
             preserved_headers = [cell.value for cell in ws_preserved[1]]
             preserved_header_map = {name: idx + 1 for idx, name in enumerate(preserved_headers) if name}
             for col_name in preserved_headers:
-                if not col_name or col_name in NON_SAMPLE_COLUMNS:
+                if not col_name or is_non_sample_column(col_name):
                     continue
                 apply_number_format(ws_preserved, preserved_header_map[col_name], '0.00E+00')
 

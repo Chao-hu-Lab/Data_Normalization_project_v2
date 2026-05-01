@@ -20,10 +20,14 @@ from .constants import (
     SHEET_NAMES,
     VALIDATION_THRESHOLDS,
     NON_SAMPLE_COLUMNS,
+    STEP4_METADATA_COLUMNS,
     STAT_COLUMN_KEYWORDS,
     SAMPLE_TYPE_ALIASES,
     DATETIME_FORMAT_FULL,
     DATETIME_FORMAT_SHORT,
+    get_step4_metadata_columns,
+    is_non_sample_column,
+    is_step4_metadata_column,
 )
 
 # File I/O

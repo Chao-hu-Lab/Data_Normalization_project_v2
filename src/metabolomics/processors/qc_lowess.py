@@ -25,6 +25,7 @@ from metabolomics.utils.constants import (
     DATETIME_FORMAT_FULL,
     FEATURE_ID_COLUMN,
     CV_QUALITY_THRESHOLDS,
+    is_non_sample_column,
 )
 from metabolomics.utils.sample_classification import (
     normalize_sample_name,
@@ -2013,7 +2014,7 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             apply_header_fill(worksheet)
 
             for col_name in header:
-                if not col_name or col_name in NON_SAMPLE_COLUMNS:
+                if not col_name or is_non_sample_column(col_name):
                     continue
                 apply_number_format(worksheet, header_map[col_name], scientific_format)
 
