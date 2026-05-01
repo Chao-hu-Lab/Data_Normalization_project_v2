@@ -962,7 +962,7 @@ class TestConcentrationNormOutput:
     """Tests for output validation."""
 
     @staticmethod
-    def _write_step4_input_workbook(workbook_path, include_marker=True):
+    def _write_step4_input_workbook(workbook_path, include_marker=True, include_step4_metadata=False):
         raw_df = pd.DataFrame(
             {
                 "Mz/RT": ["Sample_Type", "100.1/1.0", "200.2/2.0", "300.3/3.0"],
@@ -978,6 +978,22 @@ class TestConcentrationNormOutput:
                 True,
                 False,
                 True,
+            ]
+
+        if include_step4_metadata:
+            raw_df["tumor_ratio"] = ["na", 0.75, 0.25, 0.50]
+            raw_df["QC_ratio"] = ["na", 1.0, 1.0, 1.0]
+            raw_df["Feature_Filter_Keep_Reasons"] = [
+                "Feature_Filter_Keep_Reasons",
+                "stable",
+                "stable|ratio_rescue",
+                "mnar",
+            ]
+            raw_df["Imputation_Tag_Reasons"] = [
+                "Imputation_Tag_Reasons",
+                "",
+                "low_overall_detection",
+                "structural_absence|low_overall_detection",
             ]
 
         sample_info_df = pd.DataFrame(
@@ -1034,6 +1050,41 @@ class TestConcentrationNormOutput:
         result_df = pd.read_excel(step4_output, sheet_name="PQN_Result", nrows=1)
 
         assert "is_Presence_Absence_Marker" not in result_df.columns
+
+    def test_main_preserves_step4_metadata_contract_columns_in_pqn_result(
+        self,
+        conc_norm_module,
+        output_dir,
+    ):
+        input_path = os.path.join(output_dir, "step4_metadata_contract_input.xlsx")
+        if os.path.exists(input_path):
+            os.remove(input_path)
+        self._write_step4_input_workbook(
+            input_path,
+            include_marker=True,
+            include_step4_metadata=True,
+        )
+
+        step4_result = conc_norm_module.main(input_file=str(input_path))
+        step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get("output_path")
+
+        result_df = pd.read_excel(step4_output, sheet_name="PQN_Result")
+
+        assert result_df["Mz/RT"].tolist() == ["Sample_Type", "100.1/1.0", "200.2/2.0", "300.3/3.0"]
+        assert result_df["tumor_ratio"].tolist() == ["na", 0.75, 0.25, 0.50]
+        assert result_df["QC_ratio"].tolist() == ["na", 1.0, 1.0, 1.0]
+        assert result_df["Feature_Filter_Keep_Reasons"].tolist() == [
+            "Feature_Filter_Keep_Reasons",
+            "stable",
+            "stable|ratio_rescue",
+            "mnar",
+        ]
+        assert result_df["Imputation_Tag_Reasons"].tolist() == [
+            "Imputation_Tag_Reasons",
+            "",
+            "low_overall_detection",
+            "structural_absence|low_overall_detection",
+        ]
 
     @pytest.mark.slow
     @pytest.mark.integration
