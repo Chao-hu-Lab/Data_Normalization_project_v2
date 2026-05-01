@@ -423,6 +423,47 @@ class TestConcentrationNormHelpers:
         assert info["reference_strategy"] == "SpecNorm_PQN"
         assert info["scale_back_strategy"] == "none"
 
+    def test_find_correction_column_prefers_dna_concentration_over_injection_volume(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "Sample_A", "Sample_B"],
+                "Method_Sample_Name": ["QC display", "Sample A display", "Sample B display"],
+                "Sample_Type": ["QC", "Exposure", "Normal"],
+                "Injection_Order": [1, 2, 3],
+                "Batch": ["A", "A", "A"],
+                "Injection_Volume": [20, 20, 20],
+                "DNA_mg/20uL": [None, 8.57, 14.92],
+            }
+        )
+
+        correction_col, correction_type = conc_norm_module.find_correction_column(sample_info_df)
+
+        assert correction_col == "DNA_mg/20uL"
+        assert correction_type == "Normalization_adduct"
+
+    def test_find_correction_column_rejects_injection_volume_when_no_reference_exists(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "Sample_A", "Sample_B"],
+                "Method_Sample_Name": ["QC display", "Sample A display", "Sample B display"],
+                "Sample_Type": ["QC", "Exposure", "Normal"],
+                "Injection_Order": [1, 2, 3],
+                "Batch": ["A", "A", "A"],
+                "Injection_Volume": [20, 20, 20],
+            }
+        )
+
+        correction_col, correction_type = conc_norm_module.find_correction_column(sample_info_df)
+
+        assert correction_col is None
+        assert correction_type is None
+
     def test_enhanced_pqn_normalization_prefers_qc_single_batch_when_step2_stats_are_stable(
         self,
         conc_norm_module,
