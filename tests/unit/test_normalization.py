@@ -1,5 +1,5 @@
 """
-Tests for Concentration_Normalization_v2 module (Step 4).
+Tests for Concentration_Normalization_v2 module (Step 3).
 
 These tests verify:
 1. Input validation (requires Step 3 output format)
@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from metabolomics.utils.constants import SHEET_NAMES
+from metabolomics.utils.sample_classification import identify_sample_columns
 
 
 class TestConcentrationNormInput:
@@ -38,7 +39,6 @@ class TestConcentrationNormHelpers:
     ):
         assert conc_norm_module.get_summary_sheet_name("PQN") == "PQN_summary"
         assert conc_norm_module.get_summary_sheet_name("SpecNorm_PQN") == "SpecNorm_PQN_summary"
-        assert conc_norm_module.get_summary_sheet_name("SampleSpecific") == "SpecNorm_PQN_summary"
         assert conc_norm_module.get_summary_sheet_name("CustomMethod") == "CustomMethod_summary"
 
     def test_canonicalize_normalization_method_accepts_specnorm_aliases(
@@ -48,7 +48,6 @@ class TestConcentrationNormHelpers:
         assert conc_norm_module.canonicalize_normalization_method("PQN") == "PQN"
         assert conc_norm_module.canonicalize_normalization_method("SpecNorm+PQN") == "SpecNorm_PQN"
         assert conc_norm_module.canonicalize_normalization_method("SpecNorm_PQN") == "SpecNorm_PQN"
-        assert conc_norm_module.canonicalize_normalization_method("SampleSpecific") == "SpecNorm_PQN"
 
     def test_determine_correction_sheet_accepts_legacy_qc_lowess_name(
         self,
@@ -79,7 +78,7 @@ class TestConcentrationNormHelpers:
         assert selected_name == SHEET_NAMES["qc_lowess"]
         assert selected_df is step2_df
 
-    def test_get_all_sample_columns_excludes_ratio_and_stat_columns(
+    def test_identify_sample_columns_excludes_ratio_and_stat_columns(
         self,
         conc_norm_module,
     ):
@@ -105,11 +104,11 @@ class TestConcentrationNormHelpers:
             }
         )
 
-        sample_columns = conc_norm_module.get_all_sample_columns(data_df, sample_info_df)
+        sample_columns, _ = identify_sample_columns(data_df, sample_info_df)
 
         assert sample_columns == ["Normal_A", "Benign_A", "Exposure_A", "QC_1"]
 
-    def test_get_all_sample_columns_avoids_unknown_ratio_pseudo_samples(
+    def test_identify_sample_columns_avoids_unknown_ratio_pseudo_samples(
         self,
         conc_norm_module,
     ):
@@ -133,7 +132,7 @@ class TestConcentrationNormHelpers:
             }
         )
 
-        sample_columns = conc_norm_module.get_all_sample_columns(data_df, sample_info_df)
+        sample_columns, _ = identify_sample_columns(data_df, sample_info_df)
         col_to_info_row = conc_norm_module.build_sample_info_mapping(sample_columns, sample_info_df)
         sample_types = [
             conc_norm_module._lookup_sample_type(sample, sample_info_df, col_to_info_row, default="Unknown")
@@ -142,7 +141,7 @@ class TestConcentrationNormHelpers:
 
         assert "UNKNOWN" not in sample_types
 
-    def test_get_all_sample_columns_excludes_presence_absence_marker(
+    def test_identify_sample_columns_excludes_presence_absence_marker(
         self,
         conc_norm_module,
     ):
@@ -162,7 +161,7 @@ class TestConcentrationNormHelpers:
             }
         )
 
-        sample_columns = conc_norm_module.get_all_sample_columns(data_df, sample_info_df)
+        sample_columns, _ = identify_sample_columns(data_df, sample_info_df)
 
         assert sample_columns == ["Sample_A", "Sample_B", "QC_1"]
 
@@ -295,7 +294,7 @@ class TestConcentrationNormHelpers:
         assert cleaned["Metric"].dtype.kind in {"f", "i"}
         assert cleaned.loc[1, "Metric"] == pytest.approx(3.2)
 
-    def test_sample_specific_normalization_handles_pathological_reference_values(
+    def test_specnorm_reference_division_handles_pathological_reference_values(
         self,
         conc_norm_module,
     ):
@@ -314,7 +313,7 @@ class TestConcentrationNormHelpers:
             ]
         )
 
-        corrected, info = conc_norm_module.sample_specific_normalization(
+        corrected, info = conc_norm_module.specnorm_reference_division(
             data_matrix,
             sample_info_df,
             sample_columns,
@@ -331,7 +330,7 @@ class TestConcentrationNormHelpers:
         assert info["ref_valid_count"] == 2
         assert info["ref_median"] == pytest.approx(2525.0)
 
-        corrected_no_valid, info_no_valid = conc_norm_module.sample_specific_normalization(
+        corrected_no_valid, info_no_valid = conc_norm_module.specnorm_reference_division(
             data_matrix,
             sample_info_df,
             sample_columns,
@@ -397,6 +396,20 @@ class TestConcentrationNormHelpers:
             sample_columns,
             np.array([np.nan, 50.0, 100.0], dtype=float),
             correction_col_name="Creatinine_mg_dL",
+            step2_advanced_stats_df=pd.DataFrame(
+                {
+                    "Mz/RT": ["100.1/1.0", "200.2/2.0"],
+                    "Decision_Status": ["success", "no_drift_detected"],
+                    "Valid_QC_Count": [5, 5],
+                    "Removed_QC_Outliers": [0, 0],
+                    "Outside_QC_Range_Count": [0, 0],
+                    "Trend_pvalue": [0.42, 0.51],
+                    "Kendall_Tau": [0.04, 0.02],
+                    "LOESS_R2": [0.03, 0.02],
+                    "LOESS_RMSE": [3.2, 1.1],
+                    "Normalized_RMSE": [0.03, 0.02],
+                }
+            ),
         )
 
         assert normalized == pytest.approx(
@@ -409,6 +422,353 @@ class TestConcentrationNormHelpers:
         )
         assert info["reference_strategy"] == "SpecNorm_PQN"
         assert info["scale_back_strategy"] == "none"
+
+    def test_enhanced_pqn_normalization_prefers_qc_single_batch_when_step2_stats_are_stable(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "QC_2", "QC_3", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "A", "A", "A"],
+            }
+        )
+        sample_columns = ["QC_1", "QC_2", "QC_3", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 101.0, 99.0, 200.0, 210.0],
+                [50.0, 51.0, 49.0, 80.0, 82.0],
+            ],
+            dtype=float,
+        )
+        step2_advanced_stats_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0", "200.2/2.0"],
+                "Decision_Status": ["success", "no_drift_detected"],
+                "Valid_QC_Count": [6, 6],
+                "Removed_QC_Outliers": [0, 0],
+                "Outside_QC_Range_Count": [0, 0],
+                "Trend_pvalue": [0.42, 0.51],
+                "Kendall_Tau": [0.04, 0.02],
+                "LOESS_R2": [0.03, 0.02],
+                "LOESS_RMSE": [3.2, 1.1],
+                "Normalized_RMSE": [0.03, 0.02],
+            }
+        )
+
+        _, info = conc_norm_module.enhanced_pqn_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            step2_advanced_stats_df=step2_advanced_stats_df,
+        )
+
+        assert info["reference_strategy"] == "QC_REFERENCE"
+        assert "single-batch" in info["reference_rationale"].lower()
+
+    def test_enhanced_pqn_normalization_uses_qc_reference_when_step2_stats_show_unstable_qc(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "QC_2", "QC_3", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "A", "A", "A"],
+            }
+        )
+        sample_columns = ["QC_1", "QC_2", "QC_3", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 130.0, 70.0, 200.0, 210.0],
+                [50.0, 70.0, 30.0, 80.0, 82.0],
+            ],
+            dtype=float,
+        )
+        step2_advanced_stats_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0", "200.2/2.0"],
+                "Decision_Status": ["unstable_correction_factors", "insufficient_improvement"],
+                "Valid_QC_Count": [5, 5],
+                "Removed_QC_Outliers": [1, 0],
+                "Outside_QC_Range_Count": [1, 0],
+                "Trend_pvalue": [0.001, 0.004],
+                "Kendall_Tau": [0.82, 0.76],
+                "LOESS_R2": [0.88, 0.79],
+                "LOESS_RMSE": [52.0, 40.0],
+                "Normalized_RMSE": [0.34, 0.29],
+            }
+        )
+
+        _, info = conc_norm_module.enhanced_pqn_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            step2_advanced_stats_df=step2_advanced_stats_df,
+        )
+
+        assert info["reference_strategy"] == "QC_REFERENCE"
+        assert "all-sample fallback" in info["reference_rationale"].lower()
+
+    def test_step2_contract_edge_ratio_ignores_missing_outside_range_counts(
+        self,
+        conc_norm_module,
+    ):
+        step2_advanced_stats_df = pd.DataFrame(
+            {
+                "Decision_Status": ["success", "success", "success"],
+                "Valid_QC_Count": [6, 6, 6],
+                "Removed_QC_Outliers": [0, 0, 0],
+                "Outside_QC_Range_Count": [0, np.nan, 1],
+                "Trend_pvalue": [0.42, 0.51, 0.48],
+                "Kendall_Tau": [0.04, 0.02, 0.03],
+                "LOESS_R2": [0.03, 0.02, 0.04],
+                "LOESS_RMSE": [3.2, 1.1, 2.4],
+                "Normalized_RMSE": [0.03, 0.02, 0.04],
+            }
+        )
+
+        summary = conc_norm_module._summarize_step2_contract(step2_advanced_stats_df)
+
+        assert summary["edge_extrapolation_ratio"] == pytest.approx(0.5)
+
+    def test_step2_contract_edge_ratio_fails_closed_when_outside_range_counts_missing(
+        self,
+        conc_norm_module,
+    ):
+        step2_advanced_stats_df = pd.DataFrame(
+            {
+                "Decision_Status": ["success", "no_drift_detected"],
+                "Valid_QC_Count": [6, 6],
+                "Removed_QC_Outliers": [0, 0],
+                "Outside_QC_Range_Count": [np.nan, np.nan],
+                "Trend_pvalue": [0.42, 0.51],
+                "Kendall_Tau": [0.04, 0.02],
+                "LOESS_R2": [0.03, 0.02],
+                "LOESS_RMSE": [3.2, 1.1],
+                "Normalized_RMSE": [0.03, 0.02],
+            }
+        )
+
+        summary = conc_norm_module._summarize_step2_contract(step2_advanced_stats_df)
+
+        assert np.isnan(summary["edge_extrapolation_ratio"])
+        assert summary["qc_stable"] is False
+
+    def test_enhanced_pqn_normalization_uses_qc_reference_for_nonshared_multibatch_qc_design(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_A1", "QC_A2", "QC_B1", "QC_B2", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "B", "B", "A", "B"],
+            }
+        )
+        sample_columns = ["QC_A1", "QC_A2", "QC_B1", "QC_B2", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 101.0, 98.0, 99.0, 200.0, 180.0],
+                [50.0, 51.0, 49.0, 50.0, 80.0, 78.0],
+            ],
+            dtype=float,
+        )
+        step2_advanced_stats_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0", "200.2/2.0"],
+                "Decision_Status": ["success", "success"],
+                "Valid_QC_Count": [6, 6],
+                "Removed_QC_Outliers": [0, 0],
+                "Outside_QC_Range_Count": [0, 0],
+                "Trend_pvalue": [0.61, 0.55],
+                "Kendall_Tau": [0.02, 0.03],
+                "LOESS_R2": [0.02, 0.04],
+                "LOESS_RMSE": [2.1, 1.5],
+                "Normalized_RMSE": [0.02, 0.03],
+            }
+        )
+
+        _, info = conc_norm_module.enhanced_pqn_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            step2_advanced_stats_df=step2_advanced_stats_df,
+        )
+
+        assert info["reference_strategy"] == "QC_REFERENCE"
+        assert "not proven shared" in info["reference_rationale"].lower()
+        assert "all-sample fallback" in info["reference_rationale"].lower()
+
+    def test_enhanced_pqn_normalization_uses_qc_reference_for_shared_multibatch_qc_names(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": [
+                    "Pooled_QC_1",
+                    "Pooled_QC_2",
+                    "Pooled_QC_3",
+                    "Pooled_QC_4",
+                    "Sample_A",
+                    "Sample_B",
+                ],
+                "Sample_Type": ["QC", "QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "B", "B", "A", "B"],
+            }
+        )
+        sample_columns = ["Pooled_QC_1", "Pooled_QC_2", "Pooled_QC_3", "Pooled_QC_4", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 101.0, 99.0, 100.0, 200.0, 198.0],
+                [50.0, 51.0, 49.0, 50.0, 80.0, 79.0],
+            ],
+            dtype=float,
+        )
+        step2_advanced_stats_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0", "200.2/2.0"],
+                "Decision_Status": ["success", "success"],
+                "Valid_QC_Count": [6, 6],
+                "Removed_QC_Outliers": [0, 0],
+                "Outside_QC_Range_Count": [0, 0],
+                "Trend_pvalue": [0.61, 0.55],
+                "Kendall_Tau": [0.02, 0.03],
+                "LOESS_R2": [0.02, 0.04],
+                "LOESS_RMSE": [2.1, 1.5],
+                "Normalized_RMSE": [0.02, 0.03],
+            }
+        )
+
+        _, info = conc_norm_module.enhanced_pqn_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            step2_advanced_stats_df=step2_advanced_stats_df,
+        )
+
+        assert info["reference_strategy"] == "QC_REFERENCE"
+        assert info["qc_shared_across_batches"] is True
+        assert "shared-qc evidence" in info["reference_rationale"].lower()
+        assert "all-sample fallback" in info["reference_rationale"].lower()
+
+    def test_enhanced_pqn_normalization_raises_when_batch_metadata_is_missing(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "QC_2", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC", "Exposure", "Control"],
+            }
+        )
+        sample_columns = ["QC_1", "QC_2", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 101.0, 200.0, 210.0],
+                [50.0, 51.0, 80.0, 82.0],
+            ],
+            dtype=float,
+        )
+
+        with pytest.raises(ValueError, match="Batch"):
+            conc_norm_module.enhanced_pqn_normalization(
+                data_matrix,
+                sample_info_df,
+                sample_columns,
+            )
+
+    def test_enhanced_pqn_normalization_uses_qc_reference_when_step2_contract_is_missing_in_single_batch(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "QC_2", "QC_3", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "A", "A", "A"],
+            }
+        )
+        sample_columns = ["QC_1", "QC_2", "QC_3", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 101.0, 99.0, 200.0, 210.0],
+                [50.0, 51.0, 49.0, 80.0, 82.0],
+            ],
+            dtype=float,
+        )
+
+        _, info = conc_norm_module.enhanced_pqn_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            step2_advanced_stats_df=None,
+        )
+
+        assert info["reference_strategy"] == "QC_REFERENCE"
+        assert info["step2_contract_available"] is False
+        assert "step 2 contract unavailable" in info["reference_rationale"].lower()
+        assert "all-sample fallback" in info["reference_rationale"].lower()
+
+    def test_enhanced_pqn_normalization_uses_qc_reference_when_step2_contract_is_missing_in_multibatch(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_A1", "QC_A2", "QC_B1", "QC_B2", "Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "B", "B", "A", "B"],
+            }
+        )
+        sample_columns = ["QC_A1", "QC_A2", "QC_B1", "QC_B2", "Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [100.0, 101.0, 98.0, 99.0, 200.0, 180.0],
+                [50.0, 51.0, 49.0, 50.0, 80.0, 78.0],
+            ],
+            dtype=float,
+        )
+
+        _, info = conc_norm_module.enhanced_pqn_normalization(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            step2_advanced_stats_df=None,
+        )
+
+        assert info["reference_strategy"] == "QC_REFERENCE"
+        assert info["step2_contract_available"] is False
+        assert "step 2 contract unavailable" in info["reference_rationale"].lower()
+
+    def test_enhanced_pqn_normalization_raises_without_qc_samples(
+        self,
+        conc_norm_module,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Sample_A", "Sample_B"],
+                "Sample_Type": ["Exposure", "Control"],
+                "Batch": ["A", "A"],
+            }
+        )
+        sample_columns = ["Sample_A", "Sample_B"]
+        data_matrix = np.array(
+            [
+                [200.0, 210.0],
+                [80.0, 82.0],
+            ],
+            dtype=float,
+        )
+
+        with pytest.raises(ValueError, match="QC samples"):
+            conc_norm_module.enhanced_pqn_normalization(
+                data_matrix,
+                sample_info_df,
+                sample_columns,
+            )
 
     def test_build_step4_summary_context_detects_upstream_step_status(
         self,
@@ -501,6 +861,52 @@ class TestConcentrationNormHelpers:
         assert "【整體評分】" not in report
         assert "標準化質量評分" not in report
 
+    def test_create_normalization_summary_report_includes_reference_rationale(
+        self,
+        conc_norm_module,
+    ):
+        quality_metrics = {
+            "median_cv_before": 20.0,
+            "mean_cv_before": 21.0,
+            "median_cv_after": 18.0,
+            "mean_cv_after": 19.0,
+            "cv_improvement": 2.0,
+            "cv_improvement_pct": 10.0,
+            "cv_improved_ratio": 60.0,
+            "cv_wilcoxon_stat": 10.0,
+            "cv_wilcoxon_pvalue": 0.04,
+            "total_cv_before": 40.0,
+            "total_cv_after": 30.0,
+            "total_cv_improvement": 10.0,
+            "sample_corr_mean_before": 0.9,
+            "sample_corr_mean_after": 0.91,
+            "sample_corr_std_before": 0.1,
+            "sample_corr_std_after": 0.09,
+            "data_range_before": 100.0,
+            "data_range_after": 95.0,
+        }
+        pqn_info = {
+            "reference_strategy": "QC_REFERENCE",
+            "reference_rationale": "Post-LOESS QC stability is limited; adductomics policy still uses QC-derived reference and disables all-sample fallback.",
+            "qc_count": 4,
+            "qc_cv": 12.0,
+            "real_count": 20,
+            "normalization_factors_real": np.array([0.7, 1.0, 1.2]),
+            "normalization_factors_qc": np.array([1.0]),
+        }
+
+        report = conc_norm_module.create_normalization_summary_report(
+            quality_metrics=quality_metrics,
+            method_name="PQN",
+            n_features=10,
+            n_samples=24,
+            pqn_info=pqn_info,
+            summary_context={"source_sheet_name": "QC LOESS result"},
+        )
+
+        assert "參考策略: QC_REFERENCE" in report
+        assert "參考理由: Post-LOESS QC stability is limited; adductomics policy still uses QC-derived reference and disables all-sample fallback." in report
+
 
 
     def test_save_normalization_results_uses_in_memory_preserved_dataframes(
@@ -578,6 +984,7 @@ class TestConcentrationNormOutput:
             {
                 "Sample_Name": ["QC_1", "QC_2", "Sample_A", "Sample_B"],
                 "Sample_Type": ["QC", "QC", "Exposure", "Normal"],
+                "Batch": ["A", "A", "A", "A"],
             }
         )
 
@@ -825,7 +1232,7 @@ class TestFullPipeline:
     @pytest.mark.slow
     @pytest.mark.integration
     def test_full_pipeline_completes(self, run_full_pipeline):
-        """Test that full pipeline completes without errors."""
+        """Test that the active pipeline completes through Step 3, with optional Step 4 diagnostics."""
         results = run_full_pipeline
 
         assert 'step1' in results, "Step 1 should complete"
@@ -837,8 +1244,10 @@ class TestFullPipeline:
         assert 'step3' in results, "Step 3 should complete"
         assert results['step3'] is not None, "Step 3 result should not be None"
 
-        assert 'step4' in results, "Step 4 should complete"
-        assert results['step4'] is not None, "Step 4 result should not be None"
+        assert 'step4' in results, "Step 4 diagnostics should still be available"
+        assert results['step4'] is not None, "Step 4 diagnostics result should not be None"
+        assert getattr(results['step4'], "extra", {}).get("diagnostics_only") is True
+        assert getattr(results['step4'], "extra", {}).get("active_scaling") is False
 
     @pytest.mark.slow
     @pytest.mark.integration

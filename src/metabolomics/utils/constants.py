@@ -57,8 +57,6 @@ SHEET_NAMES = {
     'qc_lowess_advanced': 'LOESS_summary',
     'qc_batch_scaling': 'QC_Batch_Scaling_result',
     'qc_batch_scaling_summary': 'QC_Batch_Scaling_summary',
-    'batch_effect': 'Batch_effect_result',
-    'batch_summary': 'Batch_Effect_summary',
     'concentration': 'ConcNormalization_Summary',
     'pqn_result': 'PQN_Result',
 }

@@ -9,23 +9,20 @@ Metabolomics data normalization pipeline for mass spectrometry data processing.
 
 ### Dependencies
 
-```text
-pandas
-numpy
-scipy
-scikit-learn
-matplotlib
-openpyxl
-tkinter (built-in)
-psutil
-```
+Runtime dependencies are tracked in `requirements.txt`; developer/test dependencies are
+tracked in `requirements-dev.txt`. The core runtime includes pandas, NumPy, SciPy,
+statsmodels, scikit-learn, matplotlib, seaborn, openpyxl, and Tkinter.
 
 ## Installation
 
 1. Clone or download this repository
 2. Install dependencies:
    ```powershell
-   pip install pandas numpy scipy scikit-learn matplotlib openpyxl psutil
+   pip install -r requirements.txt
+   ```
+   For development and tests, use:
+   ```powershell
+   pip install -r requirements-dev.txt
    ```
 3. Run the GUI:
    ```powershell
@@ -35,14 +32,14 @@ psutil
 
 ## Workflow Overview
 
-The pipeline consists of 4 sequential steps:
+The pipeline keeps four visible cards in the GUI, but the active scientific workflow now ends at Step 3.
 
-| Step | Module | Description |
-|------|--------|-------------|
-| 1 | ISTD Correction | Internal standard correction using weighted ISTD selection |
-| 2 | QC-LOESS | QC-based trend correction using LOESS smoothing |
-| 3 | Concentration Normalization | `PQN` or `SpecNorm+PQN` normalization |
-| 4 | QC Batch Scaling | QC batch median alignment after concentration normalization |
+| Step | Module | Active role | Description |
+|------|--------|-------------|-------------|
+| 1 | ISTD Correction | Active | Sample-level internal standard correction |
+| 2 | QC-LOESS | Active | Batch-local QC drift correction only |
+| 3 | Concentration Normalization | Active | `PQN` or `SpecNorm+PQN` concentration normalization |
+| 4 | QC Batch Scaling | Paused / diagnostics-only | Cross-batch QC diagnostics only, not an endorsed correction output |
 
 ### Step 1: ISTD Correction
 - Selects optimal ISTD for each metabolite based on RT proximity (60%), CV% (25%), intensity (10%), and m/z (5%)
@@ -50,20 +47,24 @@ The pipeline consists of 4 sequential steps:
 - Generates PCA plots with Hotelling T2 outlier detection
 
 ### Step 2: QC-LOESS
-- Applies locally weighted scatterplot smoothing based on QC samples
-- Performs Levene's test and Wilcoxon test for improvement validation
-- Only applies correction when CV% improvement >= 2%
+- Applies batch-local LOWESS fitting based on QC samples
+- Uses IQR QC outlier filtering, weak-trend gating, clamp reporting, and outside-range reporting
+- Treats stable features as `no_drift_detected` instead of forcing correction
+- Does not use cross-batch QC targets for alignment
 
 ### Step 3: Concentration Normalization
 - Supports both `PQN` and `SpecNorm+PQN`
-- `PQN` prefers QC-driven reference behavior when reliable and falls back to robust median summaries
+- `PQN` uses QC samples as the reference spectrum for adductomics-oriented trace analysis
+- Step 2 advanced statistics and batch design are reported as context, but do not trigger all-sample fallback
+- Workbooks without QC samples fail closed because all-sample robust median fallback is disabled
 - `SpecNorm+PQN` divides real samples by a reference column such as `Creatinine_mg_dL`, runs PQN, and keeps the resulting scale without multiplying values back by raw feature medians
 - Sample columns must map reliably to `SampleInfo`; unmapped or ambiguously matched sample names now fail closed
 
 ### Step 4: QC Batch Scaling
-- Builds batch membership from `SampleInfo`
-- Aligns batch-level QC medians after Step 3 normalization
-- Preserves Step 3 outputs while adding batch diagnostic plots and residual checks
+- Remains visible in the GUI as a manual diagnostics card
+- Default execution is paused for active scientific use
+- `diagnostics_only=True` can still emit residual analysis, QC alignment plots, and batch boxplots
+- Step 4 output is not the default final normalized workbook
 
 ## Input File Format
 
@@ -89,24 +90,25 @@ The pipeline consists of 4 sequential steps:
 |--------|-------------|
 | `Sample_Name` | Must match the data sheet sample columns reliably |
 | `Sample_Type` | e.g., `QC`, `Control`, `Exposed`, `Blank` |
-| `Batch` | (Optional) Batch number for batch effect correction |
-| `Creatinine_mg_dL` | Optional reference column for `SpecNorm+PQN` normalization |
+| `Injection_Order` | Run order used by Step 2 QC-LOESS |
+| `Batch` | Batch membership used for Step 2 batch-local QC handling and Step 4 diagnostics |
+| sixth column or later numeric reference | Optional reference column for `SpecNorm+PQN`, e.g. `Creatinine_mg_dL`, `DNA_mg/20uL`, protein amount, or another normalization adduct reference |
 
 ## Output Structure
 
 ```
 output/
-├── ISTD_Results_[timestamp].xlsx
-├── QC_LOESS_[timestamp].xlsx
-├── Normalized_PQN_[timestamp].xlsx / Normalized_SpecNorm_PQN_[timestamp].xlsx
-├── QC_Batch_Scaling_[timestamp].xlsx
-├── ISTD_Correction_plots/
-│   └── [timestamp]/
-│       └── *.png
-├── QC_LOESS_plots/
-├── Normalization_Figures/
-└── QC_Batch_Scaling_plots/
+└── run_[timestamp]/
+    ├── Step1_ISTD_Results.xlsx
+    ├── Step2_QC_LOESS.xlsx
+    ├── Step3_Normalized_PQN.xlsx / Step3_Normalized_SpecNorm_PQN.xlsx
+    ├── Step4_QC_Batch_Scaling.xlsx  # diagnostics-only, optional
+    └── plots/
+        └── *.png
 ```
+
+When individual processors are called without a session directory, they fall back to
+timestamped files under `output/`. GUI and workflow runs use the session layout above.
 
 ## Usage
 
@@ -118,8 +120,9 @@ Windows quick start: double-click `run_gui.bat`.
 
 
 1. Click **Browse** to select input file
-2. Click **Auto Run** to execute all steps, or run each step individually
-3. Use **Excel** and **Plot** buttons to view outputs
+2. Click **Auto Run** to execute the active workflow through Step 3, or run each step individually
+3. Use the Step 4 card only when you explicitly want diagnostics-only batch plots
+4. Use **Excel** and **Plot** buttons to view outputs
 
 ### CLI Mode (Individual Steps)
 ```python
@@ -128,10 +131,11 @@ from metabolomics.processors import istd, qc_lowess, qc_batch_scaling, normaliza
 result1 = istd.main(input_file="your_data.xlsx")
 result2 = qc_lowess.main(input_file=result1.output_path)
 result3 = normalization.main(input_file=result2.output_path, normalization_method="PQN")
-result4 = qc_batch_scaling.main(input_file=result3.output_path)
+# Optional diagnostics-only Step 4
+result4 = qc_batch_scaling.main(input_file=result3.output_path, diagnostics_only=True)
 ```
 
-Each step returns a `ProcessingResult`, so downstream steps should read `.output_path`.
+The active normalized result is `result3.output_path`. Each step returns a `ProcessingResult`, so downstream steps should read `.output_path`.
 
 ## Test Data
 
@@ -141,14 +145,25 @@ Sample test files are provided in `data/`:
 
 For the current regression workflow and scenario-based smoke tests, see [docs/TESTING.md](docs/TESTING.md).
 
+## Documentation
+
+- [Testing Guide](docs/TESTING.md): recommended pytest layers and scenario validation order
+- [ISTD Algorithm](docs/algorithms/istd.md): Step 1 input contract, ISTD matching, and output interpretation
+- [QC-LOWESS Algorithm](docs/algorithms/qc_lowess.md): Step 2 batch-local drift correction contract
+- [Normalization Algorithm](docs/algorithms/normalization.md): Step 3 `PQN` / `SpecNorm+PQN` behavior and output sheets
+- [ComBat Archive](docs/algorithms/combat.md): historical note explaining why ComBat is outside the active DNP boundary
+- [Scenario Matrix Guide](data/scenario_matrices/SCENARIO_MATRIX_GUIDE.md): generated synthetic scenario matrix index
+- [PQN Reference Rules](docs/plans/2026-04-23-pqn-reference-selection-rules.md): current adductomics QC-reference policy
+
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
 | "Missing RawIntensity sheet" | Ensure Excel file has been VBA-formatted |
 | "No ISTD found" | Mark ISTD FeatureIDs with red font color |
-| "Sample name mismatch" | Verify `SampleInfo.Sample_Name` matches the data sheet columns; Step 1 and Step 4 now stop instead of silently guessing |
-| "`SpecNorm+PQN` cannot start" | Ensure `SampleInfo` contains a usable reference column such as `Creatinine_mg_dL` |
+| "Sample name mismatch" | Verify `SampleInfo.Sample_Name` matches the data sheet columns; the workflow now fails closed instead of silently guessing |
+| "`SpecNorm+PQN` cannot start" | Ensure `SampleInfo` contains a usable numeric reference column in the sixth column or later, such as `Creatinine_mg_dL`, `DNA_mg/20uL`, protein amount, or another normalization adduct reference |
+| "Why didn't Auto Run execute Step 4?" | This is expected. The active workflow ends at Step 3; Step 4 is paused and available only for manual diagnostics |
 
 ## License
 

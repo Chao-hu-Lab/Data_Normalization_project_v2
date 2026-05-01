@@ -377,7 +377,11 @@ def run_full_pipeline(sample_input_file, istd_module, qc_lowess_module,
 
             if result3 and hasattr(result3, "output_path"):
                 # Step 4: QC Batch Scaling
-                result4 = qc_batch_scaling_module.main(input_file=result3.output_path, session_dir=session_dir)
+                result4 = qc_batch_scaling_module.main(
+                    input_file=result3.output_path,
+                    session_dir=session_dir,
+                    diagnostics_only=True,
+                )
                 results['step4'] = result4
 
     return results

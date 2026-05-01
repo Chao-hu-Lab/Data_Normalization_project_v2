@@ -1,14 +1,16 @@
-# QC-LOWESS 批次效應校正工具
+# QC-LOWESS 批次內 drift 校正工具
 
 ## 📋 概述
 
-本工具針對經過 ISTD 校正的代謝組學數據執行 QC-LOWESS (Locally Weighted Scatterplot Smoothing) 批次效應校正。透過分析 QC 樣本的時間序列變化，建立漂移趨勢模型並校正所有樣本，進一步提升數據穩定性。
+本工具針對經過 ISTD 校正的代謝組學數據執行 QC-LOWESS (Locally Weighted Scatterplot Smoothing) 的**批次內 run-order drift 校正**。它的責任邊界是分析每個 batch 內 QC 樣本的時間序列變化，建立 batch-local 漂移趨勢模型並校正同 batch 樣本，進一步提升數據穩定性。
+
+這一版的 Step 2 **不是 cross-batch alignment 模組**。它不應使用跨批次 pooled target，也不應被解讀為成熟的 batch harmonization 工具。
 
 ## 🎯 為什麼需要 QC-LOWESS？
 
 **ISTD vs LOWESS 的互補性:**
 
-ISTD 校正處理「空間」差異（樣本間的基質效應、離子化效率差異），而 LOWESS 處理「時間」差異（分析序列中的儀器漂移）。即使使用內標，質譜儀在長時間運行中仍可能因離子源污染、質量校準漂移等因素產生系統性訊號衰減或增強。QC 樣本作為時間錨點，讓我們能建模並校正這種時間相關的批次效應。
+ISTD 校正處理「樣本層級」差異（樣本間的基質效應、離子化效率差異），而 LOWESS 處理「時間序列」差異（分析序列中的儀器漂移）。即使使用內標，質譜儀在長時間運行中仍可能因離子源污染、質量校準漂移等因素產生系統性訊號衰減或增強。QC 樣本作為時間錨點，讓我們能建模並校正這種 batch-local 時間漂移。
 
 ## 💡 LOWESS 原理簡介
 
@@ -16,9 +18,9 @@ LOWESS 是一種非參數局部加權回歸方法。對於每個樣本位置，L
 
 ## 🔧 核心功能
 
-### 1. 動態 LOWESS 參數優化
+### 1. Batch-local target 與動態 LOWESS 參數
 
-根據 QC 樣本數量自動選擇最佳 `frac` 值：
+每個 feature 的 correction target 來自**當前 batch 的 QC 行為**，而不是跨批次 `global_qc_median`。在此基礎上，再根據 QC 樣本數量與穩定性自動選擇 `frac` 值：
 
 | QC 樣本數 | frac | 策略 |
 |-----------|------|------|
@@ -27,17 +29,17 @@ LOWESS 是一種非參數局部加權回歸方法。對於每個樣本位置，L
 | 12-19 | 0.6 | 中等局部敏感性 |
 | ≥ 20 | 0.4 | 高局部敏感性，捕捉細微變化 |
 
-此動態策略避免樣本數不足時過擬合，或樣本充足時過度平滑。
+此動態策略避免樣本數不足時過擬合，或樣本充足時過度平滑，同時維持 Step 2 僅做 batch-local drift correction 的角色。
 
-### 2. IQR 離群值檢測
+### 2. IQR 離群值檢測與擬合前 gate
 
 在 LOWESS 擬合前，使用四分位距 (IQR) 方法識別異常 QC 樣本：
 - 界限：Q1 - 1.5×IQR 至 Q3 + 1.5×IQR
 - 保護機制：移除後須保留至少 70% 的 QC 或最少 5 個
 
-這確保 LOWESS 不被極端值誤導，同時保留足夠數據點進行可靠擬合。
+這確保 LOWESS 不被極端值誤導，同時保留足夠數據點進行可靠擬合。若離群值移除後剩餘點數不足，feature 會標記為 `outlier_filtering_left_too_few_points` 而直接跳過校正。
 
-### 3. 趨勢顯著性驗證
+### 3. 趨勢顯著性驗證與 skip-correction
 
 並非所有代謝物都需要校正。工具會先驗證是否存在顯著的時間漂移趨勢：
 
@@ -68,7 +70,7 @@ R² = 1 - (殘差平方和 / 總平方和)
 - **R² = 0.5:** 中等擬合，趨勢線解釋 50% 的變異
 - **R² < 0.1:** 擬合不佳，可能無明顯趨勢或趨勢過於複雜
 
-**判斷邏輯:** 當 R² < 0.1 且 Mann-Kendall p ≥ 0.05 時，工具判定「無需校正」，保持原始數據不變。這避免了對穩定代謝物的過度校正。
+**判斷邏輯:** 當 trend 很弱、`Kendall's tau` 接近 0、`Trend_pvalue` 不顯著、`R²` 很低且 normalized drift amplitude 很小時，工具判定 `no_drift_detected`，保持原始數據不變。這避免了對穩定代謝物的過度校正。
 
 #### C. RMSE (均方根誤差)
 
@@ -84,7 +86,7 @@ RMSE = √[Σ(觀測值 - 擬合值)² / n]
 
 兩者結合使用，R² 告訴我們「趨勢捕捉得如何」，RMSE 告訴我們「偏差有多大」。
 
-### 4. 校正因子計算與限制
+### 4. 校正因子計算、clamp 與 edge reporting
 
 校正過程：
 1. 計算 QC 中位數作為「參考水平」
@@ -93,6 +95,13 @@ RMSE = √[Σ(觀測值 - 擬合值)² / n]
 4. 校正強度 = 原始強度 × 校正因子
 
 **安全限制:** 校正因子限制在 [0.5, 2.0] 範圍內，避免極端校正導致數據失真。
+
+此外，Step 2 會額外輸出：
+- `Clamped_Factor_Ratio`
+- `Outside_QC_Range_Count`
+- `Decision_Status`
+
+這些欄位是後續 Step 3 PQN reference selector 的正式上游契約，而不是僅供人工查看的附帶資訊。
 
 ### 5. 統計檢定框架
 
@@ -170,44 +179,63 @@ Levene's test 比較兩組數據的離散程度。它使用絕對偏差的 ANOVA
 
 輸入檔案應為**經過 ISTD 校正的 Excel 檔案**（來自 ISTD Correction 工具），必須包含：
 
-### 1. `ISTD_Correction` 工作表
-LOWESS 校正的主要數據來源，包含經 ISTD 校正後的代謝物強度。
+### 1. 上游資料工作表
+LOWESS 校正的主要數據來源通常是 `ISTD_Correction`；若 Step 1 因 gate skip，則可退回 `RawIntensity`。無論哪個來源，Step 2 都只對可用 analyte feature 做 batch-local drift correction。
 
 ### 2. `SampleInfo` 工作表
 必要欄位：
-- **Type:** 必須包含 `QC` 標記
-- **Run_Order:** 記錄樣本分析順序（LOWESS 建模的關鍵）
+- **Sample_Name:** 必須能可靠對應資料工作表中的樣本欄
+- **Sample_Type:** 必須包含 `QC` 標記
+- **Injection_Order:** 記錄樣本分析順序（LOWESS 建模的關鍵）
+- **Batch:** 批次欄位；Step 2 會在 batch 內各自做 drift correction
 
-無正確 Run_Order 資訊，LOWESS 無法建立時間趨勢模型。
+無正確 `Injection_Order` 資訊，LOWESS 無法建立可靠的時間趨勢模型。若資料缺少部分 injection order，程式可補遞增序號並提出警告，但正式分析應在 `SampleInfo` 補齊。
 
 ## 🚀 使用方法
 
-### 獨立執行
-```bash
-python qc_lowess_correction.py
-```
-
 ### 程式化調用
 ```python
-from qc_lowess_correction import main
+from metabolomics.processors import qc_lowess
 
-results = main(input_file="ISTD_Results_20251027.xlsx")
-if results:
-    print(f"處理了 {results['metabolites']} 個代謝物")
+result = qc_lowess.main(input_file="Step1_ISTD_Results.xlsx")
+print(f"處理了 {result.metabolites} 個代謝物")
+print(f"輸出檔案: {result.output_path}")
 ```
 
 ## 📁 輸出結果
 
 ### Excel 檔案
-`QC_LOWESS_YYYYMMDD_HHMMSS.xlsx`
+GUI / workflow session output:
 
-**QC LOWESS result 工作表:**
-- 校正前後強度數據
+```text
+Step2_QC_LOESS.xlsx
+```
+
+Direct processor output without `session_dir`:
+
+```text
+QC_LOESS_YYYYMMDD_HHMMSS.xlsx
+```
+
+**`QC LOESS result` 工作表**
+- 校正後主輸出
 - QC CV% 比較
-- 統計檢定 p 值 (配對 t、Levene's、Shapiro-Wilk)
-- 趨勢驗證指標 (Mann-Kendall p-value, Kendall's tau, R², RMSE)
-- 顯著性判定
-- LOWESS 參數 (frac, 移除的離群值數量)
+- feature-level 改善與檢定摘要
+
+**`LOESS_summary` 工作表**
+- `Decision_Status`
+- `Valid_QC_Count`
+- `Removed_QC_Outliers`
+- `Trend_pvalue`
+- `Kendall_Tau`
+- `LOESS_R2`
+- `LOESS_RMSE`
+- `Normalized_RMSE`
+- `Target_Strategy`
+- `Clamped_Factor_Ratio`
+- `Outside_QC_Range_Count`
+
+這個 advanced summary sheet 是 Step 2 -> Step 3 的正式資料契約。
 
 **顏色標記同 ISTD 工具:**
 🟠 橙色: CV%  |  🔵 淡藍色: 統計 p 值  |  🟣 淡紫色: 正態性  
@@ -226,9 +254,11 @@ if results:
 - 目標: QC CV% < 20% (可接受) 或 < 15% (良好)
 - 觀察整體改善分布
 
-**LOWESS_Trend_pvalue:**
-- p < 0.05: 存在顯著時間趨勢，LOWESS 校正必要
-- p ≥ 0.05: 無顯著趨勢，該代謝物可能本來就穩定
+**Decision_Status / LOWESS_Trend_pvalue:**
+- `success`: 有足夠證據支持 batch-local drift correction
+- `no_drift_detected`: feature 本來就穩定，保留原值
+- `insufficient_qc` / `all_qc_invalid`: QC 訊息不足，不做校正
+- `outlier_filtering_left_too_few_points`: QC 離群值移除後不再足夠擬合
 
 **LOWESS_R²:**
 - R² > 0.5: 擬合優良，趨勢捕捉良好

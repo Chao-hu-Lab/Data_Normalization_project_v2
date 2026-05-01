@@ -2,9 +2,11 @@
 
 ## 📋 概述
 
-這個工具是專門為代謝組學數據設計的濃度標準化程式。想像一下，當您收集了一大批尿液或血液樣本進行代謝組學分析時，每個樣本的「濃度」可能天差地別：有些人喝了很多水，尿液很稀釋；有些人水喝得少，尿液濃縮。這種濃度差異會掩蓋真正的生物學訊號，讓您難以比較不同樣本之間的代謝物變化。本工具的核心任務，就是將所有樣本調整到相同的「濃度基準」上，讓您可以公平地比較它們。
+這個工具是 DNP active workflow 的 Step 3，負責 `PQN` 或 `SpecNorm+PQN` 濃度 / 尺度標準化。它不是 cross-batch correction 模組，也不會把 Step 4 的 QC batch scaling 當成預設 final output。本工具的核心任務，是在 Step 1/Step 2 技術穩定化之後，依據 QC reference 與可用的樣本 reference 欄位，產生可供後續統計分析使用的 Step 3 normalized workbook。
 
 本工具採用的是**混合標準化策略**。Step 3 可以選擇單獨使用 PQN，或使用 `SpecNorm+PQN`：先用樣本特異性參考值做 SpecNorm division，再使用 PQN 處理整體代謝組學譜的尺度差異，最後保留 SpecNorm+PQN 的輸出尺度，不再以原始 feature 中位數乘回。這種策略同時處理「個體特異性變異」和「群體系統性變異」，並避免在 DNA、蛋白質等小 reference 值情境中把強度再乘一次強度。
+
+新版 Step 3 的責任邊界已明確收斂為 **concentration normalization**。它可以在條件合適時使用 QC 來建構 PQN reference，但不應被實作成 cross-batch correction，更不應把 non-shared QC 擴張成 global harmonization 工具。
 
 ## 🎯 為什麼我們需要濃度標準化？理解問題的本質
 
@@ -33,33 +35,28 @@
 
 您可能會問：既然標準化這麼重要，那麼是不是有一種「萬能」的標準化方法可以解決所有問題呢？很遺憾，答案是否定的。代謝組學數據的複雜性決定了我們需要結合多種策略。讓我解釋為什麼。
 
-**肌酐校正的強項與弱項。** 對於尿液樣本，肌酐（creatinine）是最常用的內源性參考物質。肌酐是肌肉代謝的產物，由腎臟穩定排泄，其尿液濃度與尿液的稀釋程度成正比。因此，將每個代謝物的強度除以該樣本的肌酐濃度，可以「標準化」到相同的尿液濃度基準。這個方法的優點是針對性強，能夠處理個體間的稀釋度差異。但它也有局限：肌酐本身可能受到肌肉量、飲食、腎功能等因素影響；而且，肌酐校正只能處理「相對濃度」，無法處理整體代謝組學譜的「絕對尺度」差異。
+**SpecNorm reference division 的強項與弱項。** `SpecNorm+PQN` 會先用 `SampleInfo` 中第 F 欄或之後的數值型 reference 欄位做樣本特異性 division。這個欄位可以是 `Creatinine_mg_dL`、`DNA_mg/20uL`、蛋白質含量，或其他實驗設計定義的 normalization adduct / reference。這一步能處理每個真實樣本自己的濃度、載量或萃取量差異，但不應被解讀成 batch correction。
 
-舉個例子：假設兩個樣本經過肌酐校正後，它們的葡萄糖濃度確實變得可比了。但如果其中一個樣本在採集過程中不小心混入了一些血液，那麼這個樣本的「整體代謝組學譜」就會異常放大。肌酐校正無法偵測和校正這種整體尺度的偏移。
+舉個例子：如果兩個 DNA adductomics 樣本的 DNA input 不同，直接比較原始強度會把樣本載量差異混入分析。`SpecNorm+PQN` 會先除以 DNA 或其他 reference 值，再用 PQN 處理整體 spectrum 的尺度差異。
 
 **PQN 的強項與弱項。** PQN (Probabilistic Quotient Normalization) 是一種群體導向的標準化方法。它的核心假設是：大部分代謝物在不同樣本間應該維持穩定的比例，只有少數代謝物會因為生物學差異而改變。基於這個假設，PQN 計算每個樣本相對於「參考譜」的整體稀釋因子，然後用這個因子來標準化所有代謝物。PQN 的優點是能夠處理整體尺度的系統性偏移，而且對極端值穩健（它使用中位數而非平均值）。但它的局限是：它是一種「一刀切」的方法，對所有樣本使用相同的標準化邏輯，無法針對性處理個體特異性的濃度差異。
 
-**混合策略的協同效應。** 現在您應該能理解為什麼我們需要混合策略了。肌酐校正處理「個體特異性」的濃度差異（比如患者 A 喝了很多水，患者 B 喝得少），而 PQN 處理「群體系統性」的尺度差異（比如某些樣本因為採集或處理問題導致整體放大或縮小）。兩者結合，就像是「先調焦距，再調曝光」，能夠更全面地校正數據，讓不同樣本真正回到可比較的基準上。
+**混合策略的協同效應。** SpecNorm division 處理樣本特異性的 reference 差異，而 PQN 處理整體 spectrum 的稀釋 / scale factor。兩者結合，就像是「先校正樣本載量，再校正整體譜尺度」，讓不同樣本回到更可比較的基準上。
 
-用一個生活化的比喻：如果您要比較不同國家的人均收入，首先您需要將它們換算成相同的貨幣（這就像肌酐校正，處理「單位」差異），然後您還需要考慮購買力平價（PPP），因為 1000 美元在美國和在印度的實際購買力完全不同（這就像 PQN，處理「尺度」差異）。只有同時考慮這兩個因素，您才能真正公平地比較不同國家的生活水準。
+用一個生活化的比喻：如果您要比較不同國家的人均收入，首先需要換算成相同貨幣（類似 SpecNorm 處理 reference 單位），再考慮購買力平價（類似 PQN 處理整體尺度）。兩者回答的是不同層次的可比性問題。
 
 ## 🔧 核心功能
 
-### 1. 智能 QC 品質評估
+### 1. Step 2 驅動的 reference strategy selector
 
-工具會自動評估 QC 樣本品質，決定 PQN 標準化的參考策略：
+工具現在會直接讀 Step 2 `LOESS_summary` / advanced statistics sheet，結合 batch 結構與 QC sharedness 回報 PQN 標準化的參考脈絡，而不是只看 `qc_count` 和 `qc_cv_median`。
 
-**評估標準：**
-```
-IF QC數量 ≥ 3 且 QC中位數CV% < 30%
-  → 使用 QC 作為 PQN 參考（最優策略）
-ELSE IF QC數量 ≥ 1
-  → 使用有限 QC 作為參考（次優策略）
-ELSE
-  → 使用穩健中位數作為參考（備用策略）
-```
+目前的主策略包括：
+- `QC_REFERENCE`: 有 QC 樣本時，以 QC median spectrum 作為 PQN reference
 
-**為什麼 QC 優先？** QC 樣本是混合的標準樣本，理論上代表「平均代謝組學譜」，作為 PQN 參考比個別樣本更穩定且無偏。
+Adductomics 目前採微量分析政策：不論 Step 2 LOESS 後的穩定性如何，都不退回 all-sample robust median。Step 2 contract、QC sharedness 與 batch 設計會保留在 report 中作為解讀脈絡，但不再觸發全樣本 reference fallback。
+
+如果工作簿沒有 QC 樣本，Step 3 會明確中止，而不是用所有樣本建立 robust median reference。
 
 ### 2. 混合標準化流程
 
@@ -69,9 +66,9 @@ ELSE
 - **QC 樣本：** 從 `Sample_Type` 欄位或樣本名稱識別
 - **真實樣本：** 非 QC 的生物樣本
 
-#### 步驟 2: SpecNorm division（僅真實樣本）
+#### 步驟 2: SpecNorm reference division（僅真實樣本）
 
-**原理：** 肌酐是腎臟代謝的穩定產物，其尿液濃度與尿液稀釋度成正比。透過標準化到肌酐，可以消除尿液濃度的影響。
+**原理：** 使用 `SampleInfo` 中的數值型 reference 欄位，將真實樣本強度除以該樣本的 reference 值。QC 樣本不參與這個 division，因為 QC 通常沒有樣本特異性的生物 reference。
 
 **校正公式：**
 ```
@@ -79,11 +76,11 @@ SpecNorm 強度 = 原始強度 / 該樣本參考值
 ```
 
 **實例：**
-- 樣本 A 肌酐 = 50 mg/dL（稀釋尿液）
-- 樣本 B 肌酐 = 200 mg/dL（濃縮尿液）
-校正後，樣本 A 的代謝物強度會除以 50，樣本 B 會除以 200。舊版曾在這一步再乘回參考值中位數，也曾在 PQN 完成後進行 feature-specific scale-back；新版兩者都不做，避免把已經合理的 SpecNorm+PQN 強度再次放大。
+- 樣本 A `DNA_mg/20uL` = 1.5
+- 樣本 B `DNA_mg/20uL` = 3.0
+校正後，樣本 A 的特徵強度會除以 1.5，樣本 B 會除以 3.0。舊版曾在這一步再乘回參考值中位數，也曾在 PQN 完成後進行 feature-specific scale-back；新版兩者都不做，避免把已經合理的 SpecNorm+PQN 強度再次放大。
 
-**注意：** QC 樣本不進行肌酐校正，因為 QC 通常已是標準化混合樣本。
+**注意：** QC 樣本不進行 SpecNorm reference division，因為 QC 通常是混合或技術樣本，沒有對應的個體 reference。
 
 #### 步驟 3: PQN 標準化（所有樣本）
 
@@ -93,7 +90,7 @@ PQN 假設大部分代謝物在樣本間應該維持穩定比例，只有少數�
 
 **演算法步驟：**
 
-1. **選擇參考樣本：** QC 中位數（或穩健中位數）
+1. **選擇參考樣本：** 使用 QC median spectrum；Step 2 advanced stats 與 batch/QC 設計只作為 report context
 2. **計算商數矩陣：** 每個樣本的每個代謝物除以參考值
 3. **估算稀釋因子：** 取每個樣本的商數中位數
 4. **標準化：** 每個樣本除以其稀釋因子
@@ -186,7 +183,15 @@ final_ij = pqn_after_specnorm_ij
 - **範圍：** 過大範圍（如 0.1-10）可能表示樣本間稀釋差異極大
 - **離群值：** 極端因子（< 0.5 或 > 2.0）的樣本需要注意
 
-### 4. 豐富的視覺化輸出
+### 4. 與 Step 4 的新邊界
+
+Step 3 現在是 active scientific workflow 的終點。GUI export、bridge export、以及正常的 downstream workbook 選擇都應以 Step 3 output 為主：
+- `SpecNorm_PQN_Result`
+- `PQN_Result`
+
+`QC_Batch_Scaling_result` 只保留 legacy fallback 意義，不能再被當成預設 final normalized output。
+
+### 5. 豐富的視覺化輸出
 
 工具自動生成 6 類圖表，全面評估標準化效果：
 
@@ -221,66 +226,77 @@ final_ij = pqn_after_specnorm_ij
 ### 必要工作表
 
 **1. 數據工作表（按優先順序）：**
-- `Combat_Corrected`（ComBat 校正後，最優先）
 - `QC LOWESS result`（LOWESS 校正後）
 - `ISTD_Correction`（ISTD 校正後）
 - `RawIntensity`（原始數據）
+
+新版 active path 不再把 `Combat_Corrected` 或其他 cross-batch correction sheet 視為 Step 3 的預設上游。
 
 **2. SampleInfo 工作表：**
 必要欄位：
 - 第一欄：樣本名稱（必須與數據工作表列名匹配）
 - `Sample_Type`: 樣本類型（標記 QC 樣本，如 "QC", "QC1"）
-- 肌酐欄位：包含 "creatinine" 或 "肌酐" 關鍵字的欄位（用於肌酐校正）
+- `Batch`: 供 Step 3 判斷 batch 結構與 QC sharedness
+- 數值型 reference 欄位：第 F 欄（索引 5）或之後第一個可用的數值型欄位，用於 `SpecNorm+PQN`。欄名若包含 `creatinine` 會標示為 `Creatinine`，其他數值欄位會標示為 `Normalization_adduct`
+
+**3. Step 2 advanced statistics sheet：**
+- `LOESS_summary`（canonical）
+- 或 legacy `QC_LOESS_Advanced Statistics`
+
+Step 3 會從這張表讀取 `Decision_Status`, `Kendall_Tau`, `Trend_pvalue`, `LOESS_R2`, `LOESS_RMSE`, `Normalized_RMSE`, `Valid_QC_Count`, `Removed_QC_Outliers`, `Outside_QC_Range_Count` 等欄位。
 
 ### 注意事項
 
-- 肌酐值單位通常為 mg/dL 或 mmol/L
-- 肌酐值應為正數，缺失值會自動跳過
-- 建議至少 50% 的樣本有有效肌酐值
+- Reference 值必須是正數；缺失或無效值不會用於真實樣本的 SpecNorm division
+- 若選擇 `SpecNorm+PQN` 但找不到可用 reference 欄位，Step 3 會明確中止
+- 若只需要 QC-based PQN，請選擇 `PQN`
 
 ## 🚀 使用方法
 
-### 獨立執行
-```bash
-python normalization.py
-```
-
-執行後會提示選擇 Excel 檔案，並自動偵測肌酐欄位（或讓您手動選擇）。
-
 ### 程式化調用
 ```python
-from normalization import main
+from metabolomics.processors import normalization
 
-results = main(input_file="Combat_Corrected_20251027.xlsx")
-if results:
-    print(f"處理了 {results['metabolites']} 個代謝物")
-    print(f"CV% 改善: {quality_metrics['cv_improvement']:.2f}%")
+result = normalization.main(
+    input_file="Step2_QC_LOESS.xlsx",
+    normalization_method="SpecNorm+PQN",
+)
+print(f"處理了 {result.metabolites} 個代謝物")
+print(f"輸出檔案: {result.output_path}")
 ```
 
 ## 📁 輸出結果
 
 ### 輸出資料夾結構
+
+GUI / workflow session output:
+
+```text
+run_[timestamp]/
+├── Step3_Normalized_PQN.xlsx
+├── Step3_Normalized_SpecNorm_PQN.xlsx
+└── plots/
+    ├── Step3_CV_*.png
+    ├── Step3_RLE_*.png
+    ├── Step3_Density_*.png
+    ├── Step3_Dratio_*.png
+    └── Step3_Scatter_*.png  # SpecNorm+PQN only
 ```
-Normalization_Results_YYYYMMDD_HHMMSS/
-├── Normalized_Data_Mixed.xlsx        # 標準化後的數據
-├── Density_Plot_Mixed.png            # 密度分佈圖
-├── Boxplot_Mixed.png                 # 盒鬚圖
-├── Sample_Distribution_Mixed.png     # 樣本總強度
-├── CV_Distribution_Mixed.png         # CV% 分佈
-├── PCA_Comparison_Mixed.png          # PCA 對比
-└── Correlation_Heatmap_Mixed.png     # 相關性熱圖
-```
+
+Direct processor output without `session_dir` uses timestamped files under `output/`.
 
 ### Excel 檔案內容
 
-**Normalized_Data 工作表：**
+**`PQN_Result` / `SpecNorm_PQN_Result` 工作表：**
 - 標準化後的代謝物強度數據
-- 包含所有原始工作表（保留格式）
+- 保留 `Sample_Type` 資訊行（若上游資料包含）
 
-**Summary_Report 工作表：**
+**`PQN_summary` / `SpecNorm_PQN_summary` 工作表：**
 - 標準化方法說明
 - 品質評估指標
 - 參數設定記錄
+
+輸出 workbook 也會保留上游資料工作表與 `SampleInfo`，方便追溯 Step 3 的 before/after 指標來源。
 
 ## 🔍 結果解讀建議
 
@@ -323,7 +339,7 @@ Normalization_Results_YYYYMMDD_HHMMSS/
 
 **Sample Total Intensity:**
 - **理想：** 標準化後分布窄且集中
-- **警示：** 仍有樣本總強度差異大（可能肌酐校正不足）
+- **警示：** 仍有樣本總強度差異大（可能 reference division 或 PQN 尺度校正不足）
 
 **CV% Distribution:**
 - **理想：** 標準化後直方圖左移，峰值在 10-20% 區間
@@ -339,32 +355,32 @@ Normalization_Results_YYYYMMDD_HHMMSS/
 
 ## 💡 常見問題
 
-**Q: 什麼時候需要肌酐校正？**
+**Q: 什麼時候需要 `SpecNorm+PQN`？**
 
-僅當分析尿液代謝組學數據時需要。對於血清、血漿或組織樣本，不應使用肌酐校正。
+當每個真實樣本都有可信的數值型 reference 欄位時，例如尿液 creatinine、DNA input、蛋白質含量，或實驗定義的 normalization adduct。沒有這類 reference 時，請使用 `PQN`。
 
-**Q: 如果沒有肌酐數據怎麼辦？**
+**Q: 如果沒有 reference 欄位怎麼辦？**
 
-工具會偵測到缺少肌酐欄位，自動跳過肌酐校正步驟，僅執行 PQN 標準化。
+若選擇 `SpecNorm+PQN`，Step 3 會中止並要求補上可用欄位。若只想執行 PQN，請在 GUI 或程式化呼叫中選擇 `PQN`。
 
 **Q: 標準化後 CV% 反而上升？**
 
 可能原因：
 1. 原始數據已經過良好校正，標準化引入不必要調整
-2. 肌酐值不可靠（受藥物、疾病影響）
+2. Reference 欄位不可靠或不適合目前樣本
 3. QC 樣本品質不佳，PQN 參考不穩定
 
-建議：檢查肌酐值的分布和 QC CV%。若 QC CV% 很高（> 30%），考慮使用穩健中位數參考。
+建議：檢查 reference 值分布、QC CV%、以及 Step 2 `LOESS_summary`。目前 adductomics 政策不會自動 fallback 到 all-sample robust median；QC 不穩定會作為 report warning。
 
-**Q: 為什麼 QC 樣本不做肌酐校正？**
+**Q: 為什麼 QC 樣本不做 SpecNorm reference division？**
 
-QC 樣本通常是混合的標準樣本，已經過標準化處理，不需要再進行個體特異性的肌酐校正。對 QC 進行肌酐校正會引入不必要的變異。
+QC 樣本通常是混合或技術樣本，沒有個體 reference 值。對 QC 進行 reference division 會引入不必要的變異。
 
 **Q: PQN 標準化因子的合理範圍是多少？**
 
 一般在 0.5-2.0 之間。若某個樣本的因子 < 0.3 或 > 3.0，建議：
 1. 檢查該樣本的原始數據是否異常
-2. 確認肌酐值是否正確
+2. 確認 reference 值是否正確
 3. 考慮是否為真實的生物學極端樣本
 
 **Q: 標準化後應該做什麼？**
@@ -383,27 +399,27 @@ pandas, numpy, scipy, scikit-learn, matplotlib, seaborn, openpyxl
 ```
 
 ### 核心演算法
-- **肌酐校正：** 比例校正法（中位數標準化）
+- **SpecNorm reference division：** 真實樣本除以 per-sample reference 值
 - **PQN 標準化：** Dieterle et al. (2006) 的 PQN 演算法
 - **正態性檢定：** Shapiro-Wilk test (α = 0.05)
 - **相關性分析：** Spearman rank correlation
 
 ### 參數設定
-- QC 品質閾值：CV% < 30%, 數量 ≥ 3
-- 穩健中位數：排除極端 10% 樣本
+- PQN reference：有 QC 時使用 QC median spectrum；沒有 QC 時明確中止
+- Step 2 context：讀取 `LOESS_summary` 作為 report context，不觸發 all-sample fallback
 - 正態性顯著性水平：α = 0.05
 
 ## 📝 注意事項
 
-1. **樣本類型：** 肌酐校正僅適用於尿液樣本
-2. **肌酐值品質：** 確保肌酐測量準確（藥物、腎病可能影響）
+1. **Reference 欄位：** `SpecNorm+PQN` 需要每個真實樣本有可信的數值型 reference
+2. **Reference 值品質：** 確保 reference 測量準確，且符合目前實驗設計
 3. **QC 樣本：** 建議至少 3 個 QC 樣本以獲得穩定的 PQN 參考
-4. **數據前處理：** 建議先完成 ISTD、LOWESS、ComBat 校正
+4. **數據前處理：** 建議先完成 ISTD 與 QC-LOWESS。新版 active path 不再預設依賴 ComBat 或其他 cross-batch correction sheet
 5. **離群值處理：** 標準化前應先移除明顯的技術離群值
 
 ## 🔄 數據預處理流程建議
 
-完整的代謝組學數據預處理流程：
+完整的新版 active workflow：
 
 ```
 RawIntensity
@@ -412,9 +428,9 @@ RawIntensity
     ↓
 [2] QC-LOWESS (消除時間相關漂移)
     ↓
-[3] ComBat (消除批次效應) ← 多批次實驗需要
+[3] Normalization (標準化樣本濃度和尺度) ← 本工具
     ↓
-[4] Normalization (標準化樣本濃度和尺度) ← 本工具
+[4] QC Batch Scaling diagnostics-only (可選，不是 active correction)
     ↓
 [5] Data Transformation (log, Pareto) ← 統計分析前
     ↓
@@ -428,4 +444,4 @@ Statistical Analysis
 **版本:** v2.0  
 **更新:** 2025  
 **環境:** Python 3.8+  
-**適用樣本類型:** 尿液（肌酐校正） / 所有類型（僅 PQN）
+**適用樣本類型:** 有可信數值型 reference 的樣本（`SpecNorm+PQN`） / 有 QC reference 的樣本（`PQN`）

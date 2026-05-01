@@ -219,34 +219,6 @@ def safe_normalize(
         raise ValueError(f"Unknown normalization method: {method}")
 
 
-def get_valid_numeric_values(
-    row: pd.Series,
-    columns: List[str]
-) -> np.ndarray:
-    """
-    Extract valid numeric values from a row for specified columns.
-
-    Faster alternative to iterating with get_valid_values() in loops.
-
-    Args:
-        row: pandas Series (a row from a DataFrame)
-        columns: List of column names to extract
-
-    Returns:
-        numpy array of valid (finite, positive) values
-    """
-    values = []
-    for col in columns:
-        if col in row.index:
-            try:
-                val = float(row[col])
-                if np.isfinite(val) and val > 0:
-                    values.append(val)
-            except (ValueError, TypeError):
-                pass
-    return np.array(values)
-
-
 def extract_numeric_matrix(
     df: pd.DataFrame,
     columns: List[str],

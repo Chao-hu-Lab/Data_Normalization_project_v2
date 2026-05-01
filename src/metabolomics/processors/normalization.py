@@ -3,24 +3,20 @@ import numpy as np
 from pathlib import Path
 import warnings
 import os
+import re
 from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, Border
+from openpyxl.styles import Font, Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
 from datetime import datetime
 import matplotlib.pyplot as plt
-import seaborn as sns
-from copy import copy
-from scipy.stats import gaussian_kde, spearmanr, levene, wilcoxon
+from scipy.stats import gaussian_kde, spearmanr, wilcoxon
 
 from metabolomics.utils.plotting import setup_matplotlib
-from metabolomics.utils.constants import FONT_SIZES, SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS, NON_SAMPLE_COLUMNS, resolve_sheet_name
+from metabolomics.utils.constants import SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS, NON_SAMPLE_COLUMNS, resolve_sheet_name
 from metabolomics.utils.sample_classification import (
-    SampleClassifier,
     build_sample_info_mapping as shared_build_sample_info_mapping,
     identify_candidate_sample_columns,
-    identify_sample_columns,
     normalize_sample_name,
-    normalize_sample_type,
 )
 from metabolomics.utils.file_io import (
     build_plots_dir,
@@ -43,13 +39,11 @@ METHOD_ALIASES = {
     'SPECNORM+PQN': 'SpecNorm_PQN',
     'SPECNORM_PQN': 'SpecNorm_PQN',
     'SPECNORM PQN': 'SpecNorm_PQN',
-    'SAMPLESPECIFIC': 'SpecNorm_PQN',
 }
 
 NORMALIZATION_SUMMARY_SHEETS = {
     'PQN': 'PQN_summary',
     'SpecNorm_PQN': 'SpecNorm_PQN_summary',
-    'SampleSpecific': 'SpecNorm_PQN_summary',
 }
 SUMMARY_REPORT_SEPARATOR = "-" * 80
 
@@ -106,8 +100,218 @@ def build_sample_info_mapping(sample_columns, sample_info_df):
 
 # ==================== 標準化方法 ====================
 
+def _lookup_sample_info_row(sample, sample_info_df, col_to_info_row=None):
+    """Look up a SampleInfo row using mapping, exact name, then normalized name."""
+    if col_to_info_row and sample in col_to_info_row:
+        return col_to_info_row[sample]
+
+    sample_name_col = sample_info_df.columns[0]
+    exact_rows = sample_info_df[sample_info_df[sample_name_col] == sample]
+    if not exact_rows.empty:
+        return exact_rows.iloc[0]
+
+    norm_sample = normalize_sample_name(sample)
+    if not norm_sample:
+        return None
+
+    normalized_rows = sample_info_df[
+        sample_info_df[sample_name_col].map(normalize_sample_name) == norm_sample
+    ]
+    if normalized_rows.empty:
+        return None
+    return normalized_rows.iloc[0]
+
+def _parse_batch_labels(value):
+    """Parse batch labels from SampleInfo while tolerating simple delimiters."""
+    if pd.isna(value):
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    normalized = (
+        text.replace("|", ",")
+        .replace("/", ",")
+        .replace(";", ",")
+        .replace("+", ",")
+    )
+    return [part.strip() for part in normalized.split(",") if part.strip()]
+
+
+def _find_batch_column(sample_info_df):
+    """Return the Batch column name or raise when Step 3 batch metadata is missing."""
+    for col in sample_info_df.columns:
+        if "batch" in str(col).strip().lower():
+            return col
+    raise ValueError(
+        "SampleInfo must include a Batch column for Step 3 reference selection."
+    )
+
+
+def _derive_qc_name_family(sample_name):
+    """Derive a conservative QC material family key from sample naming."""
+    normalized_name = normalize_sample_name(sample_name)
+    if not normalized_name:
+        return None
+    if "qc" not in normalized_name and "pool" not in normalized_name:
+        return None
+    family = re.sub(r"\d+$", "", normalized_name)
+    return family or normalized_name
+
+
+def _infer_shared_qc_from_names(qc_samples, sample_batches, expected_batches):
+    """Prove shared QC only when each batch exposes at least one common QC name family."""
+    if not expected_batches:
+        return False, []
+
+    batch_to_families = {batch: set() for batch in expected_batches}
+    for sample in qc_samples:
+        family = _derive_qc_name_family(sample)
+        if family is None:
+            continue
+        for batch in sample_batches.get(sample, ()):
+            if batch in batch_to_families:
+                batch_to_families[batch].add(family)
+
+    if any(not families for families in batch_to_families.values()):
+        return False, []
+
+    shared_families = set.intersection(*batch_to_families.values())
+    return bool(shared_families), sorted(shared_families)
+
+
+def _analyze_batch_design(sample_columns, sample_info_df, col_to_info_row=None):
+    """Infer batch count and whether QC is shared across batches."""
+    batch_col = _find_batch_column(sample_info_df)
+    sample_batches = {}
+    for sample in sample_columns:
+        info_row = _lookup_sample_info_row(
+            sample,
+            sample_info_df,
+            col_to_info_row=col_to_info_row,
+        )
+        if info_row is None:
+            raise ValueError(
+                f"Missing SampleInfo row for sample '{sample}' while inferring Step 3 batch design."
+            )
+        raw_batch = info_row.get(batch_col)
+        memberships = _parse_batch_labels(raw_batch)
+        if not memberships:
+            raise ValueError(
+                f"Missing Batch metadata for sample '{sample}' in Step 3 batch-design analysis."
+            )
+        sample_batches[sample] = tuple(dict.fromkeys(memberships))
+
+    qc_samples = [
+        sample for sample in sample_columns
+        if _lookup_sample_type(sample, sample_info_df, col_to_info_row, default="UNKNOWN") == "QC"
+    ]
+    real_samples = [sample for sample in sample_columns if sample not in qc_samples]
+
+    all_batches = sorted({batch for batches in sample_batches.values() for batch in batches})
+    qc_batches = sorted({batch for sample in qc_samples for batch in sample_batches.get(sample, ())})
+    real_batches = sorted({batch for sample in real_samples for batch in sample_batches.get(sample, ())})
+    qc_shared_across_batches, shared_qc_name_families = _infer_shared_qc_from_names(
+        qc_samples,
+        sample_batches,
+        expected_batches=all_batches,
+    )
+    qc_shared_across_batches = (
+        len(all_batches) <= 1
+        or qc_shared_across_batches
+    )
+
+    return {
+        "batch_count": len(all_batches),
+        "all_batches": all_batches,
+        "qc_batches": qc_batches,
+        "real_batches": real_batches,
+        "qc_shared_across_batches": qc_shared_across_batches,
+        "shared_qc_name_families": shared_qc_name_families,
+    }
+
+
+def _summarize_step2_contract(step2_advanced_stats_df):
+    """Summarize Step 2 advanced statistics for Step 3 reference selection."""
+    required_columns = {
+        "Decision_Status",
+        "Valid_QC_Count",
+        "Removed_QC_Outliers",
+        "Outside_QC_Range_Count",
+        "Trend_pvalue",
+        "Kendall_Tau",
+        "LOESS_R2",
+        "LOESS_RMSE",
+        "Normalized_RMSE",
+    }
+    if step2_advanced_stats_df is None or step2_advanced_stats_df.empty:
+        return {
+            "available": False,
+            "missing_columns": sorted(required_columns),
+        }
+
+    missing_columns = sorted(required_columns - set(step2_advanced_stats_df.columns))
+    if missing_columns:
+        return {
+            "available": False,
+            "missing_columns": missing_columns,
+        }
+
+    decision_status = (
+        step2_advanced_stats_df["Decision_Status"].fillna("unknown").astype(str).str.strip()
+    )
+    stable_statuses = {"success", "no_drift_detected"}
+    stable_mask = decision_status.isin(stable_statuses)
+    normalized_rmse = pd.to_numeric(
+        step2_advanced_stats_df["Normalized_RMSE"], errors="coerce"
+    )
+    tau_values = pd.to_numeric(step2_advanced_stats_df["Kendall_Tau"], errors="coerce").abs()
+    trend_pvalues = pd.to_numeric(step2_advanced_stats_df["Trend_pvalue"], errors="coerce")
+    valid_qc_counts = pd.to_numeric(step2_advanced_stats_df["Valid_QC_Count"], errors="coerce")
+    outside_counts = pd.to_numeric(
+        step2_advanced_stats_df["Outside_QC_Range_Count"], errors="coerce"
+    )
+
+    stable_ratio = float(stable_mask.mean()) if len(decision_status) else np.nan
+    median_normalized_rmse = float(np.nanmedian(normalized_rmse))
+    median_abs_tau = float(np.nanmedian(tau_values))
+    median_trend_pvalue = float(np.nanmedian(trend_pvalues))
+    median_valid_qc_count = float(np.nanmedian(valid_qc_counts))
+    valid_outside_counts = outside_counts.dropna()
+    edge_extrapolation_ratio = (
+        float((valid_outside_counts > 0).mean())
+        if not valid_outside_counts.empty
+        else np.nan
+    )
+    qc_stable = bool(
+        np.isfinite(stable_ratio)
+        and stable_ratio >= 0.7
+        and np.isfinite(median_valid_qc_count)
+        and median_valid_qc_count >= VALIDATION_THRESHOLDS["min_qc_samples"]
+        and np.isfinite(median_normalized_rmse)
+        and median_normalized_rmse <= 0.10
+        and np.isfinite(median_abs_tau)
+        and median_abs_tau <= 0.20
+        and np.isfinite(median_trend_pvalue)
+        and median_trend_pvalue >= 0.05
+        and np.isfinite(edge_extrapolation_ratio)
+        and edge_extrapolation_ratio <= 0.25
+    )
+
+    return {
+        "available": True,
+        "missing_columns": [],
+        "qc_stable": qc_stable,
+        "stable_ratio": stable_ratio,
+        "median_normalized_rmse": median_normalized_rmse,
+        "median_abs_tau": median_abs_tau,
+        "median_trend_pvalue": median_trend_pvalue,
+        "median_valid_qc_count": median_valid_qc_count,
+        "edge_extrapolation_ratio": edge_extrapolation_ratio,
+    }
+
+
 def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns,
-                               col_to_info_row=None):
+                               col_to_info_row=None, step2_advanced_stats_df=None):
     """
     PQN 標準化：優先使用 QC 樣本作為參考
 
@@ -158,28 +362,52 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns,
     # ========== Step 2: 評估 QC 樣本質量 ==========
     qc_cv_median = np.nan
     reference_strategy = 'NONE'
+    reference_rationale = ""
+    batch_design = _analyze_batch_design(
+        sample_columns,
+        sample_info_df,
+        col_to_info_row=col_to_info_row,
+    )
+    step2_contract = _summarize_step2_contract(step2_advanced_stats_df)
 
-    if qc_count > 0:
-        qc_data = data_matrix[:, qc_indices]
-        qc_cv = calculate_rsd(qc_data)
-        qc_cv_median = np.nanmedian(qc_cv)
+    if qc_count <= 0:
+        raise ValueError(
+            "PQN requires QC samples for adductomics mode; all-sample robust median fallback is disabled."
+        )
 
-        if qc_count >= VALIDATION_THRESHOLDS['min_qc_samples'] and qc_cv_median < CV_QUALITY_THRESHOLDS['acceptable']:
-            reference_strategy = 'QC'
-        elif qc_count >= 1:
-            reference_strategy = 'QC_LIMITED'
-        else:
-            reference_strategy = 'ROBUST_MEDIAN'
+    qc_data = data_matrix[:, qc_indices]
+    qc_cv = calculate_rsd(qc_data)
+    qc_cv_median = np.nanmedian(qc_cv)
+    reference_strategy = 'QC_REFERENCE'
+    if not step2_contract['available']:
+        reference_rationale = (
+            "Step 2 contract unavailable; adductomics policy still uses QC-derived reference and disables all-sample fallback."
+        )
+    elif batch_design['batch_count'] > 1 and not batch_design['qc_shared_across_batches']:
+        reference_rationale = (
+            "Multi-batch QC is not proven shared; adductomics policy still uses available QC samples as reference and disables all-sample fallback."
+        )
+    elif batch_design['batch_count'] > 1:
+        reference_rationale = (
+            "Multi-batch shared-QC evidence recorded; adductomics policy uses QC-derived reference and disables all-sample fallback."
+        )
+    elif step2_contract['qc_stable']:
+        reference_rationale = (
+            "Single-batch design with stable post-LOESS QC uses a QC-derived reference."
+        )
     else:
-        reference_strategy = 'ROBUST_MEDIAN'
+        reference_rationale = (
+            "Post-LOESS QC stability is limited; adductomics policy still uses QC-derived reference and disables all-sample fallback."
+        )
 
     # 決定參考譜
-    if reference_strategy in ('QC', 'QC_LIMITED'):
+    if reference_strategy in ('QC', 'QC_LIMITED', 'QC_REFERENCE'):
         reference_sample = np.nanmedian(data_matrix[:, qc_indices], axis=1)
         print(f"  參考策略: {reference_strategy}（QC median CV%={qc_cv_median:.1f}%）")
     else:
-        reference_sample = np.nanmedian(data_matrix, axis=1)
-        print(f"  參考策略: {reference_strategy}（全樣本中位數）")
+        raise RuntimeError(f"Unsupported PQN reference strategy in adductomics mode: {reference_strategy}")
+    if reference_rationale:
+        print(f"  參考理由: {reference_rationale}")
 
     # 對所有樣本計算 quotient 並正規化
     quotients = data_matrix / reference_sample[:, np.newaxis]
@@ -198,11 +426,17 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns,
     # 返回資訊
     pqn_info = {
         'reference_strategy': reference_strategy,
+        'reference_rationale': reference_rationale,
         'qc_count': qc_count,
         'qc_cv': qc_cv_median,
         'real_count': real_count,
         'normalization_factors_real': normalization_factors_real,
         'normalization_factors_qc': normalization_factors_qc,
+        'step2_contract_available': step2_contract['available'],
+        'step2_contract_missing_columns': step2_contract.get('missing_columns', []),
+        'step2_qc_stable': step2_contract.get('qc_stable'),
+        'batch_count': batch_design['batch_count'],
+        'qc_shared_across_batches': batch_design['qc_shared_across_batches'],
     }
 
     return final_data, pqn_info
@@ -290,23 +524,10 @@ def specnorm_reference_division(data_matrix, sample_info_df, sample_columns,
     return final_data, spec_info
 
 
-def sample_specific_normalization(data_matrix, sample_info_df, sample_columns,
-                                  reference_values, col_to_info_row=None,
-                                  correction_col_name=None):
-    """Backward-compatible alias for the SpecNorm division stage."""
-    return specnorm_reference_division(
-        data_matrix,
-        sample_info_df,
-        sample_columns,
-        reference_values,
-        col_to_info_row=col_to_info_row,
-        correction_col_name=correction_col_name,
-    )
-
-
 def specnorm_pqn_normalization(data_matrix, sample_info_df, sample_columns,
                                reference_values, col_to_info_row=None,
-                               correction_col_name=None):
+                               correction_col_name=None,
+                               step2_advanced_stats_df=None):
     """Run SpecNorm division, then PQN without post-PQN scale-back."""
     specnorm_data, spec_info = specnorm_reference_division(
         data_matrix,
@@ -321,6 +542,7 @@ def specnorm_pqn_normalization(data_matrix, sample_info_df, sample_columns,
         sample_info_df,
         sample_columns,
         col_to_info_row=col_to_info_row,
+        step2_advanced_stats_df=step2_advanced_stats_df,
     )
     final_data = pqn_data.copy()
 
@@ -340,13 +562,6 @@ def specnorm_pqn_normalization(data_matrix, sample_info_df, sample_columns,
     print("  ✓ SpecNorm+PQN 完成（scale-back=none）")
     return final_data, hybrid_info
 
-
-def get_all_sample_columns(df, sample_info_df):
-    """
-    獲取所有樣本欄位（包含 QC，但排除統計欄位）
-    """
-    sample_columns, _ = identify_sample_columns(df, sample_info_df)
-    return [col for col in sample_columns if col in df.columns]
 
 def calculate_cohens_d(group1, group2):
     """
@@ -601,72 +816,6 @@ def evaluate_group_difference_preservation(original_data, normalized_data,
     }
 
 # ==================== 輔助函數 ====================
-
-def is_numeric_value(value):
-    """檢查值是否為有效的數值"""
-    if pd.isna(value):
-        return False
-    try:
-        float_val = float(value)
-        return float_val > 0
-    except (ValueError, TypeError):
-        return False
-
-def get_non_qc_columns(df, sample_info_df):
-    """獲取非QC樣本的欄位列表"""
-    non_qc_columns = []
-
-    # Vectorized sample type dict building (faster than iterrows)
-    sample_names = sample_info_df.iloc[:, 0].astype(str)
-    sample_types = sample_info_df.get('Sample_Type', pd.Series([''] * len(sample_info_df))).fillna('').astype(str).str.upper()
-    sample_type_dict = dict(zip(sample_names, sample_types))
-
-    for col in df.columns:
-        if col != df.columns[0]:
-            if col in sample_type_dict:
-                if sample_type_dict[col] != 'QC':
-                    non_qc_columns.append(col)
-            else:
-                if not col.upper().startswith('QC'):
-                    non_qc_columns.append(col)
-
-    return non_qc_columns
-
-def get_sample_columns_only(df, sample_info_df):
-    """
-    獲取純樣本欄位（排除QC和統計欄位）
-    """
-    # 排除的統計欄位關鍵字
-    exclude_keywords = [
-        'CV', 'Silhouette', 'Permutation', 'Correlation',
-        'R_squared', 'Improvement', 'Before', 'After',
-        'Original', 'Corrected', 'pvalue', 'p_value'
-    ]
-
-    sample_columns = []
-
-    # Vectorized sample type dict building (faster than iterrows)
-    sample_names = sample_info_df.iloc[:, 0].astype(str)
-    sample_types = sample_info_df.get('Sample_Type', pd.Series(['Unknown'] * len(sample_info_df))).fillna('Unknown').astype(str).str.upper()
-    sample_type_dict = dict(zip(sample_names, sample_types))
-
-    for col in df.columns:
-        if col == df.columns[0]:  # 跳過第一欄（特徵ID）
-            continue
-
-        # 檢查是否包含排除關鍵字
-        is_stat_column = any(keyword.lower() in str(col).lower() for keyword in exclude_keywords)
-
-        if not is_stat_column:
-            # 檢查是否為QC樣本
-            if col in sample_type_dict:
-                if sample_type_dict[col] != 'QC':
-                    sample_columns.append(col)
-            else:
-                if not col.upper().startswith('QC'):
-                    sample_columns.append(col)
-
-    return sample_columns
 
 def calculate_cv_per_feature(data_matrix):
     """
@@ -1455,6 +1604,8 @@ def create_normalization_summary_report(
         else:
             report.append("【PQN 參考樣本資訊】")
             report.append(f"參考策略: {strategy}")
+            if pqn_info.get("reference_rationale"):
+                report.append(f"參考理由: {pqn_info['reference_rationale']}")
 
             if pqn_info['qc_count'] > 0 and not np.isnan(pqn_info['qc_cv']):
                 report.append(f"QC 中位數 CV%: {pqn_info['qc_cv']:.2f}%")
@@ -1664,9 +1815,6 @@ def create_normalization_summary_report(
 
 # ==================== 檔案處理函數 ====================
 
-def select_file():
-    raise RuntimeError("input_file is required; GUI must provide the file path.")
-
 def load_excel_sheets(file_path):
     """載入Excel檔案的所有工作表"""
     try:
@@ -1844,7 +1992,8 @@ def _extract_reference_values(sample_columns, col_to_info_row, correction_col):
 def perform_normalization(data_df, sample_info_df, file_path,
                           plots_dir=None, source_sheet_name=None,
                           normalization_method='PQN', correction_col=None,
-                          available_sheet_names=None):
+                          available_sheet_names=None,
+                          step2_advanced_stats_df=None):
     """
     執行標準化處理
 
@@ -1913,12 +2062,14 @@ def perform_normalization(data_df, sample_info_df, file_path,
             data_matrix, sample_info_df, sample_columns,
             reference_values, col_to_info_row=col_to_info_row,
             correction_col_name=correction_col,
+            step2_advanced_stats_df=step2_advanced_stats_df,
         )
     else:
         # PQN（預設）
         normalized_data, pqn_info = enhanced_pqn_normalization(
             data_matrix, sample_info_df, sample_columns,
-            col_to_info_row=col_to_info_row
+            col_to_info_row=col_to_info_row,
+            step2_advanced_stats_df=step2_advanced_stats_df,
         )
 
     print(f"✓ 標準化完成")
@@ -2243,7 +2394,7 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
     session_dir : str or Path, optional
         Session directory for pipeline-aware output.
     normalization_method : str
-        'PQN' or 'SpecNorm_PQN'（由 GUI 傳入；SampleSpecific 為 legacy alias）
+        'PQN' or 'SpecNorm_PQN'（由 GUI 傳入）
 
     Returns:
     --------
@@ -2303,6 +2454,12 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
 
     print(f"✓ 使用資料工作表: {data_sheet_name}")
 
+    step2_advanced_stats_df = None
+    step2_advanced_sheet_name = resolve_sheet_name(sheet_names, "qc_lowess_advanced")
+    if step2_advanced_sheet_name is not None:
+        step2_advanced_stats_df = sheets[step2_advanced_sheet_name]
+        print(f"✓ 使用 Step 2 advanced stats: {step2_advanced_sheet_name}")
+
     # 提取 Sample_Type 資訊行（不參與數值計算，保存時回插）
     from metabolomics.utils.data_helpers import extract_sample_type_row
     feature_col = data_df.columns[0]
@@ -2327,6 +2484,7 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
         normalization_method=normalization_method,
         correction_col=correction_col,
         available_sheet_names=sheet_names,
+        step2_advanced_stats_df=step2_advanced_stats_df,
     )
 
     if result is None:

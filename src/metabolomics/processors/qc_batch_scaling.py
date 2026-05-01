@@ -157,6 +157,9 @@ def load_and_process_data(input_file):
 def scale_dataframe_by_qc_medians(data_df, sample_columns, batch_to_qc, batch_to_samples):
     """Apply QC median scaling feature by feature."""
     result_df = data_df.copy()
+    for sample in sample_columns:
+        if sample in result_df.columns:
+            result_df[sample] = pd.to_numeric(result_df[sample], errors="coerce").astype(float)
     invalid_median_counts = {batch: 0 for batch in batch_to_qc}
     total_features = len(data_df)
     progress_checkpoints = {
@@ -182,11 +185,22 @@ def scale_dataframe_by_qc_medians(data_df, sample_columns, batch_to_qc, batch_to
     return result_df, invalid_median_counts
 
 
-def build_summary_df(source_sheet_name, batch_to_qc, batch_to_samples, invalid_median_counts):
-    """Build a simple summary sheet for QC batch scaling."""
+def build_summary_df(
+    source_sheet_name,
+    batch_to_qc,
+    batch_to_samples,
+    invalid_median_counts,
+    *,
+    mode="diagnostics_only",
+    paused_reason="",
+):
+    """Build a diagnostic summary sheet for paused Step 4."""
     rows = [
         {"Section": "run", "Item": "source_sheet", "Value": source_sheet_name},
         {"Section": "run", "Item": "batch_count", "Value": len(batch_to_qc)},
+        {"Section": "run", "Item": "mode", "Value": mode},
+        {"Section": "run", "Item": "active_scaling", "Value": False},
+        {"Section": "run", "Item": "paused_reason", "Value": paused_reason},
     ]
 
     for batch in sorted(batch_to_samples):
@@ -659,11 +673,6 @@ def generate_step3_plots(
     return str(plots_dir)
 
 
-def generate_pca_plots(*args, **kwargs):
-    """Backward-compatible alias for the Step 3 diagnostics entry point."""
-    return generate_step3_plots(*args, **kwargs)
-
-
 def save_results_to_excel(
     source_df,
     result_df,
@@ -674,9 +683,9 @@ def save_results_to_excel(
     source_sheet_name,
     sample_type_row=None,
 ):
-    """Save the new Step 3 workbook, keeping only the selected upstream sheet."""
+    """Save a Step 4 diagnostics workbook, keeping the selected upstream sheet."""
     source_export = source_df.copy()
-    result_export = result_df.copy()
+    result_export = result_df.copy() if result_df is not None else None
 
     def _rename_feature_col_for_output(df):
         if "FeatureID" in df.columns and FEATURE_ID_COLUMN != "FeatureID":
@@ -684,16 +693,19 @@ def save_results_to_excel(
         return df
 
     source_export = _rename_feature_col_for_output(source_export)
-    result_export = _rename_feature_col_for_output(result_export)
+    if result_export is not None:
+        result_export = _rename_feature_col_for_output(result_export)
 
     if sample_type_row is not None:
         source_export = insert_sample_type_row(source_export, sample_type_row, feature_col=FEATURE_ID_COLUMN)
-        result_export = insert_sample_type_row(result_export, sample_type_row, feature_col=FEATURE_ID_COLUMN)
+        if result_export is not None:
+            result_export = insert_sample_type_row(result_export, sample_type_row, feature_col=FEATURE_ID_COLUMN)
 
     with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
         source_export.to_excel(writer, sheet_name=source_sheet_name, index=False)
         sample_info_df.to_excel(writer, sheet_name=SHEET_NAMES["sample_info"], index=False)
-        result_export.to_excel(writer, sheet_name=RESULT_SHEET_NAME, index=False)
+        if result_export is not None:
+            result_export.to_excel(writer, sheet_name=RESULT_SHEET_NAME, index=False)
         summary_df.to_excel(writer, sheet_name=SUMMARY_SHEET_NAME, index=False)
 
     workbook = load_workbook(output_file)
@@ -751,10 +763,15 @@ def save_results_to_excel(
     workbook.save(output_file)
 
 
-def main(input_file=None, session_dir=None):
-    """Run QC batch scaling on the selected upstream sheet."""
+def main(input_file=None, session_dir=None, diagnostics_only=False):
+    """Run Step 4 in paused mode, optionally emitting diagnostics only."""
     if not input_file:
         raise ValueError("input_file is required")
+
+    paused_reason = (
+        "Cross-batch QC anchoring is paused because the current design does not justify "
+        "active scientific correction."
+    )
 
     log_section("開始執行 Step 4: QC Batch Scaling")
     print(f"輸入檔案: {os.path.basename(input_file)}")
@@ -784,14 +801,45 @@ def main(input_file=None, session_dir=None):
             output_path=input_file,
             metabolites=len(data_df),
             samples=len(sample_columns),
-            extra={"batches": len(batch_to_samples), "skipped": True, "skip_reason": "single_batch"},
+            extra={
+                "batches": len(batch_to_samples),
+                "skipped": True,
+                "skip_reason": "single_batch",
+                "diagnostics_only": diagnostics_only,
+            },
         )
 
-    log_section("執行 QC batch median scaling")
+    if not diagnostics_only:
+        print("⚠ Step 4 active scaling 已 paused，預設不再執行跨批次 QC scaling。")
+        print(f"  - 原因: {paused_reason}")
+        print("  - 如需保留 residual / boxplot / QC alignment，只能用 diagnostics_only=True。")
+        return ProcessingResult(
+            file_path=input_file,
+            output_path=input_file,
+            metabolites=len(data_df),
+            samples=len(sample_columns),
+            extra={
+                "batches": len(batch_to_samples),
+                "skipped": True,
+                "skip_reason": "paused_nonshared_qc_design",
+                "diagnostics_only": False,
+                "paused_reason": paused_reason,
+            },
+        )
+
+    log_section("執行 Step 4 diagnostics-only")
+    print("  - 仍會計算 batch-scaled proxy，只用於 diagnostics，不視為 active correction")
     result_df, invalid_median_counts = scale_dataframe_by_qc_medians(
         data_df, sample_columns, batch_to_qc, batch_to_samples
     )
-    summary_df = build_summary_df(source_sheet_name, batch_to_qc, batch_to_samples, invalid_median_counts)
+    summary_df = build_summary_df(
+        source_sheet_name,
+        batch_to_qc,
+        batch_to_samples,
+        invalid_median_counts,
+        mode="diagnostics_only",
+        paused_reason=paused_reason,
+    )
     invalid_total = sum(invalid_median_counts.values())
     print(f"無效 QC median 次數: {invalid_total}")
     if invalid_total:
@@ -818,10 +866,10 @@ def main(input_file=None, session_dir=None):
         timestamp,
         plots_dir=_plots_dir,
     )
-    log_section("寫出 Step 4 Excel")
+    log_section("寫出 Step 4 diagnostics Excel")
     save_results_to_excel(
         data_df,
-        result_df,
+        None,
         sample_info_df,
         summary_df,
         output_file,
@@ -829,13 +877,18 @@ def main(input_file=None, session_dir=None):
         source_sheet_name,
         sample_type_row=sample_type_row,
     )
-    print(f"\n  ✓ Step 4 QC Batch Scaling 完成 → {os.path.basename(str(output_file))}")
+    print(f"\n  ✓ Step 4 diagnostics-only 完成 → {os.path.basename(str(output_file))}")
 
     return ProcessingResult(
         file_path=input_file,
         output_path=str(output_file),
-        metabolites=len(result_df),
+        metabolites=len(data_df),
         samples=len(sample_columns),
         plots_dir=plots_dir,
-        extra={"batches": len(batch_to_qc)},
+        extra={
+            "batches": len(batch_to_qc),
+            "diagnostics_only": True,
+            "paused_reason": paused_reason,
+            "active_scaling": False,
+        },
     )

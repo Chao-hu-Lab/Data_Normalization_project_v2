@@ -14,6 +14,7 @@ import os
 import shutil
 from openpyxl import load_workbook
 from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 
 from metabolomics.utils.constants import SHEET_NAMES
 
@@ -320,8 +321,15 @@ class TestQCLOWESSOutput:
         try:
             worksheet = workbook[SHEET_NAMES["qc_lowess_advanced"]]
             assert worksheet["A1"].value == "Mz/RT"
-            assert worksheet["J1"].value == "LOESS Summary"
-            summary_labels = [worksheet[f"J{row_idx}"].value for row_idx in range(1, worksheet.max_row + 1)]
+            summary_col_idx = next(
+                cell.column
+                for cell in worksheet[1]
+                if cell.value == "LOESS Summary"
+            )
+            summary_col_letter = get_column_letter(summary_col_idx)
+            value_col_idx = summary_col_idx + 1
+            assert worksheet.cell(row=1, column=summary_col_idx).value == "LOESS Summary"
+            summary_labels = [worksheet[f"{summary_col_letter}{row_idx}"].value for row_idx in range(1, worksheet.max_row + 1)]
             assert "Overview" in summary_labels
             assert "Features processed" in summary_labels
             assert "Overall readout" in summary_labels
@@ -331,7 +339,7 @@ class TestQCLOWESSOutput:
                 for row_idx, label in enumerate(summary_labels, start=1)
                 if label == "Features processed"
             )
-            assert worksheet.cell(row=features_row, column=11).value is not None
+            assert worksheet.cell(row=features_row, column=value_col_idx).value is not None
         finally:
             workbook.close()
 
@@ -449,9 +457,9 @@ class TestQCLOWESSHelpers:
         )
 
         assert decision_stats["event_counts"]["insufficient_qc"] == 0
-        assert lowess_df.loc[0, "SampleA"] != pytest.approx(35.0)
-        assert lowess_df.loc[0, "SampleB"] != pytest.approx(65.0)
         assert lowess_df.loc[0, "SampleC"] != pytest.approx(95.0)
+        assert decision_stats["event_counts"]["outlier_filtering_left_too_few_points"] == 2
+        assert decision_stats["partial_success"] == 1
 
     def test_trend_stats_schema_keeps_kendall_tau_only(self, qc_lowess_module):
         sample_info_df = pd.DataFrame(
@@ -601,3 +609,304 @@ class TestFracFloorAndLoocv:
         )
 
         assert info["status"] == "insufficient_qc"
+
+
+class TestStep2ResponsibilityContract:
+    """Canonical Step 2 contract tests for current LOWESS correction responsibilities."""
+
+    def test_apply_lowess_correction_no_longer_accepts_global_qc_median(self, qc_lowess_module):
+        qc_orders = [1.0, 2.0, 3.0, 4.0, 5.0]
+        qc_intensities = [100.0, 105.0, 110.0, 115.0, 120.0]
+        all_orders = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        all_intensities = [100.0, 105.0, 110.0, 115.0, 120.0, 125.0]
+
+        with pytest.raises(TypeError):
+            qc_lowess_module.apply_lowess_correction(
+                qc_orders,
+                qc_intensities,
+                all_orders,
+                all_intensities,
+                global_qc_median=999.0,
+            )
+
+    def test_apply_lowess_correction_reports_all_qc_invalid_status(self, qc_lowess_module):
+        qc_orders = [1.0, 2.0, 3.0, 4.0, 5.0]
+        qc_intensities = [0.0, -1.0, np.nan, 0.0, -5.0]
+        all_orders = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        all_intensities = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0]
+
+        _, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders,
+            qc_intensities,
+            all_orders,
+            all_intensities,
+        )
+
+        assert info["status"] == "all_qc_invalid"
+
+    def test_apply_lowess_correction_skips_stable_feature_as_no_drift_detected(self, qc_lowess_module):
+        qc_orders = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        qc_intensities = [100.0, 100.8, 99.7, 100.5, 99.9, 100.2]
+        all_orders = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+        all_intensities = [100.0, 100.8, 99.7, 100.5, 99.9, 100.2, 101.0, 99.8]
+
+        corrected, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders,
+            qc_intensities,
+            all_orders,
+            all_intensities,
+        )
+
+        assert info["status"] == "no_drift_detected"
+        assert corrected == pytest.approx(all_intensities)
+
+    def test_apply_lowess_correction_reports_clamp_and_outside_range_metadata(self, qc_lowess_module):
+        qc_orders = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]
+        qc_intensities = [50.0, 100.0, 200.0, 400.0, 800.0, 1600.0]
+        all_orders = [1.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 80.0]
+        all_intensities = [45.0, 50.0, 100.0, 200.0, 400.0, 800.0, 1600.0, 2000.0]
+
+        _, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders,
+            qc_intensities,
+            all_orders,
+            all_intensities,
+        )
+
+        assert "raw_factor_min" in info
+        assert "raw_factor_max" in info
+        assert "clamped_factor_min" in info
+        assert "clamped_factor_max" in info
+        assert "clamped_count" in info
+        assert "clamped_ratio" in info
+        assert "outside_qc_range_count" in info
+        assert info["outside_qc_range_count"] == 3
+
+
+class TestStep2HardeningContract:
+    """Tests for the next Task 3/4 Step 2 hardening contract."""
+
+    def test_filter_qc_outliers_iqr_removes_extreme_value_when_keep_thresholds_are_met(
+        self,
+        qc_lowess_module,
+    ):
+        filtered_x, filtered_y, meta = qc_lowess_module.filter_qc_outliers_iqr(
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            [100.0, 102.0, 101.0, 103.0, 99.0, 1000.0],
+        )
+
+        assert filtered_x.tolist() == pytest.approx([1.0, 2.0, 3.0, 4.0, 5.0])
+        assert filtered_y.tolist() == pytest.approx([100.0, 102.0, 101.0, 103.0, 99.0])
+        assert meta["original_valid_count"] == 6
+        assert meta["removed_outlier_count"] == 1
+        assert meta["outlier_filter_applied"] is True
+
+    def test_apply_lowess_correction_reports_outlier_filtering_left_too_few_points(
+        self,
+        qc_lowess_module,
+    ):
+        qc_orders = [1.0, 2.0, 3.0, 4.0, 5.0]
+        qc_intensities = [100.0, 101.0, 102.0, 103.0, 1000.0]
+        all_orders = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        all_intensities = [100.0, 101.0, 102.0, 103.0, 1000.0, 105.0]
+
+        corrected, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders,
+            qc_intensities,
+            all_orders,
+            all_intensities,
+        )
+
+        assert info["status"] == "outlier_filtering_left_too_few_points"
+        assert corrected == pytest.approx(all_intensities)
+
+    def test_perform_lowess_normalization_treats_no_drift_batches_as_successful(
+        self,
+        qc_lowess_module,
+        monkeypatch,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": [
+                    "A_QC1", "A_QC2", "A_QC3", "A_QC4", "A_QC5", "SampleA",
+                    "B_QC1", "B_QC2", "B_QC3", "B_QC4", "B_QC5", "SampleB",
+                ],
+                "Sample_Type": [
+                    "QC", "QC", "QC", "QC", "QC", "Exposure",
+                    "QC", "QC", "QC", "QC", "QC", "Control",
+                ],
+                "Batch": ["A", "A", "A", "A", "A", "A", "B", "B", "B", "B", "B", "B"],
+                "Injection_Order": list(range(1, 13)),
+            }
+        )
+        istd_df = pd.DataFrame(
+            [
+                {
+                    "FeatureID": "100.1/5.0",
+                    "A_QC1": 100.0,
+                    "A_QC2": 101.0,
+                    "A_QC3": 102.0,
+                    "A_QC4": 103.0,
+                    "A_QC5": 104.0,
+                    "SampleA": 150.0,
+                    "B_QC1": 100.0,
+                    "B_QC2": 100.5,
+                    "B_QC3": 99.8,
+                    "B_QC4": 100.1,
+                    "B_QC5": 100.2,
+                    "SampleB": 149.0,
+                }
+            ]
+        )
+        istd_df.attrs["sample_columns"] = list(istd_df.columns[1:])
+
+        def fake_apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensities, debug_flag=None):
+            status = "success" if min(qc_orders) < 6 else "no_drift_detected"
+            return list(all_intensities), {
+                "status": status,
+                "trend_validation": {
+                    "trend_pvalue": 0.5,
+                    "trend_tau": 0.02,
+                    "r_squared": 0.02,
+                    "rmse": 1.0,
+                },
+                "valid_qc_count": len(qc_orders),
+                "removed_outlier_count": 0,
+                "outlier_filter_applied": False,
+                "normalized_rmse": 0.02,
+                "target_strategy": "batch_local_fit_median",
+                "clamped_ratio": 0.0,
+                "outside_qc_range_count": 0,
+                "frac_used": 0.5,
+                "qc_cv_for_frac": 10.0,
+                "frac_strategy": "moderate_cv",
+            }
+
+        monkeypatch.setattr(
+            qc_lowess_module,
+            "apply_lowess_correction",
+            fake_apply_lowess_correction,
+        )
+
+        _, _, _, trend_stats_df, decision_stats, _ = qc_lowess_module.perform_lowess_normalization(
+            istd_df,
+            sample_info_df,
+        )
+
+        assert decision_stats["success"] == 1
+        assert decision_stats["partial_success"] == 0
+        assert trend_stats_df.loc[0, "Decision_Status"] == "success"
+
+    def test_perform_lowess_normalization_surfaces_all_no_drift_feature_status(
+        self,
+        qc_lowess_module,
+        monkeypatch,
+    ):
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": [
+                    "A_QC1", "A_QC2", "A_QC3", "A_QC4", "A_QC5", "SampleA",
+                    "B_QC1", "B_QC2", "B_QC3", "B_QC4", "B_QC5", "SampleB",
+                ],
+                "Sample_Type": [
+                    "QC", "QC", "QC", "QC", "QC", "Exposure",
+                    "QC", "QC", "QC", "QC", "QC", "Control",
+                ],
+                "Batch": ["A", "A", "A", "A", "A", "A", "B", "B", "B", "B", "B", "B"],
+                "Injection_Order": list(range(1, 13)),
+            }
+        )
+        istd_df = pd.DataFrame(
+            [
+                {
+                    "FeatureID": "100.1/5.0",
+                    "A_QC1": 100.0,
+                    "A_QC2": 100.5,
+                    "A_QC3": 99.8,
+                    "A_QC4": 100.1,
+                    "A_QC5": 100.2,
+                    "SampleA": 101.0,
+                    "B_QC1": 99.7,
+                    "B_QC2": 100.1,
+                    "B_QC3": 100.0,
+                    "B_QC4": 100.4,
+                    "B_QC5": 99.9,
+                    "SampleB": 100.8,
+                }
+            ]
+        )
+        istd_df.attrs["sample_columns"] = list(istd_df.columns[1:])
+
+        def fake_apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensities, debug_flag=None):
+            return list(all_intensities), {
+                "status": "no_drift_detected",
+                "trend_validation": {
+                    "trend_pvalue": 0.5,
+                    "trend_tau": 0.02,
+                    "r_squared": 0.02,
+                    "rmse": 1.0,
+                },
+                "valid_qc_count": len(qc_orders),
+                "removed_outlier_count": 0,
+                "outlier_filter_applied": False,
+                "normalized_rmse": 0.02,
+                "target_strategy": "batch_local_fit_median",
+                "clamped_ratio": 0.0,
+                "outside_qc_range_count": 0,
+                "frac_used": 0.5,
+                "qc_cv_for_frac": 10.0,
+                "frac_strategy": "moderate_cv",
+            }
+
+        monkeypatch.setattr(
+            qc_lowess_module,
+            "apply_lowess_correction",
+            fake_apply_lowess_correction,
+        )
+
+        _, _, _, trend_stats_df, decision_stats, _ = qc_lowess_module.perform_lowess_normalization(
+            istd_df,
+            sample_info_df,
+        )
+
+        assert decision_stats["success"] == 0
+        assert decision_stats["no_drift_detected"] == 1
+        assert decision_stats["partial_success"] == 0
+        assert trend_stats_df.loc[0, "Decision_Status"] == "no_drift_detected"
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_advanced_stats_sheet_includes_step3_contract_columns(
+        self,
+        qc_lowess_module,
+        sample_input_file,
+    ):
+        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+        step2_output = (
+            step2_result.output_path
+            if hasattr(step2_result, "output_path")
+            else step2_result.get("output_path")
+        )
+
+        workbook = load_workbook(step2_output, read_only=True, data_only=True)
+        try:
+            worksheet = workbook[SHEET_NAMES["qc_lowess_advanced"]]
+            headers = [cell.value for cell in worksheet[1]]
+        finally:
+            workbook.close()
+
+        expected_headers = {
+            "Valid_QC_Count",
+            "Removed_QC_Outliers",
+            "Outlier_Filter_Applied",
+            "Trend_pvalue",
+            "Kendall_Tau",
+            "LOESS_R2",
+            "LOESS_RMSE",
+            "Normalized_RMSE",
+            "Target_Strategy",
+            "Clamped_Factor_Ratio",
+            "Outside_QC_Range_Count",
+            "Decision_Status",
+        }
+        assert expected_headers.issubset(set(headers))

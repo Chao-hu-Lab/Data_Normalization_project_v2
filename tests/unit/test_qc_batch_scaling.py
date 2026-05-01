@@ -345,6 +345,40 @@ class TestQCBatchScalingHelpers:
 
 
 class TestQCBatchScalingOutput:
+    def test_main_is_paused_by_default_for_multibatch_input(self, tmp_path):
+        module = load_qc_batch_scaling_module()
+
+        input_path = tmp_path / "step3_input.xlsx"
+        source_df = pd.DataFrame(
+            {
+                "Mz/RT": ["F1", "F2"],
+                "QC_A1": [10.0, 20.0],
+                "QC_A2": [11.0, 21.0],
+                "QC_B1": [40.0, 80.0],
+                "QC_B2": [44.0, 84.0],
+                "Sample_A1": [12.0, 22.0],
+                "Sample_B1": [48.0, 88.0],
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_A1", "QC_A2", "QC_B1", "QC_B2", "Sample_A1", "Sample_B1"],
+                "Sample_Type": ["QC", "QC", "QC", "QC", "Exposure", "Control"],
+                "Batch": ["A", "A", "B", "B", "A", "B"],
+            }
+        )
+        with pd.ExcelWriter(input_path, engine="openpyxl") as writer:
+            source_df.to_excel(writer, sheet_name="PQN_Result", index=False)
+            sample_info_df.to_excel(writer, sheet_name=SHEET_NAMES["sample_info"], index=False)
+
+        result = module.main(input_file=str(input_path))
+
+        assert result.output_path == str(input_path)
+        assert result.plots_dir is None
+        assert result.extra["skipped"] is True
+        assert result.extra["skip_reason"] == "paused_nonshared_qc_design"
+        assert result.extra["diagnostics_only"] is False
+
     def test_generate_step3_plots_skips_batch_diagnostics_when_only_one_batch(self, tmp_path):
         module = load_qc_batch_scaling_module()
 
@@ -476,7 +510,7 @@ class TestQCBatchScalingOutput:
 
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_main_creates_expected_workbook_from_step2_output(
+    def test_main_diagnostics_only_creates_expected_workbook_from_step2_output(
         self,
         qc_lowess_module,
         sample_input_file,
@@ -491,7 +525,7 @@ class TestQCBatchScalingOutput:
             else step2_result.get("output_path")
         )
 
-        step3_result = module.main(input_file=step2_output)
+        step3_result = module.main(input_file=step2_output, diagnostics_only=True)
         step3_output = (
             step3_result.output_path
             if hasattr(step3_result, "output_path")
@@ -501,7 +535,6 @@ class TestQCBatchScalingOutput:
         assert set(workbook_sheet_names(step3_output)) == {
             SHEET_NAMES["qc_lowess"],
             "SampleInfo",
-            "QC_Batch_Scaling_result",
             "QC_Batch_Scaling_summary",
         }
 
@@ -521,7 +554,7 @@ class TestQCBatchScalingOutput:
 
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_step3_output_uses_mz_rt_as_feature_column(
+    def test_diagnostics_only_output_uses_mz_rt_as_feature_column(
         self,
         qc_lowess_module,
         sample_input_file,
@@ -535,33 +568,35 @@ class TestQCBatchScalingOutput:
             else step2_result.get("output_path")
         )
 
-        step3_result = module.main(input_file=step2_output)
+        step3_result = module.main(input_file=step2_output, diagnostics_only=True)
         step3_output = (
             step3_result.output_path
             if hasattr(step3_result, "output_path")
             else step3_result.get("output_path")
         )
 
-        result_df = pd.read_excel(step3_output, sheet_name="QC_Batch_Scaling_result", nrows=1)
         source_df = pd.read_excel(step3_output, sheet_name=SHEET_NAMES["qc_lowess"], nrows=1)
 
-        assert result_df.columns[0] == "Mz/RT"
         assert source_df.columns[0] == "Mz/RT"
 
     @pytest.mark.slow
-    def test_main_writes_to_session_dir(self, qc_batch_scaling_module, sample_input_file, tmp_path):
-        """When session_dir is provided, output goes into that directory."""
+    def test_main_diagnostics_only_writes_to_session_dir(self, qc_batch_scaling_module, sample_input_file, tmp_path):
+        """When diagnostics_only session_dir is provided, output goes into that directory."""
         from pathlib import Path
         from metabolomics.utils.file_io import create_session_dir
 
         session = create_session_dir(output_root=tmp_path)
-        result = qc_batch_scaling_module.main(input_file=sample_input_file, session_dir=session)
+        result = qc_batch_scaling_module.main(
+            input_file=sample_input_file,
+            session_dir=session,
+            diagnostics_only=True,
+        )
         assert Path(result.output_path).is_relative_to(session)
         assert "Step4_" in Path(result.output_path).name
 
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_main_logs_stage_progress(
+    def test_main_diagnostics_only_logs_stage_progress(
         self,
         qc_lowess_module,
         sample_input_file,
@@ -576,10 +611,35 @@ class TestQCBatchScalingOutput:
             else step2_result.get("output_path")
         )
 
-        module.main(input_file=step2_output)
+        module.main(input_file=step2_output, diagnostics_only=True)
 
         captured = capsys.readouterr().out
         assert "QC Batch Scaling" in captured
         assert "batch membership" in captured
-        assert "QC batch median scaling" in captured
+        assert "diagnostic" in captured.lower()
         assert "residual" in captured
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_diagnostics_only_summary_states_paused_mode(
+        self,
+        qc_lowess_module,
+        sample_input_file,
+    ):
+        module = load_qc_batch_scaling_module()
+
+        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+        step2_output = (
+            step2_result.output_path
+            if hasattr(step2_result, "output_path")
+            else step2_result.get("output_path")
+        )
+
+        step4_result = module.main(input_file=step2_output, diagnostics_only=True)
+        summary_df = pd.read_excel(step4_result.output_path, sheet_name="QC_Batch_Scaling_summary")
+
+        paused_reason = summary_df.loc[summary_df["Item"] == "paused_reason", "Value"].iloc[0]
+        mode = summary_df.loc[summary_df["Item"] == "mode", "Value"].iloc[0]
+
+        assert mode == "diagnostics_only"
+        assert "cross-batch qc anchoring" in paused_reason.lower()

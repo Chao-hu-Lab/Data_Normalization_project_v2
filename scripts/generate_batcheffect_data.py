@@ -64,11 +64,11 @@ class ScenarioConfig:
 BASE_CONFIG = ScenarioConfig(
     name="balanced_pipeline",
     description="Balanced multi-batch matrix with stable ISTDs, moderate drift, and usable PQN behavior.",
-    recommended_steps=("Step 1", "Step 2", "Step 3", "Step 4 PQN"),
+    recommended_steps=("Step 1", "Step 2", "Step 3 PQN"),
     primary_checks=(
         "End-to-end smoke test across the whole pipeline.",
         "Step 1 should not skip and should generate all diagnostics.",
-        "Step 4 PQN should run on a realistic but not pathological matrix.",
+        "Step 3 PQN should run on a realistic but not pathological matrix.",
     ),
 )
 
@@ -104,7 +104,7 @@ SCENARIO_LIBRARY = {
         BASE_CONFIG,
         name="random_jump",
         description="Frequent abrupt spikes and drops simulate intermittent spray instability and random jump noise.",
-        recommended_steps=("Step 2", "Step 4 PQN"),
+        recommended_steps=("Step 2", "Step 3 PQN"),
         primary_checks=(
             "Stress robustness to sudden spikes and dips.",
             "Check whether QC-focused methods avoid overfitting isolated jumps.",
@@ -131,11 +131,11 @@ SCENARIO_LIBRARY = {
     "strong_batch": replace(
         BASE_CONFIG,
         name="strong_batch",
-        description="Large batch offsets persist after Step 1/2 and should be very visible in Step 3 diagnostics.",
-        recommended_steps=("Step 3", "Step 4 PQN"),
+        description="Large batch offsets persist after Step 1/2 and should be very visible in manual Step 4 diagnostics.",
+        recommended_steps=("Step 3 PQN", "Step 4 diagnostics (manual)"),
         primary_checks=(
-            "Step 3 batch alignment and by-batch boxplots should show clear pre/post separation.",
-            "Residual analysis should visibly tighten after batch scaling.",
+            "Manual Step 4 batch diagnostics should show clear pre/post separation when explicitly run.",
+            "Residual analysis should visibly tighten after manual QC batch scaling diagnostics.",
         ),
         batch_factors=(1.00, 1.45, 0.70),
         residual_batch_factors=(1.00, 1.22, 0.78),
@@ -200,7 +200,7 @@ SCENARIO_LIBRARY = {
         BASE_CONFIG,
         name="order_confounding",
         description="Injection order is highly confounded with sample type, useful for stress-testing order-sensitive methods.",
-        recommended_steps=("Step 2", "Step 4 PQN"),
+        recommended_steps=("Step 2", "Step 3 PQN"),
         primary_checks=(
             "Use when checking for over-correction risk when drift and biology align in time order.",
             "Review whether biological separation is unintentionally flattened after correction.",
@@ -210,11 +210,11 @@ SCENARIO_LIBRARY = {
     "specnorm_friendly": replace(
         BASE_CONFIG,
         name="specnorm_friendly",
-        description="Creatinine values are linked to the dominant sample-wise dilution factor so SampleSpecific normalization is meaningful.",
-        recommended_steps=("Step 4 SampleSpecific", "Step 4 PQN"),
+        description="Creatinine values are linked to the dominant sample-wise dilution factor so SpecNorm+PQN normalization is meaningful.",
+        recommended_steps=("Step 3 SpecNorm+PQN", "Step 3 PQN"),
         primary_checks=(
-            "Preferred matrix for validating SampleSpecific / SpecNorm behavior.",
-            "Compare SampleSpecific against PQN on a matrix with meaningful reference values.",
+            "Preferred matrix for validating SpecNorm+PQN behavior.",
+            "Compare SpecNorm+PQN against PQN on a matrix with meaningful reference values.",
         ),
         creatinine_mode="linked",
         creatinine_noise_sigma=0.05,
@@ -223,7 +223,7 @@ SCENARIO_LIBRARY = {
         BASE_CONFIG,
         name="matrix_effect_suppression",
         description="One real sample type experiences broad ion suppression across many analytes while QC remains comparatively well-behaved.",
-        recommended_steps=("Step 1", "Step 4 PQN"),
+        recommended_steps=("Step 1", "Step 3 PQN"),
         primary_checks=(
             "Target sample type should show depressed global analyte intensity.",
             "Useful for checking whether normalization appears over-optimistic under matrix-effect bias.",
@@ -237,7 +237,7 @@ SCENARIO_LIBRARY = {
         BASE_CONFIG,
         name="signal_saturation",
         description="Highest-intensity analytes enter a compressed response regime, simulating detector saturation and nonlinear response.",
-        recommended_steps=("Step 4 PQN", "Step 4 SampleSpecific"),
+        recommended_steps=("Step 3 PQN", "Step 3 SpecNorm+PQN"),
         primary_checks=(
             "Upper-tail intensities should be visibly compressed relative to balanced_pipeline.",
             "Normalization quality metrics should not look unrealistically perfect under nonlinear response.",
@@ -251,7 +251,7 @@ SCENARIO_LIBRARY = {
         BASE_CONFIG,
         name="structured_missingness",
         description="Missing values cluster within one batch and sample type, stressing NaN handling in downstream summaries.",
-        recommended_steps=("Step 3", "Step 4 PQN"),
+        recommended_steps=("Step 3 PQN",),
         primary_checks=(
             "Structured NaNs should not crash batch statistics or normalization summaries.",
             "Use when validating graceful degradation under non-random missingness.",
@@ -265,7 +265,7 @@ SCENARIO_LIBRARY = {
         BASE_CONFIG,
         name="combined_stress",
         description="Stacked stress profile: stronger drift, stronger batch effects, random jumps, unstable ISTDs, and order confounding.",
-        recommended_steps=("Step 1", "Step 2", "Step 3", "Step 4 PQN"),
+        recommended_steps=("Step 1", "Step 2", "Step 3 PQN"),
         primary_checks=(
             "Use as a broad regression stress test after major refactors.",
             "Expect some steps to degrade gracefully rather than look ideal.",
