@@ -13,7 +13,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.styles import Font
 
-from metabolomics.utils.constants import FEATURE_ID_COLUMN
+from metabolomics.utils.constants import FEATURE_ID_COLUMN, SHEET_NAMES
 
 
 class TestISTDCorrectionInput:
@@ -256,6 +256,76 @@ class TestISTDCorrectionOutput:
 
 class TestISTDCorrectionHelpers:
     """Tests for helper functions."""
+
+    def test_save_results_to_excel_preserves_step4_metadata_columns(
+        self,
+        istd_module,
+        tmp_path,
+    ):
+        original_df = pd.DataFrame(
+            {
+                "FeatureID": ["F1", "F2"],
+                "QC_1": [10.0, 20.0],
+                "Sample_A": [100.0, 200.0],
+                "tumor_ratio": [0.25, 0.75],
+                "Feature_Filter_Keep_Reasons": ["stable", "mnar"],
+                "Imputation_Tag_Reasons": ["", "low_overall_detection"],
+            }
+        )
+        results_df = pd.DataFrame(
+            {
+                "FeatureID": ["F1", "F2"],
+                "QC_1": [1.0, 2.0],
+                "Sample_A": [10.0, 20.0],
+                "ISTD": ["ISTD_1", "ISTD_1"],
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "Sample_A"],
+                "Sample_Type": ["QC", "Exposure"],
+            }
+        )
+        cv_results_df = pd.DataFrame(
+            {
+                "FeatureID": ["F1", "F2"],
+                "Original_QC_CV%": [0.0, 0.0],
+                "Corrected_QC_CV%": [0.0, 0.0],
+                "CV_Improvement%": [0.0, 0.0],
+                "Wilcoxon_pvalue": [1.0, 1.0],
+                "Variance_Test_pvalue": [1.0, 1.0],
+                "Significant_Improvement": ["No", "No"],
+            }
+        )
+        output_path = tmp_path / "istd_metadata.xlsx"
+
+        istd_module.save_results_to_excel(
+            original_df=original_df,
+            results_df=results_df,
+            sample_info_df=sample_info_df,
+            output_file=output_path,
+            all_sheets={
+                SHEET_NAMES["raw_intensity"]: original_df,
+                SHEET_NAMES["sample_info"]: sample_info_df,
+            },
+            sample_columns=["QC_1", "Sample_A"],
+            original_workbook=None,
+            col_to_info={
+                "QC_1": sample_info_df.iloc[0],
+                "Sample_A": sample_info_df.iloc[1],
+            },
+            cv_results_df=cv_results_df,
+        )
+
+        output_df = pd.read_excel(
+            output_path,
+            sheet_name=SHEET_NAMES["istd_correction"],
+            keep_default_na=False,
+        )
+
+        assert output_df["tumor_ratio"].tolist() == ["", 0.25, 0.75]
+        assert output_df["Feature_Filter_Keep_Reasons"].tolist() == ["", "stable", "mnar"]
+        assert output_df["Imputation_Tag_Reasons"].tolist() == ["", "", "low_overall_detection"]
 
     def test_get_valid_values(self, istd_module):
         """Test get_valid_values helper function."""

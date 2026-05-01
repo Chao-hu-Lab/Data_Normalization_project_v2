@@ -19,11 +19,14 @@ from metabolomics.utils.constants import (
     NON_SAMPLE_COLUMNS,
     STAT_COLUMN_KEYWORDS,
     SHEET_NAMES,
+    is_step4_metadata_column,
 )
 
 
 def _is_stat_column(col_name: str) -> bool:
     """Check if a column is a statistical/metadata column that should be removed."""
+    if is_step4_metadata_column(col_name):
+        return False
     if col_name in NON_SAMPLE_COLUMNS and col_name != FEATURE_ID_COLUMN:
         return True
     col_lower = col_name.lower()

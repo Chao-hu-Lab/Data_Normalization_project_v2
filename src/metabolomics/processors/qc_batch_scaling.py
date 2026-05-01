@@ -15,6 +15,7 @@ from metabolomics.utils.constants import (
     FEATURE_ID_COLUMN,
     NON_SAMPLE_COLUMNS,
     SHEET_NAMES,
+    is_non_sample_column,
     resolve_sheet_name,
 )
 from metabolomics.utils.data_helpers import extract_sample_type_row, insert_sample_type_row
@@ -719,7 +720,7 @@ def save_results_to_excel(
         header_map = {name: idx + 1 for idx, name in enumerate(header) if name}
         apply_header_fill(worksheet)
         for col_name in header:
-            if not col_name or col_name in NON_SAMPLE_COLUMNS:
+            if not col_name or is_non_sample_column(col_name):
                 continue
             apply_number_format(worksheet, header_map[col_name], scientific_format)
 

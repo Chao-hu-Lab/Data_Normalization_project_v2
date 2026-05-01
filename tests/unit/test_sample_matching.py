@@ -214,6 +214,27 @@ def test_identify_candidate_sample_columns_keeps_unmatched_data_columns_for_fail
     assert dropped_columns == ["robust_cv_summary"]
 
 
+def test_identify_candidate_sample_columns_excludes_step4_metadata_contract_columns():
+    df = pd.DataFrame(
+        {
+            "Mz/RT": ["100.1/1.0"],
+            "Real_A": [10.0],
+            "tumor_ratio": [0.75],
+            "QC_ratio": [1.0],
+            "Feature_Filter_Keep_Reasons": ["stable|ratio_rescue"],
+            "Imputation_Tag_Reasons": ["low_overall_detection"],
+            "Feature_Filter_Delete_Reasons": [""],
+            "Detection_Profile": ["legacy"],
+            "custom_ratio_metric": [0.5],
+        }
+    )
+
+    candidate_columns, dropped_columns = identify_candidate_sample_columns(df)
+
+    assert candidate_columns == ["Real_A", "custom_ratio_metric"]
+    assert dropped_columns == []
+
+
 def test_build_sample_info_mapping_matches_program_prefixed_columns_via_fuzzy_tokens():
     sample_info_df = pd.DataFrame(
         {

@@ -12,7 +12,16 @@ import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde, spearmanr, wilcoxon
 
 from metabolomics.utils.plotting import setup_matplotlib
-from metabolomics.utils.constants import SHEET_NAMES, DATETIME_FORMAT_FULL, VALIDATION_THRESHOLDS, COHENS_D_THRESHOLDS, CV_QUALITY_THRESHOLDS, NON_SAMPLE_COLUMNS, resolve_sheet_name
+from metabolomics.utils.constants import (
+    SHEET_NAMES,
+    DATETIME_FORMAT_FULL,
+    VALIDATION_THRESHOLDS,
+    COHENS_D_THRESHOLDS,
+    CV_QUALITY_THRESHOLDS,
+    NON_SAMPLE_COLUMNS,
+    is_non_sample_column,
+    resolve_sheet_name,
+)
 from metabolomics.utils.sample_classification import (
     build_sample_info_mapping as shared_build_sample_info_mapping,
     identify_candidate_sample_columns,
@@ -1862,43 +1871,72 @@ def find_sample_info_sheet(sheets):
 
 
 def find_correction_column(df):
-    """在樣本資訊工作表尋找可用於校正的欄位（肌酐濃度等）"""
-    if df.shape[1] < 6:
+    """在樣本資訊工作表尋找可用於 SpecNorm 的 reference concentration 欄位。"""
+    if df.shape[1] < 1:
         print("警告：樣本資訊工作表欄位不足")
         return None, None
 
-    # 預設使用第 F 欄（索引 5）
-    correction_col = df.columns[5]
-    valid_values = df[correction_col].dropna()
+    excluded_names = {
+        'sample_name',
+        'method_sample_name',
+        'sample_type',
+        'injection_order',
+        'batch',
+        'injection_volume',
+    }
+    preferred_keywords = (
+        'creatinine',
+        'dna_mg',
+        'dna',
+        'protein',
+        'concentration',
+        'conc',
+        'normalization',
+        'reference',
+        'amount',
+    )
 
-    if len(valid_values) > 0:
-        numeric_count = valid_values.apply(
-            lambda x: str(x).replace('.', '').replace('-', '').replace('e', '')
-            .replace('E', '').replace('+', '').isnumeric()
-        ).sum()
-        if numeric_count / len(valid_values) > 0.5:
-            if 'creatinine' in str(correction_col).lower():
-                correction_type = 'Creatinine'
-            else:
-                correction_type = 'Normalization_adduct'
-            print(f"✓ 偵測到校正欄位: {correction_col} (類型: {correction_type})")
-            return correction_col, correction_type
+    def _column_key(col):
+        return re.sub(r'[^a-z0-9]+', '_', str(col).strip().lower()).strip('_')
 
-    # 如果第 F 欄不可用，嘗試找其他數值欄位
-    for col in df.columns[6:]:
+    def _is_numeric_reference_candidate(col):
+        col_key = _column_key(col)
+        if col_key in excluded_names:
+            return False
+        if not any(keyword in col_key for keyword in preferred_keywords):
+            return False
+
         valid_values = df[col].dropna()
-        if len(valid_values) > 0:
-            numeric_count = valid_values.apply(
-                lambda x: str(x).replace('.', '').replace('-', '').replace('e', '')
-                .replace('E', '').replace('+', '').isnumeric()
-            ).sum()
-            if numeric_count / len(valid_values) > 0.5:
-                if 'creatinine' in str(col).lower():
-                    correction_type = 'Creatinine'
-                else:
-                    correction_type = 'Normalization_adduct'
-                print(f"✓ 偵測到校正欄位: {col} (類型: {correction_type})")
-                return col, correction_type
+        if len(valid_values) == 0:
+            return False
+        numeric_values = pd.to_numeric(valid_values, errors='coerce')
+        return numeric_values.notna().mean() > 0.5
+
+    def _candidate_priority(col):
+        col_key = _column_key(col)
+        if 'creatinine' in col_key:
+            return 0
+        if 'dna' in col_key:
+            return 1
+        if 'protein' in col_key:
+            return 2
+        if 'concentration' in col_key or 'conc' in col_key:
+            return 3
+        return 4
+
+    candidates = [col for col in df.columns if _is_numeric_reference_candidate(col)]
+    if candidates:
+        correction_col = sorted(
+            candidates,
+            key=lambda col: (_candidate_priority(col), df.columns.get_loc(col)),
+        )[0]
+        correction_type = (
+            'Creatinine'
+            if 'creatinine' in _column_key(correction_col)
+            else 'Normalization_adduct'
+        )
+        print(f"✓ 偵測到校正欄位: {correction_col} (類型: {correction_type})")
+        return correction_col, correction_type
 
     print("錯誤：找不到可用於校正的欄位")
     return None, None
@@ -2290,7 +2328,7 @@ def save_normalization_results(
         normalized_headers = [cell.value for cell in ws_normalized[1]]
         normalized_header_map = {name: idx + 1 for idx, name in enumerate(normalized_headers) if name}
         for col_name in normalized_headers:
-            if not col_name or col_name in NON_SAMPLE_COLUMNS:
+            if not col_name or is_non_sample_column(col_name):
                 continue
             apply_number_format(ws_normalized, normalized_header_map[col_name], '0.00E+00')
 
@@ -2352,7 +2390,7 @@ def save_normalization_results(
             preserved_headers = [cell.value for cell in ws_preserved[1]]
             preserved_header_map = {name: idx + 1 for idx, name in enumerate(preserved_headers) if name}
             for col_name in preserved_headers:
-                if not col_name or col_name in NON_SAMPLE_COLUMNS:
+                if not col_name or is_non_sample_column(col_name):
                     continue
                 apply_number_format(ws_preserved, preserved_header_map[col_name], '0.00E+00')
 

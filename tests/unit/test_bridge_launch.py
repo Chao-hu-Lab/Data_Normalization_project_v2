@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from metabolomics.bootstrap_paths import find_ms_core_src
 from metabolomics.startup_bridge import apply_startup_bridge, parse_startup_args
@@ -165,3 +166,46 @@ def test_dnp_to_metaboanalyst_falls_back_to_specnorm_pqn_sheet(tmp_path):
 
     converted = pd.read_excel(output_path, sheet_name="Data")
     assert converted.loc[0, "Sample_A"] == 5.0
+
+
+def test_dnp_to_metaboanalyst_preserves_step4_metadata_for_missing_value_routing(tmp_path):
+    from metabolomics.adapters.dnp_to_metaboanalyst import convert_dnp_to_metaboanalyst
+
+    input_path = tmp_path / "dnp_metadata.xlsx"
+    output_path = tmp_path / "ma_metadata.xlsx"
+
+    with pd.ExcelWriter(input_path, engine="openpyxl") as writer:
+        pd.DataFrame(
+            {
+                "Mz/RT": ["F1"],
+                "Sample_A": [1.0],
+                "tumor_ratio": [0.75],
+                "QC_ratio": [1.0],
+                "is_Presence_Absence_Marker": [True],
+                "Feature_Filter_Keep_Reasons": ["stable|mnar"],
+                "Imputation_Tag_Reasons": ["low_overall_detection"],
+                "Detection_Profile": ["legacy"],
+                "Original_CV%": [12.5],
+            }
+        ).to_excel(writer, sheet_name="PQN_Result", index=False)
+        pd.DataFrame({"Sample_Name": ["Sample_A"], "Sample_Type": ["Exposure"]}).to_excel(
+            writer,
+            sheet_name="SampleInfo",
+            index=False,
+        )
+
+    convert_dnp_to_metaboanalyst(str(input_path), str(output_path))
+
+    converted = pd.read_excel(output_path, sheet_name="Data")
+    assert converted.columns.tolist() == [
+        "Mz/RT",
+        "Sample_A",
+        "tumor_ratio",
+        "QC_ratio",
+        "is_Presence_Absence_Marker",
+        "Feature_Filter_Keep_Reasons",
+        "Imputation_Tag_Reasons",
+        "Detection_Profile",
+    ]
+    assert converted.loc[0, "tumor_ratio"] == pytest.approx(0.75)
+    assert converted.loc[0, "Feature_Filter_Keep_Reasons"] == "stable|mnar"

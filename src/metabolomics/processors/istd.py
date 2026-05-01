@@ -9,7 +9,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ========== 匯入共用模組 ==========
-from metabolomics.utils.data_helpers import get_valid_values
+from metabolomics.utils.data_helpers import apply_feature_metadata_passthrough, get_valid_values
 from metabolomics.utils.plotting import setup_matplotlib
 from metabolomics.utils.constants import (
     SHEET_NAMES,
@@ -18,6 +18,7 @@ from metabolomics.utils.constants import (
     NON_SAMPLE_COLUMNS,
     STAT_COLUMN_KEYWORDS,
     CV_QUALITY_THRESHOLDS,
+    is_non_sample_column,
 )
 from metabolomics.utils.sample_classification import (
     build_sample_info_mapping,
@@ -441,7 +442,7 @@ def get_qc_sample_columns(raw_df, col_to_info, sample_info_df=None):
         sample_columns = []
         for col in raw_df.columns:
             col_norm = normalize_sample_name(col)
-            if col_norm in non_sample_lower:
+            if is_non_sample_column(col) or col_norm in non_sample_lower:
                 continue
             if any(keyword in col_norm for keyword in STAT_COLUMN_KEYWORDS):
                 continue
@@ -1534,6 +1535,7 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
 
     # 合併結果
     results_with_cv = results_df.merge(cv_results_df, on='FeatureID', how='left')
+    results_with_cv = apply_feature_metadata_passthrough(results_with_cv, original_df)
 
     # 🆕 應用 FDR 校正（Benjamini-Hochberg 方法）
     print("\n📊 應用 FDR 校正（Benjamini-Hochberg 方法）...")
@@ -1635,7 +1637,7 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
                 reverse_map = {v: k for k, v in rename_map.items()}
                 orig_col = reverse_map.get(col, col)
             info = col_to_info.get(orig_col, col_to_info.get(col))
-            if info and 'Sample_Type' in info:
+            if info is not None and 'Sample_Type' in info:
                 sample_type_row[col] = normalize_sample_type(info['Sample_Type'])
             else:
                 sample_type_row[col] = ''
@@ -1692,7 +1694,7 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
             )
 
         for col_name in header:
-            if not col_name or col_name in NON_SAMPLE_COLUMNS:
+            if not col_name or is_non_sample_column(col_name):
                 continue
             apply_number_format(worksheet, header_map[col_name], scientific_format)
 

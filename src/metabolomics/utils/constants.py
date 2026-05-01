@@ -5,6 +5,8 @@ This module contains all shared constants to avoid duplication across modules.
 Import from here instead of defining constants locally.
 """
 
+from typing import Iterable, List
+
 # ========== Color Schemes (Colorblind-friendly) ==========
 COLORBLIND_COLORS = [
     '#0173B2',  # Blue
@@ -112,6 +114,49 @@ CV_QUALITY_THRESHOLDS = {
 }
 
 # ========== Non-Sample Columns ==========
+# Step4 metadata from upstream MS Preprocessing Toolkit. These columns control
+# downstream missing-value routing and must not enter calibration matrices.
+STEP4_METADATA_COLUMNS = {
+    'is_Presence_Absence_Marker',
+    'Feature_Filter_Keep_Reasons',
+    'Imputation_Tag_Reasons',
+    'Feature_Filter_Delete_Reasons',
+    'Detection_Profile',
+    'exposure_ratio',
+    'normal_ratio',
+    'control_ratio',
+    'QC_ratio',
+}
+
+STEP4_RATIO_METADATA_SUFFIX = '_ratio'
+
+
+def is_step4_metadata_column(column_name: object) -> bool:
+    """Return True when a column is upstream Step4 metadata."""
+    if column_name is None:
+        return False
+
+    value = str(column_name).strip()
+    if not value:
+        return False
+
+    return value in STEP4_METADATA_COLUMNS or value.lower().endswith(STEP4_RATIO_METADATA_SUFFIX)
+
+
+def get_step4_metadata_columns(columns: Iterable[object]) -> List[object]:
+    """Return Step4 metadata columns in their source order."""
+    return [column for column in columns if is_step4_metadata_column(column)]
+
+
+def is_non_sample_column(column_name: object) -> bool:
+    """Return True for metadata/stat columns that must not be sample intensities."""
+    if column_name is None:
+        return False
+
+    value = str(column_name).strip()
+    return value in NON_SAMPLE_COLUMNS or is_step4_metadata_column(value)
+
+
 # Columns that should never be treated as sample intensity columns
 NON_SAMPLE_COLUMNS = {
     'Mz/RT', 'FeatureID', 'RT', 'ISTD', 'ISTD_RT', 'RT_Difference', 'ISTD_Median',
@@ -127,7 +172,8 @@ NON_SAMPLE_COLUMNS = {
     'Frac_Strategy', 'exposure_ratio', 'normal_ratio', 'control_ratio', 'QC_ratio',
     # Additional metadata columns
     'mz', 'rt', 'm/z', 'Mass', 'Retention_Time',
-    'is_Presence_Absence_Marker',
+    'is_Presence_Absence_Marker', 'Feature_Filter_Keep_Reasons', 'Imputation_Tag_Reasons',
+    'Feature_Filter_Delete_Reasons', 'Detection_Profile',
 }
 
 # Keywords that identify derived statistical columns
