@@ -2,9 +2,11 @@
 
 ## 📋 概述
 
-這個工具是 DNP active workflow 的 Step 3，負責 `PQN` 或 `SpecNorm+PQN` 濃度 / 尺度標準化。它不是 cross-batch correction 模組，也不會把 Step 4 的 QC batch scaling 當成預設 final output。本工具的核心任務，是在 Step 1/Step 2 技術穩定化之後，依據 QC reference 與可用的樣本 reference 欄位，產生可供後續統計分析使用的 Step 3 normalized workbook。
+這個工具是 DNP active workflow 的 Step 3，預設執行 `SpecNorm+PQN`，也支援手動選擇 `PQN`。它不是 cross-batch correction 模組，也不會把 Step 4 的 QC batch scaling 當成預設 final output。本工具的核心任務，是在 Step 1/Step 2 技術穩定化之後，依據 specimen-reference 欄位與 QC reference，產生可供後續統計分析使用的 Step 3 normalized workbook。
 
-本工具採用的是**混合標準化策略**。Step 3 可以選擇單獨使用 PQN，或使用 `SpecNorm+PQN`：先用樣本特異性參考值做 SpecNorm division，再使用 PQN 處理整體代謝組學譜的尺度差異，最後保留 SpecNorm+PQN 的輸出尺度，不再以原始 feature 中位數乘回。這種策略同時處理「個體特異性變異」和「群體系統性變異」，並避免在 DNA、蛋白質等小 reference 值情境中把強度再乘一次強度。
+本工具採用的是**混合標準化策略**。Step 3 預設使用 `SpecNorm+PQN`：先用 specimen-reference value 做 specimen-reference division，再使用 PQN 處理整體代謝組學譜的尺度差異，最後保留 SpecNorm+PQN 的輸出尺度，不再以原始 feature 中位數乘回。也可以手動選擇單獨使用 `PQN`。這種策略同時處理「個體樣本 reference 差異」和「群體 spectrum 尺度差異」，並避免在 DNA、蛋白質等小 reference 值情境中把強度再乘一次強度。
+
+在本專案中，`SpecNorm` 的全名採 **Specimen-reference normalization**。它不是 spectral normalization，也不是 total-sum normalization；實作上就是「真實樣本除以 `SampleInfo` 中可信的 per-sample reference 值，QC 樣本在此階段不除」。
 
 新版 Step 3 的責任邊界已明確收斂為 **concentration normalization**。它可以在條件合適時使用 QC 來建構 PQN reference，但不應被實作成 cross-batch correction，更不應把 non-shared QC 擴張成 global harmonization 工具。
 
@@ -35,13 +37,13 @@
 
 您可能會問：既然標準化這麼重要，那麼是不是有一種「萬能」的標準化方法可以解決所有問題呢？很遺憾，答案是否定的。代謝組學數據的複雜性決定了我們需要結合多種策略。讓我解釋為什麼。
 
-**SpecNorm reference division 的強項與弱項。** `SpecNorm+PQN` 會先用 `SampleInfo` 中第 F 欄或之後的數值型 reference 欄位做樣本特異性 division。這個欄位可以是 `Creatinine_mg_dL`、`DNA_mg/20uL`、蛋白質含量，或其他實驗設計定義的 normalization adduct / reference。這一步能處理每個真實樣本自己的濃度、載量或萃取量差異，但不應被解讀成 batch correction。
+**SpecNorm 的強項與弱點。** `SpecNorm+PQN` 會先用 `SampleInfo` 中具 reference 語意的數值欄位做 specimen-reference division。這個欄位可以是 `Creatinine_mg_dL`、`DNA_mg/20uL`、蛋白質含量，或其他實驗設計定義的 normalization adduct / reference；`Injection_Volume` 這類操作 metadata 會被排除。這一步能處理每個真實樣本自己的濃度、載量或萃取量差異，但不應被解讀成 batch correction。
 
 舉個例子：如果兩個 DNA adductomics 樣本的 DNA input 不同，直接比較原始強度會把樣本載量差異混入分析。`SpecNorm+PQN` 會先除以 DNA 或其他 reference 值，再用 PQN 處理整體 spectrum 的尺度差異。
 
 **PQN 的強項與弱項。** PQN (Probabilistic Quotient Normalization) 是一種群體導向的標準化方法。它的核心假設是：大部分代謝物在不同樣本間應該維持穩定的比例，只有少數代謝物會因為生物學差異而改變。基於這個假設，PQN 計算每個樣本相對於「參考譜」的整體稀釋因子，然後用這個因子來標準化所有代謝物。PQN 的優點是能夠處理整體尺度的系統性偏移，而且對極端值穩健（它使用中位數而非平均值）。但它的局限是：它是一種「一刀切」的方法，對所有樣本使用相同的標準化邏輯，無法針對性處理個體特異性的濃度差異。
 
-**混合策略的協同效應。** SpecNorm division 處理樣本特異性的 reference 差異，而 PQN 處理整體 spectrum 的稀釋 / scale factor。兩者結合，就像是「先校正樣本載量，再校正整體譜尺度」，讓不同樣本回到更可比較的基準上。
+**混合策略的協同效應。** SpecNorm（specimen-reference normalization）處理每個真實樣本的 reference 差異，而 PQN 處理整體 spectrum 的稀釋 / scale factor。兩者結合，就像是「先校正樣本載量，再校正整體譜尺度」，讓不同樣本回到更可比較的基準上。
 
 用一個生活化的比喻：如果您要比較不同國家的人均收入，首先需要換算成相同貨幣（類似 SpecNorm 處理 reference 單位），再考慮購買力平價（類似 PQN 處理整體尺度）。兩者回答的是不同層次的可比性問題。
 
@@ -66,13 +68,13 @@ Adductomics 目前採微量分析政策：不論 Step 2 LOESS 後的穩定性如
 - **QC 樣本：** 從 `Sample_Type` 欄位或樣本名稱識別
 - **真實樣本：** 非 QC 的生物樣本
 
-#### 步驟 2: SpecNorm reference division（僅真實樣本）
+#### 步驟 2: SpecNorm（specimen-reference normalization，僅真實樣本）
 
 **原理：** 使用 `SampleInfo` 中的數值型 reference 欄位，將真實樣本強度除以該樣本的 reference 值。QC 樣本不參與這個 division，因為 QC 通常沒有樣本特異性的生物 reference。
 
 **校正公式：**
 ```
-SpecNorm 強度 = 原始強度 / 該樣本參考值
+SpecNorm 強度 = 原始強度 / 該 specimen reference 值
 ```
 
 **實例：**
@@ -80,7 +82,7 @@ SpecNorm 強度 = 原始強度 / 該樣本參考值
 - 樣本 B `DNA_mg/20uL` = 3.0
 校正後，樣本 A 的特徵強度會除以 1.5，樣本 B 會除以 3.0。舊版曾在這一步再乘回參考值中位數，也曾在 PQN 完成後進行 feature-specific scale-back；新版兩者都不做，避免把已經合理的 SpecNorm+PQN 強度再次放大。
 
-**注意：** QC 樣本不進行 SpecNorm reference division，因為 QC 通常是混合或技術樣本，沒有對應的個體 reference。
+**注意：** QC 樣本不進行 specimen-reference division，因為 QC 通常是混合或技術樣本，沒有對應的個體 reference。
 
 #### 步驟 3: PQN 標準化（所有樣本）
 
@@ -185,7 +187,7 @@ final_ij = pqn_after_specnorm_ij
 
 ### 4. 與 Step 4 的新邊界
 
-Step 3 現在是 active scientific workflow 的終點。GUI export、bridge export、以及正常的 downstream workbook 選擇都應以 Step 3 output 為主：
+Step 3 現在是 active scientific workflow 的終點。GUI 的手動開啟 workbook / plots，以及正常的 downstream workbook 選擇都應以 Step 3 output 為主：
 - `SpecNorm_PQN_Result`
 - `PQN_Result`
 
@@ -237,7 +239,7 @@ Step 3 現在是 active scientific workflow 的終點。GUI export、bridge expo
 - 第一欄：樣本名稱（必須與數據工作表列名匹配）
 - `Sample_Type`: 樣本類型（標記 QC 樣本，如 "QC", "QC1"）
 - `Batch`: 供 Step 3 判斷 batch 結構與 QC sharedness
-- 數值型 reference 欄位：第 F 欄（索引 5）或之後第一個可用的數值型欄位，用於 `SpecNorm+PQN`。欄名若包含 `creatinine` 會標示為 `Creatinine`，其他數值欄位會標示為 `Normalization_adduct`
+- 數值型 specimen-reference 欄位：用於 `SpecNorm+PQN`，欄名需具 reference 語意，例如 `creatinine`、`dna`、`protein`、`concentration`、`reference` 或 `amount`；`Injection_Volume` 等操作 metadata 會被排除。欄名若包含 `creatinine` 會標示為 `Creatinine`，其他 reference 欄位會標示為 `Normalization_adduct`
 
 **3. Step 2 advanced statistics sheet：**
 - `LOESS_summary`（canonical）
@@ -247,8 +249,8 @@ Step 3 會從這張表讀取 `Decision_Status`, `Kendall_Tau`, `Trend_pvalue`, `
 
 ### 注意事項
 
-- Reference 值必須是正數；缺失或無效值不會用於真實樣本的 SpecNorm division
-- 若選擇 `SpecNorm+PQN` 但找不到可用 reference 欄位，Step 3 會明確中止
+- Reference 值必須是正數；缺失或無效值不會用於真實樣本的 specimen-reference division
+- 預設 `SpecNorm+PQN` 若找不到可用 specimen-reference 欄位，Step 3 會明確中止
 - 若只需要 QC-based PQN，請選擇 `PQN`
 
 ## 🚀 使用方法
@@ -357,11 +359,11 @@ Direct processor output without `session_dir` uses timestamped files under `outp
 
 **Q: 什麼時候需要 `SpecNorm+PQN`？**
 
-當每個真實樣本都有可信的數值型 reference 欄位時，例如尿液 creatinine、DNA input、蛋白質含量，或實驗定義的 normalization adduct。沒有這類 reference 時，請使用 `PQN`。
+當每個真實樣本都有可信的數值型 specimen-reference 欄位時，例如尿液 creatinine、DNA input、蛋白質含量，或實驗定義的 normalization adduct。沒有這類 reference 時，請使用 `PQN`。
 
 **Q: 如果沒有 reference 欄位怎麼辦？**
 
-若選擇 `SpecNorm+PQN`，Step 3 會中止並要求補上可用欄位。若只想執行 PQN，請在 GUI 或程式化呼叫中選擇 `PQN`。
+預設 `SpecNorm+PQN` 會中止並要求補上可用欄位。若只想執行 PQN，請在 GUI 或程式化呼叫中選擇 `PQN`。
 
 **Q: 標準化後 CV% 反而上升？**
 
@@ -372,9 +374,9 @@ Direct processor output without `session_dir` uses timestamped files under `outp
 
 建議：檢查 reference 值分布、QC CV%、以及 Step 2 `LOESS_summary`。目前 adductomics 政策不會自動 fallback 到 all-sample robust median；QC 不穩定會作為 report warning。
 
-**Q: 為什麼 QC 樣本不做 SpecNorm reference division？**
+**Q: 為什麼 QC 樣本不做 SpecNorm？**
 
-QC 樣本通常是混合或技術樣本，沒有個體 reference 值。對 QC 進行 reference division 會引入不必要的變異。
+QC 樣本通常是混合或技術樣本，沒有個體 reference 值。對 QC 進行 specimen-reference division 會引入不必要的變異。
 
 **Q: PQN 標準化因子的合理範圍是多少？**
 
@@ -395,11 +397,11 @@ QC 樣本通常是混合或技術樣本，沒有個體 reference 值。對 QC �
 
 ### 依賴套件
 ```
-pandas, numpy, scipy, scikit-learn, matplotlib, seaborn, openpyxl
+pandas, numpy, scipy, scikit-learn, matplotlib, openpyxl
 ```
 
 ### 核心演算法
-- **SpecNorm reference division：** 真實樣本除以 per-sample reference 值
+- **SpecNorm（specimen-reference normalization）：** 真實樣本除以 per-sample reference 值
 - **PQN 標準化：** Dieterle et al. (2006) 的 PQN 演算法
 - **正態性檢定：** Shapiro-Wilk test (α = 0.05)
 - **相關性分析：** Spearman rank correlation
@@ -411,7 +413,7 @@ pandas, numpy, scipy, scikit-learn, matplotlib, seaborn, openpyxl
 
 ## 📝 注意事項
 
-1. **Reference 欄位：** `SpecNorm+PQN` 需要每個真實樣本有可信的數值型 reference
+1. **Reference 欄位：** 預設 `SpecNorm+PQN` 需要每個真實樣本有可信的數值型 specimen-reference
 2. **Reference 值品質：** 確保 reference 測量準確，且符合目前實驗設計
 3. **QC 樣本：** 建議至少 3 個 QC 樣本以獲得穩定的 PQN 參考
 4. **數據前處理：** 建議先完成 ISTD 與 QC-LOWESS。新版 active path 不再預設依賴 ComBat 或其他 cross-batch correction sheet
@@ -444,4 +446,4 @@ Statistical Analysis
 **版本:** v2.0  
 **更新:** 2025  
 **環境:** Python 3.8+  
-**適用樣本類型:** 有可信數值型 reference 的樣本（`SpecNorm+PQN`） / 有 QC reference 的樣本（`PQN`）
+**適用樣本類型:** 有可信數值型 specimen-reference 的樣本（`SpecNorm+PQN`） / 有 QC reference 的樣本（`PQN`）

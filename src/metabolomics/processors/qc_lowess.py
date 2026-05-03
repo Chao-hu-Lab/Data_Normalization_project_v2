@@ -31,6 +31,7 @@ from metabolomics.utils.sample_classification import (
     normalize_sample_name,
     normalize_sample_type,
     identify_sample_columns,
+    parse_batch_labels as shared_parse_batch_labels,
 )
 from metabolomics.utils.file_io import (
     build_output_path,
@@ -38,6 +39,7 @@ from metabolomics.utils.file_io import (
     get_output_root,
     resolve_session_dir,
 )
+from metabolomics.utils.data_validation import DataValidator, require_valid
 from metabolomics.utils.excel_colors import cell_has_red_font
 from metabolomics.utils.results import ProcessingResult
 from metabolomics.utils.console import safe_print as print
@@ -65,9 +67,7 @@ DEFAULT_NON_SAMPLE_COLUMNS = NON_SAMPLE_COLUMNS
 
 def parse_batch_labels(value):
     """Parse semicolon-separated batch labels and trim whitespace."""
-    if pd.isna(value):
-        return []
-    return [part.strip() for part in str(value).split(';') if part.strip()]
+    return shared_parse_batch_labels(value)
 
 
 def collect_red_marked_feature_ids(file_path, sheet_name):
@@ -524,7 +524,6 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
 def perform_lowess_normalization(istd_df, sample_info_df):
     """執行分批次的 QC-LOWESS 正規化流程。"""
     try:
-        source_sheet_name = istd_df.attrs.get('source_sheet_name', SHEET_NAMES['istd_correction'])
         if istd_df is None or istd_df.empty:
             raise ValueError("ISTD_Correction 數據為空")
 
@@ -971,6 +970,13 @@ def get_valid_values(row, columns):
 def load_and_process_data(file_path):
     """載入並驗證數據（含完整防呆檢查）"""
     try:
+        validator = DataValidator()
+        require_valid(
+            validator.validate_file_path(file_path),
+            context="Step 2 input file",
+        )
+        file_path = os.fspath(file_path)
+
         # ===== 防呆1: 文件存在性檢查 =====
         if not os.path.exists(file_path):
             raise ValueError(f"找不到檔案 '{file_path}'")
@@ -997,6 +1003,15 @@ def load_and_process_data(file_path):
         # ===== 防呆5: 必要工作表檢查 =====
         print(f"📋 找到的工作表: {', '.join(excel_file.sheet_names)}")
 
+        require_valid(
+            validator.validate_required_sheets(
+                excel_file.sheet_names,
+                required_sheets=[SHEET_NAMES['sample_info']],
+                context="Step 2 input workbook",
+            ),
+            context="Step 2 workbook sheets",
+        )
+
         required_sheets = [SHEET_NAMES['sample_info']]
         missing_sheets = [sheet for sheet in required_sheets if sheet not in excel_file.sheet_names]
 
@@ -1019,6 +1034,14 @@ def load_and_process_data(file_path):
 
         if sample_info_df.empty:
             raise ValueError(f"'{SHEET_NAMES['sample_info']}' 工作表為空")
+
+        require_valid(
+            validator.validate_sample_info(
+                sample_info_df,
+                required_columns=['Sample_Name', 'Sample_Type', 'Injection_Order'],
+            ),
+            context="Step 2 SampleInfo",
+        )
 
         required_columns = ['Sample_Name', 'Sample_Type', 'Injection_Order']
         missing_cols = [col for col in required_columns if col not in sample_info_df.columns]
@@ -1098,6 +1121,15 @@ def load_and_process_data(file_path):
 
         if istd_df.empty:
             raise ValueError(f"'{source_sheet_name}' 工作表為空")
+
+        require_valid(
+            validator.validate_raw_intensity(
+                istd_df,
+                sample_names=sample_info_df['Sample_Name'].tolist(),
+                require_sample_match=True,
+            ),
+            context=f"Step 2 {source_sheet_name}",
+        )
 
         # 支援 'Mz/RT' 或 'FeatureID' 作為特徵ID欄位
         if FEATURE_ID_COLUMN in istd_df.columns and FEATURE_ID_COLUMN != 'FeatureID':
@@ -2309,8 +2341,6 @@ def main(input_file=None, session_dir=None):
     print(f"  輸入: {os.path.basename(file_path)}")
 
     raw_df, istd_df, sample_info_df, sample_type_row = load_and_process_data(file_path)
-    source_sheet_name = istd_df.attrs.get('source_sheet_name', SHEET_NAMES['istd_correction'])
-
     lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats, trend_plot_data = (
         perform_lowess_normalization(istd_df, sample_info_df)
     )

@@ -10,7 +10,8 @@ import numpy as np
 from typing import Tuple, List, Optional, Dict, Any
 from dataclasses import dataclass, field
 
-from .constants import VALIDATION_THRESHOLDS, SHEET_NAMES, NON_SAMPLE_COLUMNS, FEATURE_ID_COLUMN
+from .constants import VALIDATION_THRESHOLDS, FEATURE_ID_COLUMN
+from .sample_classification import normalize_sample_name
 
 
 @dataclass
@@ -71,6 +72,27 @@ class DataValidator:
         """
         self.strict = strict
 
+    def validate_required_sheets(
+        self,
+        sheet_names: List[str],
+        required_sheets: List[str],
+        context: str = "Workbook",
+    ) -> ValidationResult:
+        """Validate that a workbook exposes the sheets required by a processing step."""
+        result = ValidationResult()
+        available = [str(sheet) for sheet in sheet_names]
+        missing = [sheet for sheet in required_sheets if sheet not in available]
+        result.info["available_sheets"] = available
+        result.info["required_sheets"] = list(required_sheets)
+
+        if missing:
+            result.add_error(
+                f"{context} 缺少必要工作表: {', '.join(missing)}。"
+                f" 找到的工作表: {', '.join(available) if available else '(none)'}"
+            )
+
+        return result
+
     def validate_file_path(self, file_path: str) -> ValidationResult:
         """
         Validate that a file path is valid and accessible.
@@ -88,6 +110,7 @@ class DataValidator:
             ValidationResult with any errors/warnings
         """
         result = ValidationResult()
+        file_path = os.fspath(file_path)
 
         # Check existence
         if not os.path.exists(file_path):
@@ -118,7 +141,12 @@ class DataValidator:
         result.info['file_size'] = file_size
         return result
 
-    def validate_sample_info(self, df: pd.DataFrame) -> ValidationResult:
+    def validate_sample_info(
+        self,
+        df: pd.DataFrame,
+        required_columns: Optional[List[str]] = None,
+        require_qc: bool = False,
+    ) -> ValidationResult:
         """
         Validate SampleInfo sheet structure and content.
 
@@ -145,7 +173,7 @@ class DataValidator:
         result.info['total_samples'] = len(df)
 
         # Check required columns
-        required_cols = ['Sample_Name', 'Sample_Type']
+        required_cols = required_columns or ['Sample_Name', 'Sample_Type']
         for col in required_cols:
             if col not in df.columns:
                 # Try to find similar column names
@@ -176,7 +204,11 @@ class DataValidator:
 
         min_qc = VALIDATION_THRESHOLDS.get('min_qc_samples', 3)
         if qc_count == 0:
-            result.add_warning("未找到 QC 樣本 (Sample_Type 中無 'QC')")
+            message = "未找到 QC 樣本 (Sample_Type 中無 'QC')"
+            if require_qc:
+                result.add_error(message)
+            else:
+                result.add_warning(message)
         elif qc_count < min_qc:
             result.add_warning(
                 f"QC 樣本數量 ({qc_count}) 低於建議最小值 ({min_qc})"
@@ -191,7 +223,8 @@ class DataValidator:
     def validate_raw_intensity(
         self,
         df: pd.DataFrame,
-        sample_names: Optional[List[str]] = None
+        sample_names: Optional[List[str]] = None,
+        require_sample_match: bool = False,
     ) -> ValidationResult:
         """
         Validate RawIntensity sheet structure and content.
@@ -241,11 +274,27 @@ class DataValidator:
         # Check sample column matching
         if sample_names:
             data_cols = set(df.columns) - {feature_col}
-            sample_set = set(sample_names)
+            sample_lookup = {
+                normalize_sample_name(sample): str(sample)
+                for sample in sample_names
+                if normalize_sample_name(sample)
+            }
+            data_lookup = {
+                normalize_sample_name(column): str(column)
+                for column in data_cols
+                if normalize_sample_name(column)
+            }
+            matched_samples = set(sample_lookup) & set(data_lookup)
+            result.info['matched_sample_count'] = len(matched_samples)
 
-            missing_in_data = sample_set - data_cols
+            if require_sample_match and not matched_samples:
+                result.add_error(
+                    "RawIntensity 中找不到任何可與 SampleInfo 對齊的樣本欄位"
+                )
+
+            missing_in_data = set(sample_lookup) - set(data_lookup)
             if missing_in_data:
-                sample_list = list(missing_in_data)[:5]
+                sample_list = [sample_lookup[key] for key in list(missing_in_data)[:5]]
                 msg = f"SampleInfo 中的樣本在 RawIntensity 中找不到: {sample_list}"
                 if len(missing_in_data) > 5:
                     msg += f" ... 還有 {len(missing_in_data) - 5} 個"
@@ -382,6 +431,14 @@ class DataValidator:
             )
 
         return result
+
+
+def require_valid(result: ValidationResult, context: str) -> None:
+    """Raise ValueError when a validation result contains hard errors."""
+    if result.is_valid:
+        return
+    errors = "; ".join(result.errors) if result.errors else "unknown validation error"
+    raise ValueError(f"{context} validation failed: {errors}")
 
 
 def validate_dataframe_numeric(

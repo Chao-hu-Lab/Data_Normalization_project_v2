@@ -67,6 +67,13 @@ def normalize_sample_name(name) -> str:
     return ''.join(filtered_parts)
 
 
+def parse_batch_labels(value) -> List[str]:
+    """Parse semicolon-separated batch labels and trim whitespace."""
+    if pd.isna(value):
+        return []
+    return [part.strip() for part in str(value).split(';') if part.strip()]
+
+
 def normalize_sample_type(sample_type: str) -> str:
     """
     Normalize a sample type to a standard category.

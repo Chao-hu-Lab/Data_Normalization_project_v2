@@ -1,4 +1,12 @@
+> [!IMPORTANT]
+> Archived historical plan. It may describe pre-refactor Step 3/Step 4 behavior that is no longer current.
+> Current workflow sources: `README.md`, `docs/TESTING.md`,
+> `docs/plans/2026-04-23-dnp-workflow-responsibility-spec.md`, and
+> `docs/plans/2026-04-23-pqn-reference-selection-rules.md`.
+
 # 2026-04-25 Dead Code and Doc Drift Audit
+
+**Status:** Superseded by the current source state as of 2026-05-03. The `DataValidator` layer is now wired into Step 1-3, and the high-confidence helper candidates listed here should be treated as historical audit evidence rather than a current deletion checklist.
 
 ## Scope
 

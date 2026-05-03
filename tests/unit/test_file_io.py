@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from metabolomics.utils import file_io
 from metabolomics.utils.file_io import (
     create_session_dir,

@@ -18,12 +18,10 @@ def test_imports_succeed_without_ms_core_checkout(tmp_path):
 
     code = """
 from metabolomics import utils
-from metabolomics.adapters.dnp_to_metaboanalyst import convert_dnp_to_metaboanalyst
 from metabolomics.processors import istd, qc_lowess, qc_batch_scaling, normalization
 from metabolomics.gui.app import DataNormalizationApp
 
 print("utils", bool(utils))
-print("dnp_to_metaboanalyst", bool(convert_dnp_to_metaboanalyst))
 print("istd", bool(istd))
 print("qc_lowess", bool(qc_lowess))
 print("qc_batch_scaling", bool(qc_batch_scaling))

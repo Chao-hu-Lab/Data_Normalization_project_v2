@@ -1,4 +1,12 @@
+> [!IMPORTANT]
+> Archived historical plan. It may describe pre-refactor Step 3/Step 4 behavior that is no longer current.
+> Current workflow sources: `README.md`, `docs/TESTING.md`,
+> `docs/plans/2026-04-23-dnp-workflow-responsibility-spec.md`, and
+> `docs/plans/2026-04-23-pqn-reference-selection-rules.md`.
+
 # Dead Code Cleanup Implementation Plan
+
+**Status:** Historical implementation plan. The verification scripts remain useful, but the listed helper-removal tasks are not the current backlog unless revalidated against the current source and public compatibility needs.
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 

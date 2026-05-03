@@ -33,6 +33,7 @@ from metabolomics.utils.file_io import (
     get_output_root,
     resolve_session_dir,
 )
+from metabolomics.utils.data_validation import DataValidator, require_valid
 from metabolomics.utils.excel_colors import cell_has_red_font
 from metabolomics.utils.results import ProcessingResult
 from metabolomics.utils.console import safe_print as print
@@ -60,6 +61,13 @@ def simplify_column_name(name):
 
 def load_and_process_data(file_path):
     try:
+        validator = DataValidator()
+        require_valid(
+            validator.validate_file_path(file_path),
+            context="Step 1 input file",
+        )
+        file_path = os.fspath(file_path)
+
         # ===== 防呆1: 文件存在性检查 =====
         if not os.path.exists(file_path):
             raise ValueError(f"錯誤：找不到檔案 '{file_path}'")
@@ -82,6 +90,15 @@ def load_and_process_data(file_path):
         except Exception as e:
             raise ValueError(f"錯誤：無法讀取 Excel 檔案，可能已損壞或格式不正確。詳細錯誤: {e}") from e
 
+        require_valid(
+            validator.validate_required_sheets(
+                excel_file.sheet_names,
+                required_sheets=[SHEET_NAMES['raw_intensity'], SHEET_NAMES['sample_info']],
+                context="Step 1 input workbook",
+            ),
+            context="Step 1 workbook sheets",
+        )
+
         # 讀取所有工作表，儲存為字典 {sheet_name: df}
         all_sheets = {sheet: pd.read_excel(excel_file, sheet_name=sheet) for sheet in excel_file.sheet_names}
 
@@ -97,6 +114,11 @@ def load_and_process_data(file_path):
 
         if sample_info_df.empty:
             raise ValueError(f"錯誤：'{SHEET_NAMES['sample_info']}' 工作表為空")
+
+        require_valid(
+            validator.validate_sample_info(sample_info_df),
+            context="Step 1 SampleInfo",
+        )
 
         required_columns = ['Sample_Name', 'Sample_Type']
         missing_cols = [col for col in required_columns if col not in sample_info_df.columns]
@@ -136,6 +158,15 @@ def load_and_process_data(file_path):
         # ===== 防呆9: RawIntensity 基本检查 =====
         if raw_df.empty:
             raise ValueError(f"錯誤：'{SHEET_NAMES['raw_intensity']}' 工作表為空")
+
+        require_valid(
+            validator.validate_raw_intensity(
+                raw_df,
+                sample_names=sample_info_df['Sample_Name'].tolist(),
+                require_sample_match=True,
+            ),
+            context="Step 1 RawIntensity",
+        )
 
         # 支援 'Mz/RT' 或 'FeatureID' 作為特徵ID欄位名稱
         if FEATURE_ID_COLUMN in raw_df.columns and FEATURE_ID_COLUMN != 'FeatureID':
@@ -1522,9 +1553,6 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
     if missing_cols:
         print(f"❌ 錯誤：結果缺少必要欄位: {', '.join(missing_cols)}")
         raise ValueError(f"結果缺少必要欄位: {missing_cols}")
-
-    # ✅ 圖表輸出基底（可覆蓋為特定目錄）
-    plot_output_dir = plots_dir or os.path.dirname(output_file)
 
     # ✅ 使用新的統計檢定函數
     if cv_results_df is None:
