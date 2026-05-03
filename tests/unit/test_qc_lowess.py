@@ -12,6 +12,7 @@ import pandas as pd
 import numpy as np
 import os
 import shutil
+from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
@@ -45,6 +46,35 @@ class TestQCLOWESSInput:
         captured = capsys.readouterr().out
         assert "成功讀取 'RawIntensity' 工作表" in captured
         assert "成功讀取 'ISTD_Correction' 工作表" not in captured
+
+    def test_load_accepts_pathlike_file(self, qc_lowess_module, sample_input_file):
+        _, istd_df, sample_info_df, _ = qc_lowess_module.load_and_process_data(Path(sample_input_file))
+
+        assert istd_df is not None
+        assert sample_info_df is not None
+
+    def test_load_fails_closed_when_no_sample_columns_match_sampleinfo(self, qc_lowess_module, tmp_path):
+        raw_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0"],
+                "Unmapped_A": [10.0],
+                "Unmapped_B": [20.0],
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC"],
+                "Injection_Order": [1, 2],
+            }
+        )
+        workbook_path = tmp_path / "unmapped_step2.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            raw_df.to_excel(writer, sheet_name="RawIntensity", index=False)
+            sample_info_df.to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        with pytest.raises(ValueError, match="找不到任何可與 SampleInfo 對齊的樣本欄位"):
+            qc_lowess_module.load_and_process_data(workbook_path)
 
     def test_collect_red_marked_feature_ids_accepts_argb_red(self, qc_lowess_module, tmp_path):
         """Fallback red-font parsing should accept ARGB red strings from openpyxl."""

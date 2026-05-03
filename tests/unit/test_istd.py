@@ -39,10 +39,38 @@ class TestISTDCorrectionInput:
         assert 'Sample_Name' in sample_info_df.columns
         assert 'Sample_Type' in sample_info_df.columns
 
+    def test_load_accepts_pathlike_file(self, istd_module, sample_input_file):
+        raw_df, sample_info_df, _, _ = istd_module.load_and_process_data(Path(sample_input_file))
+
+        assert raw_df is not None
+        assert sample_info_df is not None
+
     def test_load_nonexistent_file(self, istd_module):
         """Test handling of non-existent file."""
         with pytest.raises(ValueError, match="找不到檔案"):
             istd_module.load_and_process_data("nonexistent_file.xlsx")
+
+    def test_load_fails_closed_when_no_sample_columns_match_sampleinfo(self, istd_module, tmp_path):
+        raw_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0"],
+                "Unmapped_A": [10.0],
+                "Unmapped_B": [20.0],
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC"],
+            }
+        )
+        workbook_path = tmp_path / "unmapped_step1.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            raw_df.to_excel(writer, sheet_name="RawIntensity", index=False)
+            sample_info_df.to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        with pytest.raises(ValueError, match="找不到任何可與 SampleInfo 對齊的樣本欄位"):
+            istd_module.load_and_process_data(workbook_path)
 
     def test_istd_detection(self, istd_module, sample_input_file):
         """Test ISTD (red font) detection."""
@@ -195,7 +223,7 @@ class TestISTDCorrectionOutput:
     def test_data_integrity(self, istd_module, sample_input_file):
         """Test that data integrity is maintained."""
         # Load original data
-        raw_df, sample_info_df, _, _ = istd_module.load_and_process_data(sample_input_file)
+        raw_df, _, _, _ = istd_module.load_and_process_data(sample_input_file)
         original_feature_count = len(raw_df[~raw_df['is_ISTD']])  # Non-ISTD features
 
         # Run correction
@@ -212,6 +240,7 @@ class TestISTDCorrectionOutput:
 
         # Feature count should be approximately same (non-ISTD features)
         assert len(output_df) > 0, "Output should have rows"
+        assert len(output_df) == original_feature_count, "Output should keep non-ISTD feature count"
         assert FEATURE_ID_COLUMN in output_df.columns, (
             f"Output should expose canonical feature id column {FEATURE_ID_COLUMN!r}"
         )

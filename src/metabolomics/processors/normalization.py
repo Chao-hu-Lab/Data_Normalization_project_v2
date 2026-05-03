@@ -16,9 +16,7 @@ from metabolomics.utils.constants import (
     SHEET_NAMES,
     DATETIME_FORMAT_FULL,
     VALIDATION_THRESHOLDS,
-    COHENS_D_THRESHOLDS,
     CV_QUALITY_THRESHOLDS,
-    NON_SAMPLE_COLUMNS,
     is_non_sample_column,
     resolve_sheet_name,
 )
@@ -34,8 +32,14 @@ from metabolomics.utils.file_io import (
     resolve_session_dir,
 )
 from metabolomics.utils.data_helpers import apply_feature_metadata_passthrough
+from metabolomics.utils.data_validation import DataValidator, require_valid
 from metabolomics.utils.results import ProcessingResult
 from metabolomics.utils.console import safe_print as print
+from metabolomics.utils.normalization_contract import (
+    DEFAULT_NORMALIZATION_METHOD,
+    canonicalize_normalization_method,
+    get_summary_sheet_name,
+)
 
 warnings.filterwarnings('ignore')
 
@@ -43,17 +47,6 @@ warnings.filterwarnings('ignore')
 # Use centralized setup
 setup_matplotlib()
 
-METHOD_ALIASES = {
-    'PQN': 'PQN',
-    'SPECNORM+PQN': 'SpecNorm_PQN',
-    'SPECNORM_PQN': 'SpecNorm_PQN',
-    'SPECNORM PQN': 'SpecNorm_PQN',
-}
-
-NORMALIZATION_SUMMARY_SHEETS = {
-    'PQN': 'PQN_summary',
-    'SpecNorm_PQN': 'SpecNorm_PQN_summary',
-}
 SUMMARY_REPORT_SEPARATOR = "-" * 80
 
 # Unified color scheme for sample type grouping across all plots
@@ -63,22 +56,6 @@ SAMPLE_TYPE_COLORS = {
     'QC': '#F39C12',
     'UNKNOWN': '#95A5A6',
 }
-
-
-def canonicalize_normalization_method(method_name):
-    """Normalize user-facing and legacy method names to internal names."""
-    if method_name is None:
-        return 'PQN'
-    raw_method = str(method_name).strip()
-    key = raw_method.upper().replace('-', '_')
-    key = " ".join(key.split())
-    return METHOD_ALIASES.get(key, raw_method)
-
-
-def get_summary_sheet_name(method_name):
-    """Return the Step 3 summary sheet name for the selected method."""
-    canonical_method = canonicalize_normalization_method(method_name)
-    return NORMALIZATION_SUMMARY_SHEETS.get(canonical_method, f"{canonical_method}_summary")
 
 def _lookup_sample_type(sample, sample_info_df, col_to_info_row=None, default='UNKNOWN'):
     """Helper: look up sample type using col_to_info_row mapping or fallback."""
@@ -361,9 +338,6 @@ def enhanced_pqn_normalization(data_matrix, sample_info_df, sample_columns,
     qc_indices = [i for i, s in enumerate(sample_columns) if sample_types[s] == 'QC']
     real_indices = [i for i, s in enumerate(sample_columns) if sample_types[s] != 'QC']
 
-    from collections import Counter
-    type_counts = Counter(sample_types.values())
-
     qc_count = len(qc_indices)
     real_count = len(real_indices)
     print(f"  樣本分類: QC={qc_count}, 真實={real_count}")
@@ -455,7 +429,7 @@ def specnorm_reference_division(data_matrix, sample_info_df, sample_columns,
                                 reference_values, col_to_info_row=None,
                                 correction_col_name=None):
     """
-    SpecNorm reference division.
+    SpecNorm (specimen-reference normalization).
 
     以每個樣本附帶的參考量值（如肌酐濃度、DNA 質量、蛋白質濃度等）
     做除法。僅校正真實樣本；QC 樣本保留原值。
@@ -476,7 +450,7 @@ def specnorm_reference_division(data_matrix, sample_info_df, sample_columns,
         校正欄位名稱，用於 log 顯示。
     """
     ref_label = correction_col_name or "reference"
-    print(f"\n執行 SpecNorm reference division（校正依據: {ref_label}）：")
+    print(f"\n執行 SpecNorm（specimen-reference normalization；校正依據: {ref_label}）：")
 
     # ========== Step 1: 分離 QC 和真實樣本 ==========
     sample_types = {}
@@ -516,7 +490,7 @@ def specnorm_reference_division(data_matrix, sample_info_df, sample_columns,
     final_data[:, real_indices] = real_data_corrected
 
     median_label = f"{median_ref:.2f}" if np.isfinite(median_ref) else "nan"
-    print(f"  ✓ SpecNorm division 完成（{ref_label} median={median_label}, 校正={np.sum(valid_ref_mask)}/{len(real_reference_values)}）")
+    print(f"  ✓ SpecNorm 完成（specimen-reference division；{ref_label} median={median_label}, 校正={np.sum(valid_ref_mask)}/{len(real_reference_values)}）")
 
     spec_info = {
         'reference_strategy': 'SpecNorm',
@@ -537,7 +511,7 @@ def specnorm_pqn_normalization(data_matrix, sample_info_df, sample_columns,
                                reference_values, col_to_info_row=None,
                                correction_col_name=None,
                                step2_advanced_stats_df=None):
-    """Run SpecNorm division, then PQN without post-PQN scale-back."""
+    """Run specimen-reference division, then PQN without post-PQN scale-back."""
     specnorm_data, spec_info = specnorm_reference_division(
         data_matrix,
         sample_info_df,
@@ -1254,41 +1228,6 @@ def plot_cv_comparison(original_cv, normalized_cv, output_path, method_name):
     original_cv_clean = original_cv_clean[:min_len]
     normalized_cv_clean = normalized_cv_clean[:min_len]
 
-    # 計算統計量
-    median_improvement = np.median(original_cv_clean) - np.median(normalized_cv_clean)
-
-    # Wilcoxon 配對檢驗
-    try:
-        w_stat, p_value = wilcoxon(original_cv_clean, normalized_cv_clean)
-        if p_value < 0.001:
-            sig_mark = '***'
-        elif p_value < 0.01:
-            sig_mark = '**'
-        elif p_value < 0.05:
-            sig_mark = '*'
-        else:
-            sig_mark = 'n.s.'
-    except (ValueError, TypeError) as e:
-        # ValueError: sample too small or all values identical
-        # TypeError: invalid input types
-        w_stat, p_value = np.nan, np.nan
-        sig_mark = 'N/A'
-
-    # Cohen's d (效應量)
-    pooled_std = np.sqrt((np.var(original_cv_clean, ddof=1) + np.var(normalized_cv_clean, ddof=1)) / 2)
-    cohens_d = (np.mean(original_cv_clean) - np.mean(normalized_cv_clean)) / pooled_std
-
-    # 效應量解讀
-    abs_d = abs(cohens_d)
-    if abs_d < COHENS_D_THRESHOLDS['small']:
-        effect_interpretation = 'Negligible'
-    elif abs_d < COHENS_D_THRESHOLDS['medium']:
-        effect_interpretation = 'Small'
-    elif abs_d < COHENS_D_THRESHOLDS['large']:
-        effect_interpretation = 'Medium'
-    else:
-        effect_interpretation = 'Large'
-
     # 閾值定義
     THRESHOLDS = {
         'good': 20,        # 綠色
@@ -1495,7 +1434,7 @@ def evaluate_subset_quality(
     return results
 
 
-def build_step4_summary_context(source_sheet_name, available_sheet_names=None):
+def build_step3_summary_context(source_sheet_name, available_sheet_names=None):
     """Summarize the Step 3 execution context for human-readable reporting."""
     available_sheet_names = list(available_sheet_names or [])
 
@@ -1598,13 +1537,13 @@ def create_normalization_summary_report(
             ref_label = pqn_info.get('ref_col_name', 'reference')
             report.append(f"【SpecNorm+PQN 校正資訊（{ref_label}）】")
             report.append(f"真實樣本數量: {pqn_info['real_count']}")
-            report.append(f"QC 樣本數量: {pqn_info['qc_count']}（不參與 SpecNorm division）")
+            report.append(f"QC 樣本數量: {pqn_info['qc_count']}（不參與 SpecNorm / specimen-reference normalization）")
             report.append(f"{ref_label} 中位數: {pqn_info['ref_median']:.2f}")
             report.append(f"有效樣本數: {pqn_info['ref_valid_count']}/{pqn_info['real_count']}")
             scale_back_strategy = pqn_info.get('scale_back_strategy', 'unknown')
             report.append(f"Scale-back: {scale_back_strategy}")
             if scale_back_strategy == 'none':
-                report.append("輸出尺度: SpecNorm division 後 PQN 尺度（不乘回原始 feature 中位數）")
+                report.append("輸出尺度: SpecNorm / specimen-reference normalization 後 PQN 尺度（不乘回原始 feature 中位數）")
             else:
                 report.append(
                     "Scale-back 可用特徵數: "
@@ -1761,11 +1700,11 @@ def create_normalization_summary_report(
         report.append("⚠ feature-level reproducibility 未見改善")
 
     if quality_metrics['total_cv_improvement'] > 10:
-        report.append("✓✓ global intensity scaling 改善明顯")
+        report.append("✓✓ sample total-intensity variability 改善明顯")
     elif quality_metrics['total_cv_improvement'] > 0:
-        report.append("✓ global intensity scaling 有所改善")
+        report.append("✓ sample total-intensity variability 有所改善")
     else:
-        report.append("⚠ global intensity scaling 未見改善")
+        report.append("⚠ sample total-intensity variability 未見改善")
 
     if not np.isnan(quality_metrics['sample_corr_std_before']):
         if quality_metrics['sample_corr_std_after'] < quality_metrics['sample_corr_std_before']:
@@ -1815,7 +1754,7 @@ def create_normalization_summary_report(
         quality_metrics['cv_improvement_pct'] <= 10 and
         quality_metrics['total_cv_improvement'] > 10
     ):
-        report.append("○ 提示：本次結果較像全域尺度穩定化，而非強烈提升 feature-level reproducibility")
+        report.append("○ 提示：本次結果主要降低樣本總強度變異，而非強烈提升 feature-level reproducibility")
 
     report.append("")
     report.append("=" * 80)
@@ -1871,7 +1810,7 @@ def find_sample_info_sheet(sheets):
 
 
 def find_correction_column(df):
-    """在樣本資訊工作表尋找可用於 SpecNorm 的 reference concentration 欄位。"""
+    """在樣本資訊工作表尋找可用於 SpecNorm 的 specimen-reference 欄位。"""
     if df.shape[1] < 1:
         print("警告：樣本資訊工作表欄位不足")
         return None, None
@@ -1898,6 +1837,15 @@ def find_correction_column(df):
 
     def _column_key(col):
         return re.sub(r'[^a-z0-9]+', '_', str(col).strip().lower()).strip('_')
+
+    print("SpecNorm+PQN 需要具 reference 語意的數值型 specimen-reference 欄位。")
+    ignored_metadata = [
+        str(col)
+        for col in df.columns
+        if _column_key(col) in excluded_names and _column_key(col) == 'injection_volume'
+    ]
+    if ignored_metadata:
+        print(f"忽略操作 metadata 欄位，不作為 SpecNorm reference: {', '.join(ignored_metadata)}")
 
     def _is_numeric_reference_candidate(col):
         col_key = _column_key(col)
@@ -1935,10 +1883,10 @@ def find_correction_column(df):
             if 'creatinine' in _column_key(correction_col)
             else 'Normalization_adduct'
         )
-        print(f"✓ 偵測到校正欄位: {correction_col} (類型: {correction_type})")
+        print(f"✓ 偵測到 specimen-reference 欄位: {correction_col} (類型: {correction_type})")
         return correction_col, correction_type
 
-    print("錯誤：找不到可用於校正的欄位")
+    print("錯誤：找不到可用於 SpecNorm+PQN 的 specimen-reference 欄位；若不需要 specimen-reference normalization，請選擇 PQN。")
     return None, None
 
 
@@ -2029,7 +1977,7 @@ def _extract_reference_values(sample_columns, col_to_info_row, correction_col):
 
 def perform_normalization(data_df, sample_info_df, file_path,
                           plots_dir=None, source_sheet_name=None,
-                          normalization_method='PQN', correction_col=None,
+                          normalization_method=DEFAULT_NORMALIZATION_METHOD, correction_col=None,
                           available_sheet_names=None,
                           step2_advanced_stats_df=None):
     """
@@ -2038,9 +1986,9 @@ def perform_normalization(data_df, sample_info_df, file_path,
     Parameters:
     -----------
     normalization_method : str
-        'PQN' or 'SpecNorm_PQN'
+        'PQN' or 'SpecNorm_PQN'; default is SpecNorm+PQN.
     correction_col : str, optional
-        SpecNorm_PQN 模式下使用的校正欄位名稱
+        SpecNorm_PQN 模式下使用的 specimen-reference 欄位名稱
     """
     method_name = canonicalize_normalization_method(normalization_method)
     normalization_method = method_name
@@ -2103,7 +2051,7 @@ def perform_normalization(data_df, sample_info_df, file_path,
             step2_advanced_stats_df=step2_advanced_stats_df,
         )
     else:
-        # PQN（預設）
+        # PQN（手動選擇）
         normalized_data, pqn_info = enhanced_pqn_normalization(
             data_matrix, sample_info_df, sample_columns,
             col_to_info_row=col_to_info_row,
@@ -2249,7 +2197,7 @@ def perform_normalization(data_df, sample_info_df, file_path,
     for i, col in enumerate(sample_columns):
         normalized_df[col] = normalized_data[:, i]
 
-    # Step 8 output rule: keep CV metrics with unified Original/Normalized naming.
+    # Step 3 output rule: keep CV metrics with unified Original/Normalized naming.
     # Keep unified CV naming for sample-level metrics; keep single QC_CV% only.
     original_cv_full = calculate_cv_per_feature(original_data)
     normalized_cv_full = calculate_cv_per_feature(normalized_data)
@@ -2276,7 +2224,7 @@ def perform_normalization(data_df, sample_info_df, file_path,
         pqn_info=pqn_info,
         group_diff_results=group_diff_results,
         subset_metrics=subset_metrics,
-        summary_context=build_step4_summary_context(
+        summary_context=build_step3_summary_context(
             source_sheet_name,
             available_sheet_names=available_sheet_names,
         ),
@@ -2421,7 +2369,7 @@ def save_normalization_results(
 
 # ==================== 主程式 ====================
 
-def main(input_file=None, session_dir=None, normalization_method='PQN'):
+def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALIZATION_METHOD):
     """
     主函數 - 支援 GUI 和獨立運行
 
@@ -2432,7 +2380,7 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
     session_dir : str or Path, optional
         Session directory for pipeline-aware output.
     normalization_method : str
-        'PQN' or 'SpecNorm_PQN'（由 GUI 傳入）
+        'PQN' or 'SpecNorm_PQN'（由 GUI 傳入）；預設為 SpecNorm+PQN。
 
     Returns:
     --------
@@ -2440,13 +2388,21 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
     """
     print("=" * 80)
     normalization_method = canonicalize_normalization_method(normalization_method)
-    print("  代謝體學 Step 3 標準化程式 v4.1")
+    print("  代謝體學 Step 3: Concentration Normalization")
     print(f"  標準化方法: {normalization_method}")
-    print("  - 視覺化評估工具（盒鬚圖、CV%分佈、RLE、Density、D-ratio 等）")
+    print("  - active workflow final normalized output")
+    print("  - 視覺化評估工具（CV%分佈、RLE、Density、D-ratio 等）")
     print("=" * 80)
 
     if input_file is None:
         raise ValueError("input_file is required; GUI must provide the file path.")
+
+    validator = DataValidator()
+    require_valid(
+        validator.validate_file_path(input_file),
+        context="Step 3 input file",
+    )
+    input_file = os.fspath(input_file)
 
     session_dir = resolve_session_dir(input_file=input_file, session_dir=session_dir)
 
@@ -2471,16 +2427,28 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
         raise Exception("找不到樣本資訊工作表")
 
     print(f"✓ 使用樣本資訊工作表: {sample_info_sheet_name}")
+    require_valid(
+        validator.validate_required_sheets(
+            sheet_names,
+            required_sheets=[sample_info_sheet_name],
+            context="Step 3 input workbook",
+        ),
+        context="Step 3 workbook sheets",
+    )
+    require_valid(
+        validator.validate_sample_info(sample_info_df),
+        context="Step 3 SampleInfo",
+    )
 
-    # SpecNorm_PQN 模式需要校正欄位
+    # SpecNorm_PQN 模式需要 specimen-reference 欄位
     correction_col = None
     if normalization_method == 'SpecNorm_PQN':
         correction_col, correction_type = find_correction_column(sample_info_df)
         if not correction_col:
             raise ValueError(
-                "SampleInfo 中找不到 SpecNorm+PQN 所需的校正欄位。\n"
-                "請確認 SampleInfo 工作表的第 F 欄（或之後）包含數值型校正資料\n"
-                "（例如 Creatinine 濃度、Normalization adduct 等）。"
+                "SampleInfo 中找不到 SpecNorm+PQN 所需的 specimen-reference 欄位。\n"
+                "請確認 SampleInfo 工作表包含具 reference 語意的數值型欄位\n"
+                "（例如 Creatinine、DNA、protein、concentration、reference 或 amount）。"
             )
         print(f"✓ 校正欄位: {correction_col} (類型: {correction_type})")
 
@@ -2491,6 +2459,14 @@ def main(input_file=None, session_dir=None, normalization_method='PQN'):
         raise Exception("找不到資料工作表")
 
     print(f"✓ 使用資料工作表: {data_sheet_name}")
+    require_valid(
+        validator.validate_raw_intensity(
+            data_df,
+            sample_names=sample_info_df['Sample_Name'].tolist(),
+            require_sample_match=True,
+        ),
+        context=f"Step 3 {data_sheet_name}",
+    )
 
     step2_advanced_stats_df = None
     step2_advanced_sheet_name = resolve_sheet_name(sheet_names, "qc_lowess_advanced")

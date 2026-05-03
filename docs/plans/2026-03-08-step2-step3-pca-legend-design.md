@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> Archived historical plan. It may describe pre-refactor Step 3/Step 4 behavior that is no longer current.
+> Current workflow sources: `README.md`, `docs/TESTING.md`,
+> `docs/plans/2026-04-23-dnp-workflow-responsibility-spec.md`, and
+> `docs/plans/2026-04-23-pqn-reference-selection-rules.md`.
+
 # Step 2 and Step 3 PCA Legend Alignment Design
 
 **Context**

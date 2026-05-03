@@ -11,6 +11,7 @@ import pytest
 import os
 import warnings
 from importlib import import_module
+from pathlib import Path
 from openpyxl import load_workbook
 import numpy as np
 import pandas as pd
@@ -45,6 +46,7 @@ class TestConcentrationNormHelpers:
         self,
         conc_norm_module,
     ):
+        assert conc_norm_module.canonicalize_normalization_method(None) == "SpecNorm_PQN"
         assert conc_norm_module.canonicalize_normalization_method("PQN") == "PQN"
         assert conc_norm_module.canonicalize_normalization_method("SpecNorm+PQN") == "SpecNorm_PQN"
         assert conc_norm_module.canonicalize_normalization_method("SpecNorm_PQN") == "SpecNorm_PQN"
@@ -811,15 +813,15 @@ class TestConcentrationNormHelpers:
                 sample_columns,
             )
 
-    def test_build_step4_summary_context_detects_upstream_step_status(
+    def test_build_step3_summary_context_detects_upstream_step_status(
         self,
         conc_norm_module,
     ):
-        context_loess = conc_norm_module.build_step4_summary_context(
+        context_loess = conc_norm_module.build_step3_summary_context(
             "QC LOESS result",
             available_sheet_names=["RawIntensity", "QC LOESS result", "SampleInfo"],
         )
-        context_batch = conc_norm_module.build_step4_summary_context(
+        context_batch = conc_norm_module.build_step3_summary_context(
             "ISTD_Correction",
             available_sheet_names=["ISTD_Correction", "SampleInfo"],
         )
@@ -876,7 +878,7 @@ class TestConcentrationNormHelpers:
         summary_context = {
             "source_sheet_name": "QC LOESS result",
             "step1_status": "目前工作簿未見 ISTD_Correction 工作表",
-            "step3_status": "未執行或已跳過（直接使用 QC-LOESS 結果）",
+            "step2_status": "已執行（使用 QC-LOESS 結果）",
         }
 
         report = conc_norm_module.create_normalization_summary_report(
@@ -1003,7 +1005,13 @@ class TestConcentrationNormOutput:
     """Tests for output validation."""
 
     @staticmethod
-    def _write_step4_input_workbook(workbook_path, include_marker=True, include_step4_metadata=False):
+    def _write_step4_input_workbook(
+        workbook_path,
+        include_marker=True,
+        include_step4_metadata=False,
+        sample_info_sheet_name=SHEET_NAMES["sample_info"],
+        include_reference=False,
+    ):
         raw_df = pd.DataFrame(
             {
                 "Mz/RT": ["Sample_Type", "100.1/1.0", "200.2/2.0", "300.3/3.0"],
@@ -1041,13 +1049,69 @@ class TestConcentrationNormOutput:
             {
                 "Sample_Name": ["QC_1", "QC_2", "Sample_A", "Sample_B"],
                 "Sample_Type": ["QC", "QC", "Exposure", "Normal"],
+                "Injection_Order": [1, 2, 3, 4],
                 "Batch": ["A", "A", "A", "A"],
+                "Injection_Volume": [1.0, 1.0, 1.0, 1.0],
             }
         )
+        if include_reference:
+            sample_info_df["Creatinine_mg_dL"] = [np.nan, np.nan, 2.0, 4.0]
 
         with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
             raw_df.to_excel(writer, sheet_name=SHEET_NAMES["raw_intensity"], index=False)
+            sample_info_df.to_excel(writer, sheet_name=sample_info_sheet_name, index=False)
+
+    def test_main_accepts_sample_info_alias_sheet(self, conc_norm_module, tmp_path):
+        input_path = tmp_path / "sample_info_alias.xlsx"
+        self._write_step4_input_workbook(
+            input_path,
+            include_marker=False,
+            sample_info_sheet_name="Sample_Info",
+        )
+
+        result = conc_norm_module.main(input_file=input_path, normalization_method="PQN")
+
+        assert result.output_path
+
+    def test_main_defaults_to_specnorm_pqn_when_reference_is_available(
+        self,
+        conc_norm_module,
+        tmp_path,
+    ):
+        input_path = tmp_path / "default_specnorm.xlsx"
+        self._write_step4_input_workbook(
+            input_path,
+            include_marker=False,
+            include_reference=True,
+        )
+
+        result = conc_norm_module.main(input_file=input_path)
+
+        assert "SpecNorm_PQN" in Path(result.output_path).name
+        workbook = pd.ExcelFile(result.output_path)
+        assert "SpecNorm_PQN_Result" in workbook.sheet_names
+
+    def test_main_fails_closed_when_no_sample_columns_match_sampleinfo(self, conc_norm_module, tmp_path):
+        raw_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0"],
+                "Unmapped_A": [10.0],
+                "Unmapped_B": [20.0],
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["Sample_A", "Sample_B"],
+                "Sample_Type": ["QC", "QC"],
+            }
+        )
+        input_path = tmp_path / "unmapped_step3.xlsx"
+        with pd.ExcelWriter(input_path, engine="openpyxl") as writer:
+            raw_df.to_excel(writer, sheet_name=SHEET_NAMES["raw_intensity"], index=False)
             sample_info_df.to_excel(writer, sheet_name=SHEET_NAMES["sample_info"], index=False)
+
+        with pytest.raises(ValueError, match="找不到任何可與 SampleInfo 對齊的樣本欄位"):
+            conc_norm_module.main(input_file=input_path, normalization_method="PQN")
 
     def test_main_preserves_presence_absence_marker_in_pqn_result(
         self,
@@ -1059,7 +1123,7 @@ class TestConcentrationNormOutput:
             os.remove(input_path)
         self._write_step4_input_workbook(input_path, include_marker=True)
 
-        step4_result = conc_norm_module.main(input_file=str(input_path))
+        step4_result = conc_norm_module.main(input_file=str(input_path), normalization_method="PQN")
         step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get("output_path")
 
         workbook = load_workbook(step4_output, read_only=True, data_only=True)
@@ -1085,7 +1149,7 @@ class TestConcentrationNormOutput:
             os.remove(input_path)
         self._write_step4_input_workbook(input_path, include_marker=False)
 
-        step4_result = conc_norm_module.main(input_file=str(input_path))
+        step4_result = conc_norm_module.main(input_file=str(input_path), normalization_method="PQN")
         step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get("output_path")
 
         result_df = pd.read_excel(step4_output, sheet_name="PQN_Result", nrows=1)
@@ -1106,7 +1170,7 @@ class TestConcentrationNormOutput:
             include_step4_metadata=True,
         )
 
-        step4_result = conc_norm_module.main(input_file=str(input_path))
+        step4_result = conc_norm_module.main(input_file=str(input_path), normalization_method="PQN")
         step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get("output_path")
 
         result_df = pd.read_excel(step4_output, sheet_name="PQN_Result", keep_default_na=False)
@@ -1139,7 +1203,7 @@ class TestConcentrationNormOutput:
         step2_result = qc_lowess_module.main(input_file=step1_output)
         step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
 
-        step3_result = conc_norm_module.main(input_file=step2_output)
+        step3_result = conc_norm_module.main(input_file=step2_output, normalization_method="PQN")
 
         validation = validate_result_dict(
             step3_result,
@@ -1159,7 +1223,7 @@ class TestConcentrationNormOutput:
         step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
         step2_result = qc_lowess_module.main(input_file=step1_output)
         step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
-        step3_result = conc_norm_module.main(input_file=step2_output)
+        step3_result = conc_norm_module.main(input_file=step2_output, normalization_method="PQN")
         step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
 
         step4_result = qc_batch_scaling_module.main(input_file=step3_output)
@@ -1191,7 +1255,7 @@ class TestConcentrationNormOutput:
         step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
         step2_result = qc_lowess_module.main(input_file=step1_output)
         step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
-        step3_result = conc_norm_module.main(input_file=step2_output)
+        step3_result = conc_norm_module.main(input_file=step2_output, normalization_method="PQN")
         plots_dir = step3_result.plots_dir if hasattr(step3_result, "plots_dir") else step3_result.get('plots_dir')
 
         plot_files = sorted(
@@ -1204,7 +1268,7 @@ class TestConcentrationNormOutput:
         assert any("RLE" in name for name in plot_files), f"Missing RLE in {plot_files}"
         assert not any("Boxplot" in name for name in plot_files), f"Unexpected Boxplot in {plot_files}"
         assert not any("PCA" in name or "pca" in name.lower() for name in plot_files), f"Unexpected PCA in {plot_files}"
-        # Scatter plot only for SpecNorm+PQN mode — should NOT appear in default PQN
+        # Scatter plot only for SpecNorm+PQN mode; explicit PQN should not emit it.
         assert not any("Scatter" in name for name in plot_files), f"Unexpected Scatter in PQN mode: {plot_files}"
 
     @pytest.mark.slow
@@ -1227,7 +1291,7 @@ class TestConcentrationNormOutput:
         step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
         step2_with_extra_sheet = copy_workbook_with_extra_sheet(step2_output)
 
-        step3_result = conc_norm_module.main(input_file=step2_with_extra_sheet)
+        step3_result = conc_norm_module.main(input_file=step2_with_extra_sheet, normalization_method="PQN")
         step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
 
         assert set(workbook_sheet_names(step3_output)) == {
@@ -1256,7 +1320,7 @@ class TestConcentrationNormOutput:
         step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
         step3_with_extra_sheet = copy_workbook_with_extra_sheet(step3_output)
 
-        step3_norm_result = conc_norm_module.main(input_file=step3_with_extra_sheet)
+        step3_norm_result = conc_norm_module.main(input_file=step3_with_extra_sheet, normalization_method="PQN")
         step3_norm_output = step3_norm_result.output_path if hasattr(step3_norm_result, "output_path") else step3_norm_result.get('output_path')
 
         assert set(workbook_sheet_names(step3_norm_output)) == {
@@ -1274,11 +1338,9 @@ class TestConcentrationNormOutput:
         conc_norm_module,
         sample_input_file,
     ):
-        qc_batch_scaling_module = import_module("metabolomics.processors.qc_batch_scaling")
-
         step2_result = qc_lowess_module.main(input_file=sample_input_file)
         step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
-        step3_result = conc_norm_module.main(input_file=step2_output)
+        step3_result = conc_norm_module.main(input_file=step2_output, normalization_method="PQN")
         step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
 
         result_df = pd.read_excel(step3_output, sheet_name='PQN_Result', nrows=1)

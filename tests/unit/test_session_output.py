@@ -1,6 +1,4 @@
 """Test session directory utilities and naming contracts."""
-import os
-from pathlib import Path
 
 import pytest
 

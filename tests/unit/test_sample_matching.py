@@ -6,6 +6,7 @@ from metabolomics.utils.sample_classification import (
     identify_candidate_sample_columns,
     identify_sample_columns,
     normalize_sample_name,
+    parse_batch_labels,
 )
 
 
@@ -15,6 +16,12 @@ def test_normalize_sample_name_handles_spacing_camelcase_and_tissue_suffix():
     assert normalize_sample_name("Breast Cancer Tissue_ pooled_QC_1") == normalize_sample_name(
         "Breast_Cancer_Tissue_pooled_QC_1"
     )
+
+
+def test_parse_batch_labels_splits_semicolon_values_and_ignores_blanks():
+    assert parse_batch_labels(" A ;B;  ; C ") == ["A", "B", "C"]
+    assert parse_batch_labels(None) == []
+    assert parse_batch_labels(float("nan")) == []
 
 
 def test_normalize_sample_name_treats_special_chars_and_dna_rna_variants_as_equivalent():

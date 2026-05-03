@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> Archived historical plan. It may describe pre-refactor Step 3/Step 4 behavior that is no longer current.
+> Current workflow sources: `README.md`, `docs/TESTING.md`,
+> `docs/plans/2026-04-23-dnp-workflow-responsibility-spec.md`, and
+> `docs/plans/2026-04-23-pqn-reference-selection-rules.md`.
+
 # DNP Workflow Responsibility Refactor Master Execution Plan
 
 > **Implementation note:** Treat this file as the single execution plan for the refactor. Use the three 2026-04-23 planning docs as design references, but drive implementation order, test updates, and documentation updates from this file only.

@@ -9,25 +9,17 @@ import logging
 from datetime import datetime
 import subprocess
 from pathlib import Path
-from metabolomics.bootstrap_paths import ensure_ms_core_src_on_path
-
-ensure_ms_core_src_on_path(Path(__file__).resolve())
 
 from metabolomics.utils.results import ProcessingResult
 from metabolomics.startup_bridge import apply_startup_bridge, parse_startup_args
-
-try:
-    from ms_core.utils import build_bridge_path, create_session, update_manifest
-except ModuleNotFoundError:
-    def _missing_ms_core(*_args, **_kwargs):
-        raise ModuleNotFoundError(
-            "ms_core is required for session bridge operations. "
-            "Ensure ms-core is available on PYTHONPATH before launching the GUI."
-        )
-
-    build_bridge_path = _missing_ms_core
-    create_session = _missing_ms_core
-    update_manifest = _missing_ms_core
+from metabolomics.gui.workflow import (
+    DEFAULT_STEP3_METHOD,
+    STEP3_NAME,
+    STEP4_NAME,
+    STEP3_METHOD_OPTIONS,
+    build_workflow_steps,
+    get_auto_run_terminal_step_name,
+)
 # ========== Platform-Aware Font Settings ==========
 def get_system_fonts():
     """Return platform-appropriate fonts for cross-platform compatibility"""
@@ -44,13 +36,6 @@ def get_system_fonts():
 
 FONTS = get_system_fonts()
 
-
-def _load_dnp_to_ma_adapter():
-    from metabolomics.adapters.dnp_to_metaboanalyst import convert_dnp_to_metaboanalyst
-
-    return convert_dnp_to_metaboanalyst
-
-
 def _load_preprocessing_adapter():
     from metabolomics.adapters.preprocessing_to_dnp import convert_preprocessing_to_dnp
 
@@ -60,16 +45,11 @@ def _load_preprocessing_adapter():
 class DataNormalizationApp:
     @staticmethod
     def _build_workflow_steps():
-        return [
-            {'name': 'Step 1: ISTD Correction', 'module': 'metabolomics.processors.istd', 'enabled': True},
-            {'name': 'Step 2: QC Correction', 'module': 'metabolomics.processors.qc_lowess', 'enabled': False},
-            {'name': 'Step 3: Conc. Normalization', 'module': 'metabolomics.processors.normalization', 'enabled': False},
-            {'name': 'Step 4: QC Batch Scaling', 'module': 'metabolomics.processors.qc_batch_scaling', 'enabled': False},
-        ]
+        return build_workflow_steps()
 
     @staticmethod
     def _get_step_card_label(step_name):
-        if step_name == 'Step 4: QC Batch Scaling':
+        if step_name == STEP4_NAME:
             return 'QC Batch Scaling (paused / diagnostics-only)'
         if ':' in step_name:
             return step_name.split(':', 1)[1].strip()
@@ -93,7 +73,7 @@ class DataNormalizationApp:
     def _build_header_button_tokens():
         return {
             'layout': 'single_row',
-            'columns': 4,
+            'columns': 3,
             'run_all': {
                 'text': 'Auto Run',
                 'width': 14,
@@ -114,14 +94,6 @@ class DataNormalizationApp:
                 'fg': '#ffffff',
                 'activebackground': '#334155',
                 'width': 14,
-            },
-            'export': {
-                'text': 'Export to MetaboAnalyst',
-                'disabled_text': 'Export After Step 3',
-                'width': 14,
-                'disabled_bg': '#94a3b8',
-                'disabled_fg': '#f8fafc',
-                'disabled_relief': 'flat',
             },
         }
 
@@ -155,6 +127,10 @@ class DataNormalizationApp:
             'status_cancelled_text': 'Stopped',
             'button_font_size': 10,
         }
+
+    @staticmethod
+    def _build_info_panel_tabs():
+        return ("Execution Log",)
 
     def __init__(self, master):
         self.master = master
@@ -215,7 +191,7 @@ class DataNormalizationApp:
         self.last_output_file = None  # 記錄最後一個輸出檔案
         self.steps = self._build_workflow_steps()
         self.step_outputs = {}
-        self.normalization_method = tk.StringVar(value='PQN')
+        self.normalization_method = tk.StringVar(value=DEFAULT_STEP3_METHOD)
         self.current_session_dir = None
         self.workflow_state = {}
         self.auto_run_mode = False
@@ -272,56 +248,10 @@ class DataNormalizationApp:
         # 開始檢查進度和日誌
         self.check_progress()
         self.check_log_queue()
-        self.update_stats_display()
-
         # 初始化按鈕狀態
         self.update_button_states()
 
     # ========== UI 輔助方法 ==========
-
-    def _create_status_card(self, parent, icon, title, initial_value, value_color=None):
-        """建立統計狀態卡片
-
-        Parameters:
-        -----------
-        parent : tk.Frame
-            父容器
-        icon : str
-            圖示 emoji
-        title : str
-            卡片標題
-        initial_value : str
-            初始顯示值
-        value_color : str, optional
-            數值顏色，預設使用 text_dark
-
-        Returns:
-        --------
-        tk.Label : 可更新的數值標籤
-        """
-        card = tk.Frame(parent, bg='#f8f9fa', padx=16, pady=12)
-        card.pack(fill=tk.X, pady=(0, 12))
-
-        label_text = f"{icon} {title}" if isinstance(icon, str) and icon.isascii() else title
-
-        tk.Label(
-            card,
-            text=label_text,
-            font=(FONTS['sans'], 10),
-            fg=self.color_scheme['text_light'],
-            bg='#f8f9fa'
-        ).pack(anchor='w')
-
-        value_label = tk.Label(
-            card,
-            text=initial_value,
-            font=(FONTS['sans'], 14, 'bold'),
-            fg=value_color or self.color_scheme['text_dark'],
-            bg='#f8f9fa'
-        )
-        value_label.pack(anchor='w', pady=(4, 0))
-
-        return value_label
 
     def _create_ghost_button(self, parent, text, command, emoji=None, width=None):
         """建立 Ghost 樣式按鈕
@@ -367,16 +297,8 @@ class DataNormalizationApp:
             return result
         return None
 
-    def _is_export_ready(self):
-        step3_name = self._get_primary_export_step_name()
-        step3_output = self._get_output_path(getattr(self, 'step_outputs', {}).get(step3_name))
-        return bool(step3_name in getattr(self, 'completed_steps', set()) and step3_output)
-
-    def _get_primary_export_step_name(self):
-        return 'Step 3: Conc. Normalization'
-
     def _get_auto_run_terminal_step_name(self):
-        return 'Step 3: Conc. Normalization'
+        return get_auto_run_terminal_step_name()
 
     def _ensure_workflow_state(self):
         steps = getattr(self, 'steps', None)
@@ -390,7 +312,6 @@ class DataNormalizationApp:
             'active_step': getattr(self, 'current_stats', {}).get('step_name', ''),
             'completed_steps': set(getattr(self, 'completed_steps', set())),
             'step_outputs': dict(getattr(self, 'step_outputs', {})),
-            'export_ready': self._is_export_ready(),
         }
         return self.workflow_state
 
@@ -527,16 +448,16 @@ class DataNormalizationApp:
     def _get_normalization_method(self):
         method_var = getattr(self, 'normalization_method', None)
         if method_var is None:
-            return 'PQN'
+            return DEFAULT_STEP3_METHOD
         try:
             value = method_var.get()
         except AttributeError:
             value = method_var
-        return value or 'PQN'
+        return value or DEFAULT_STEP3_METHOD
 
     def _on_normalization_method_change(self):
         self.logger.info(f"Step 3 normalization method changed to {self._get_normalization_method()}")
-        self._invalidate_step_and_downstream('Step 3: Conc. Normalization')
+        self._invalidate_step_and_downstream(STEP3_NAME)
         self.update_button_states()
 
     def _resolve_step_input(self, step):
@@ -972,25 +893,6 @@ class DataNormalizationApp:
         )
         self.reset_btn.grid(row=0, column=2, padx=4, pady=4, sticky='ew')
 
-        # Export to Metaboanalyst button (disabled until Step 3 complete)
-        self.export_meta_btn = tk.Button(
-            control_grid,
-            text=button_tokens['export']['disabled_text'],
-            command=self.export_to_metaboanalyst,
-            font=(FONTS['sans'], 10, 'bold'),
-            bg=button_tokens['export']['disabled_bg'],
-            fg=button_tokens['export']['disabled_fg'],
-            activebackground='#f8fafc',
-            relief=button_tokens['export']['disabled_relief'],
-            padx=12,
-            pady=8,
-            width=button_tokens['export']['width'],
-            state='disabled',
-            bd=1,
-            disabledforeground=button_tokens['export']['disabled_fg'],
-        )
-        self.export_meta_btn.grid(row=0, column=3, padx=4, pady=4, sticky='ew')
-
     def create_split_layout(self):
         """創建左右分欄佈局 - 使用 grid row 4"""
         workspace_defaults = self._build_workspace_defaults()
@@ -1161,7 +1063,7 @@ class DataNormalizationApp:
                     bg=self.color_scheme['panel_bg'],
                 ).pack(side=tk.LEFT, padx=(0, 8))
 
-                for label, value in (('PQN', 'PQN'), ('SpecNorm+PQN', 'SpecNorm+PQN')):
+                for label, value in STEP3_METHOD_OPTIONS:
                     tk.Radiobutton(
                         method_frame,
                         text=label,
@@ -1274,14 +1176,14 @@ class DataNormalizationApp:
             self.step_plot_buttons.append(plot_btn)
 
     def create_right_panel(self):
-        """Create right panel - Tabbed Interface (Stats + Log)"""
+        """Create right panel - Execution log only."""
         # 建立 Notebook (分頁容器)
         self.info_notebook = ttk.Notebook(self.right_frame)
         self.info_notebook.pack(fill=tk.BOTH, expand=True)
 
-        # === Tab 1: 執行日誌 ===
+        # === 執行日誌 ===
         log_tab = tk.Frame(self.info_notebook, bg=self.color_scheme['panel_bg'])
-        self.info_notebook.add(log_tab, text="Execution Log")
+        self.info_notebook.add(log_tab, text=self._build_info_panel_tabs()[0])
 
         # Log 標題列
         log_header = tk.Frame(log_tab, bg=self.color_scheme['panel_bg'])
@@ -1320,25 +1222,6 @@ class DataNormalizationApp:
         self.result_text.tag_configure('WARNING', foreground='#dcdcaa')
         self.result_text.tag_configure('ERROR', foreground='#f14c4c')
         self.result_text.tag_configure('SUCCESS', foreground='#4ec9b0')
-
-        # === Tab 2: 狀態統計 ===
-        stats_tab = tk.Frame(self.info_notebook, bg=self.color_scheme['panel_bg'])
-        self.info_notebook.add(stats_tab, text="Status")
-
-        stats_inner = tk.Frame(stats_tab, bg=self.color_scheme['panel_bg'], padx=20, pady=20)
-        stats_inner.pack(fill=tk.BOTH, expand=True)
-
-        # 使用輔助方法建立狀態卡片
-        self.stats_step_label = self._create_status_card(
-            stats_inner, "🔄", "Current Step", "Idle"
-        )
-        self.stats_data_label = self._create_status_card(
-            stats_inner, "📐", "Data Matrix", "No data loaded"
-        )
-        self.stats_completed_label = self._create_status_card(
-            stats_inner, "✅", "Completed Steps", "0 / 4",
-            value_color=self.color_scheme['success']
-        )
 
     def create_progress_area(self):
         """Create bottom progress area - 使用 grid row 5 確保不被遮擋"""
@@ -1457,37 +1340,6 @@ class DataNormalizationApp:
                 if hasattr(self, 'step_cards') and i < len(self.step_cards):
                     self.step_cards[i].config(highlightbackground=self.color_scheme['border'], highlightthickness=1)
 
-        # 更新完成進度標籤
-        if hasattr(self, 'stats_completed_label'):
-            completed_count = len(completed_steps)
-            self.stats_completed_label.config(text=f"{completed_count} / 4")
-
-        # 更新 Export to Metaboanalyst 按鈕狀態
-        if hasattr(self, 'export_meta_btn'):
-            export_tokens = self._build_header_button_tokens()['export']
-            all_done = workflow_state['export_ready']
-            if all_done:
-                self.export_meta_btn.config(
-                    state='normal',
-                    text=export_tokens['text'],
-                    bg='#34a853',
-                    fg='#ffffff',
-                    relief='flat',
-                    cursor='hand2',
-                    disabledforeground='#ffffff',
-                )
-            else:
-                self.export_meta_btn.config(
-                    state='disabled',
-                    text=export_tokens['disabled_text'],
-                    bg=export_tokens['disabled_bg'],
-                    fg=export_tokens['disabled_fg'],
-                    relief=export_tokens['disabled_relief'],
-                    activebackground=export_tokens['disabled_bg'],
-                    cursor='',
-                    disabledforeground=export_tokens['disabled_fg'],
-                )
-
         self._render_pipeline_nav()
 
     def check_progress(self):
@@ -1514,33 +1366,10 @@ class DataNormalizationApp:
                         else:
                             self.step_outputs[self.current_stats['step_name']] = data_dict
 
-                self.update_stats_display()
-
         except queue.Empty:
             pass
         finally:
             self.master.after(100, self.check_progress)
-
-    def update_stats_display(self):
-        """更新統計顯示"""
-        # 更新步驟
-        if self.current_stats['step_name']:
-            self.stats_step_label.config(text=self.current_stats['step_name'])
-        else:
-            self.stats_step_label.config(text="Idle")
-
-        # 更新資料維度
-        if self.current_stats['metabolites'] > 0:
-            self.stats_data_label.config(
-                text=f"{self.current_stats['metabolites']} Metabolites × {self.current_stats['samples']} Samples"
-            )
-        else:
-            self.stats_data_label.config(text="No data loaded")
-
-        # 更新完成進度
-        if hasattr(self, 'stats_completed_label'):
-            completed_count = len(self.completed_steps)
-            self.stats_completed_label.config(text=f"{completed_count} / 4")
 
     def update_input_source_labels(self):
         """更新輸入來源顯示 (Chain of Custody)"""
@@ -1634,7 +1463,7 @@ class DataNormalizationApp:
             self.logger.info(f"Successfully loaded module: {module_name}")
             return module
 
-        except Exception as e:
+        except Exception:
             self.logger.error(f"Failed to load module: {module_name}")
             self.logger.error(traceback.format_exc())
             return None
@@ -1696,130 +1525,6 @@ class DataNormalizationApp:
             messagebox.showerror("Import Failed", f"Conversion error:\n{e}")
         finally:
             self.master.config(cursor='')
-
-    @staticmethod
-    def _is_ms_core_available():
-        """Check if ms_core bridge utilities are available."""
-        try:
-            build_bridge_path()
-        except ModuleNotFoundError:
-            return False
-        except TypeError:
-            # build_bridge_path exists but was called without args — ms_core is available
-            return True
-        return True
-
-    def export_to_metaboanalyst(self):
-        """Export Step 3 normalized result to Metaboanalyst-compatible format."""
-        if not self._is_ms_core_available():
-            messagebox.showwarning(
-                "ms-core Not Found",
-                "Export requires the ms-core library.\n\n"
-                "Ensure ms-core is available on PYTHONPATH\n"
-                "or launch this program from the MS toolkit."
-            )
-            return
-
-        export_step_name = self._get_primary_export_step_name()
-        if export_step_name not in self.step_outputs:
-            messagebox.showwarning(
-                "No Output",
-                "Step 3 (Conc. Normalization) has not been completed yet."
-            )
-            return
-
-        export_output = self._get_output_path(self.step_outputs[export_step_name])
-        if not export_output or not os.path.exists(export_output):
-            messagebox.showwarning("File Not Found", "Step 3 output file not found.")
-            return
-
-        if self._ms_session_dir:
-            session_dir = Path(self._ms_session_dir)
-            manifest_path = session_dir / "manifest.json"
-        else:
-            session = create_session(source_file=export_output)
-            session_dir = session.session_dir
-            manifest_path = session.manifest_path
-            self._ms_session_dir = session_dir
-
-        output_path = build_bridge_path(
-            session_dir,
-            stage="dnp",
-            bucket="bridge_to_ma",
-            filename=f"Metaboanalyst_import_{Path(export_output).name}",
-        )
-
-        self.master.config(cursor='wait')
-        self.export_meta_btn.config(text="Exporting...", state='disabled')
-        self.master.update()
-        try:
-            convert_dnp_to_metaboanalyst = _load_dnp_to_ma_adapter()
-            self.logger.info(f"Exporting to Metaboanalyst format: {export_output}")
-            result_path = Path(convert_dnp_to_metaboanalyst(export_output, str(output_path)))
-            bridge_ref = str(result_path)
-            try:
-                bridge_ref = str(result_path.relative_to(session_dir))
-            except ValueError:
-                pass
-            update_manifest(
-                manifest_path,
-                stage="dnp",
-                data={
-                    "bridge_to_ma": bridge_ref,
-                    "status": "bridge_exported",
-                    "bridge_exported_at": datetime.now().isoformat(),
-                },
-            )
-            self.logger.info(f"Export complete: {result_path}")
-            if messagebox.askyesno(
-                "Export Successful",
-                f"File exported:\n{os.path.basename(result_path)}\n\n"
-                "Launch Metaboanalyst now?"
-            ):
-                self._launch_metaboanalyst(
-                    bridge_file=str(result_path),
-                    session_dir=str(session_dir),
-                )
-        except Exception as e:
-            self.logger.error(f"Export to Metaboanalyst failed: {e}")
-            messagebox.showerror("Export Failed", f"Conversion error:\n{e}")
-        finally:
-            self.master.config(cursor='')
-            self.update_button_states()
-
-    def _launch_metaboanalyst(self, bridge_file=None, session_dir=None):
-        """Launch Metaboanalyst_clone GUI as a separate process."""
-        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        candidates = [
-            os.path.join(desktop, "質譜數據工具箱", "Metaboanalyst_clone", "main.py"),
-            os.path.join(desktop, "Metaboanalyst_clone", "main.py"),
-        ]
-        for main_py in candidates:
-            if os.path.exists(main_py):
-                self.logger.info(f"Launching Metaboanalyst: {main_py}")
-                argv = [sys.executable, main_py]
-                if session_dir:
-                    argv.extend(["--ms-session-dir", session_dir])
-                if bridge_file:
-                    argv.extend(["--ms-bridge-file", bridge_file])
-                subprocess.Popen(
-                    argv,
-                    cwd=os.path.dirname(main_py),
-                )
-                return
-        messagebox.showwarning(
-            "Not Found",
-            "Could not find Metaboanalyst_clone project.\n"
-            "Please launch it manually."
-        )
-
-    def _offer_metaboanalyst_export(self):
-        """Prompt user to export to Metaboanalyst after active steps complete."""
-        if messagebox.askyesno(
-            "Export to Metaboanalyst",
-            "Active normalization steps completed!\nWould you like to export the Step 3 result for Metaboanalyst?"
-        ):
-            self.export_to_metaboanalyst()
 
     def run_all_steps(self):
         """Run all steps automatically"""
@@ -2146,7 +1851,9 @@ class DataNormalizationApp:
 
         retry = messagebox.askyesno(
             "Execution Failed",
-            f"{step['name']} Failed:\n{error}\n\nRetry?"
+            f"{step['name']} failed.\n"
+            "See the Log panel for details.\n\n"
+            "Retry?"
         )
 
         if retry:
@@ -2222,11 +1929,6 @@ class DataNormalizationApp:
                 'output_folder': '',
                 'execution_time': 0
             }
-
-            self.stats_step_label.config(text="Idle")
-            self.stats_data_label.config(text="No data loaded")
-            if hasattr(self, 'stats_completed_label'):
-                self.stats_completed_label.config(text="0 / 4")
 
             # 更新輸入來源標籤
             self.update_input_source_labels()

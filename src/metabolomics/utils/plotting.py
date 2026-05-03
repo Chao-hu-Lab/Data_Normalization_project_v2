@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Import shared constants
-from .constants import FONT_SIZES, COLORBLIND_COLORS, SAMPLE_TYPE_COLORS, SAMPLE_TYPE_MARKERS
+from .constants import COLORBLIND_COLORS, SAMPLE_TYPE_COLORS, SAMPLE_TYPE_MARKERS
 from .sample_classification import normalize_sample_type
 
 

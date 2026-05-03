@@ -13,7 +13,6 @@ from metabolomics.utils.constants import (
     COLORBLIND_COLORS,
     DATETIME_FORMAT_FULL,
     FEATURE_ID_COLUMN,
-    NON_SAMPLE_COLUMNS,
     SHEET_NAMES,
     is_non_sample_column,
     resolve_sheet_name,
@@ -31,6 +30,7 @@ from metabolomics.utils.sample_classification import (
     identify_sample_columns,
     normalize_sample_name,
     normalize_sample_type,
+    parse_batch_labels as shared_parse_batch_labels,
 )
 from metabolomics.utils.console import safe_print as print
 
@@ -49,9 +49,7 @@ def log_section(title):
 
 def parse_batch_labels(value):
     """Parse semicolon-separated batch labels and trim whitespace."""
-    if pd.isna(value):
-        return []
-    return [part.strip() for part in str(value).split(";") if part.strip()]
+    return shared_parse_batch_labels(value)
 
 
 def build_batch_membership(sample_info_df, sample_columns=None):

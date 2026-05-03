@@ -100,10 +100,12 @@ def test_data_dir(project_root):
     return os.path.join(project_root, "data")
 
 
-@pytest.fixture(scope="session")
-def output_dir(project_root):
-    """Return the output directory path."""
-    return os.path.join(project_root, "output")
+@pytest.fixture
+def output_dir(tmp_path):
+    """Return an isolated output directory path for a single test."""
+    path = tmp_path / "output"
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 
 # ============================================================

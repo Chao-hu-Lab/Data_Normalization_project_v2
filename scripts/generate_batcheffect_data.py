@@ -144,11 +144,11 @@ SCENARIO_LIBRARY = {
     "mixed_direction_batch_drift": replace(
         BASE_CONFIG,
         name="mixed_direction_batch_drift",
-        description="QC trends drift in different directions per batch, stressing Step 2/3 separation of within-batch drift and cross-batch offsets.",
+        description="QC trends drift in different directions per batch, stressing Step 2 within-batch drift handling while leaving cross-batch offsets visible for diagnostics.",
         recommended_steps=("Step 2", "Step 3"),
         primary_checks=(
             "QC trajectories should slope upward in one batch and downward in another.",
-            "Step 3 should still produce batch-alignment diagnostics after Step 2.",
+            "Step 3 should run after Step 2 without claiming cross-batch alignment; use Step 4 for manual diagnostics if needed.",
         ),
         drift_strength=0.24,
         batch_drift_multipliers=(1.10, -0.95, 0.15),

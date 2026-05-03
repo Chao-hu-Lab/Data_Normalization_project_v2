@@ -1,6 +1,18 @@
 # Testing Guide
 
-This repository now includes a small regression workflow for validating the 4-step normalization pipeline with synthetic scenario matrices.
+This repository now includes a small regression workflow for validating the active Step 1-3 workflow plus explicit Step 4 diagnostics-only scenarios with synthetic scenario matrices.
+
+## Standard Gates
+
+Use these three layers as the default confidence ladder:
+
+| Gate | Purpose | Command |
+| --- | --- | --- |
+| Fast tests | Routine unit and non-slow regression coverage | `python -m pytest -m "not slow and not integration" -q` |
+| Scenario smoke | Representative Step 1, Step 2, Step 3, and Step 4 diagnostics-only scenarios | `python -m pytest .\tests\integration\test_scenario_smoke.py -q` |
+| Acceptance workbook equivalence | Real-workbook Step 3 semantic equivalence after output-affecting processor changes | `python .\scripts\run_cleanup_acceptance_workflow.py --input "<workbook.xlsx>" --method "SpecNorm+PQN" --session-dir "<baseline_or_candidate_dir>"` then `python .\scripts\verify_workbook_equivalence.py --baseline "<baseline_step3.xlsx>" --candidate "<candidate_step3.xlsx>"` |
+
+The active scientific workflow ends at Step 3. Step 4 remains available only for manual diagnostics-only checks and should not be required for routine Step 3 artifact readiness.
 
 ## Quick Decision Table
 
