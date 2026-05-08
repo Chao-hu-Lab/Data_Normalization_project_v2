@@ -1825,7 +1825,7 @@ def find_correction_column(df):
     }
     preferred_keywords = (
         'creatinine',
-        'dna_mg',
+        'dna_ug',
         'dna',
         'protein',
         'concentration',

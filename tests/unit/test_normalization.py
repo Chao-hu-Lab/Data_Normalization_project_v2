@@ -437,13 +437,13 @@ class TestConcentrationNormHelpers:
                 "Injection_Order": [1, 2, 3],
                 "Batch": ["A", "A", "A"],
                 "Injection_Volume": [20, 20, 20],
-                "DNA_mg/20uL": [None, 8.57, 14.92],
+                "DNA_ug/20uL": [None, 8.57, 14.92],
             }
         )
 
         correction_col, correction_type = conc_norm_module.find_correction_column(sample_info_df)
 
-        assert correction_col == "DNA_mg/20uL"
+        assert correction_col == "DNA_ug/20uL"
         assert correction_type == "Normalization_adduct"
 
     def test_find_correction_column_rejects_injection_volume_when_no_reference_exists(

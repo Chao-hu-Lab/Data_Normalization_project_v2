@@ -132,7 +132,7 @@ Required sheets:
 | `Sample_Type` | Common values include `QC`, `Control`, `Exposure`, `Normal`, and `Blank`. |
 | `Injection_Order` | Required by Step 2 QC-LOESS. |
 | `Batch` | Used for Step 2 batch-local correction and Step 4 diagnostics. |
-| named numeric specimen-reference | Required for `SpecNorm+PQN`; common names include `Creatinine_mg_dL`, `DNA_mg/20uL`, protein amount, concentration, reference, or amount columns. Operational metadata such as `Injection_Volume` is ignored. |
+| named numeric specimen-reference | Required for `SpecNorm+PQN`; common names include `Creatinine_mg_dL`, `DNA_ug/20uL`, protein amount, concentration, reference, or amount columns. Operational metadata such as `Injection_Volume` is ignored. |
 
 ## Outputs
 

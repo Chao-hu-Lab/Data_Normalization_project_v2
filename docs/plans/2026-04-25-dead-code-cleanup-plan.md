@@ -55,7 +55,7 @@ Observed structure:
 
 - `RawIntensity`: 150 rows x 91 columns
 - `SampleInfo`: 86 rows x 6 columns
-- `SampleInfo` columns: `Sample_Name`, `Sample_Type`, `Injection_Order`, `Batch`, `Injection_Volume`, `DNA_mg/20uL`
+- `SampleInfo` columns: `Sample_Name`, `Sample_Type`, `Injection_Order`, `Batch`, `Injection_Volume`, `DNA_ug/20uL`
 
 This workbook must be used for the `SpecNorm+PQN` acceptance run because it has a numeric sixth-column normalization reference.
 
