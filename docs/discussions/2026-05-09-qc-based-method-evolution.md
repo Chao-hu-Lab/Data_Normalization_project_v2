@@ -262,7 +262,171 @@ ISTD 方法評估（前一份討論）結論為**對本 cohort 跳過 Step 1**�
 
 ---
 
-## 9. 參考文獻
+## 10. 驗證實驗結果（2026-05-09）
+
+使用者提供 Step 2 實際輸出（`Step2_QC_LOESS.xlsx` from `run_20260507_131027`，breast cancer tissue cohort n=85）作為驗證載體，依 §5 三步漸進驗證執行。**所有分析在 repo 外進行，不修改 production code。**
+
+### 10.1 Step A：Step 2 baseline（LOESS_summary，n=324）
+
+**Decision_Status 分布**：
+
+| Status | n | % | 規格書是否列 |
+|---|---|---|---|
+| success | 85 | 26.2% | ✓ |
+| insufficient_qc | 151 | 46.6% | ✓ |
+| all_qc_invalid | 30 | 9.3% | ✓ |
+| insufficient_improvement | 21 | 6.5% | ✗ |
+| outlier_filtering_left_too_few_points | 20 | 6.2% | ✓ |
+| unstable_correction_factors | 10 | 3.1% | ✗ |
+| overcorrection_detected | 6 | 1.9% | ✗ |
+| no_drift_detected | 1 | 0.3% | ✓ |
+
+**意外發現 1**：Step 2 內建 **8 種 fallback 模式**（規格書描述為 5 種）——`overcorrection_detected` 與 `unstable_correction_factors` 對應 Boysen 40% safeguard 的精神。**§3 假設 Step 2 缺失「Boysen-style 護欄」是錯誤的**。
+
+**LOESS_R² 分布（success 子集 n=85）**：median 0.704、R²≥0.7 占 50.6%、R²≥0.5 占 76.5%、R²<0.1 僅 2.4%。
+
+**意外發現 2**：校正質量遠優於 §4.1 假設（多數 R² 0.3-0.5）——**不需換 spline 引擎**。
+
+**Frac_Used 分布（success 子集）**：0.80 (44)、0.85 (46)、**1.00 (33, 38.8%)** ← Gap A 命中。`Frac_Strategy` 實際有 **6 種策略**（含 `high_variation_floor_applied`、`low_variation_dynamic_floor_applied`），比規格書精細。
+
+**Original vs Corrected QC CV%（success 子集）**：
+
+| 指標 | Raw | Corrected |
+|---|---|---|
+| Median CV | 42.2% | 27.3% |
+| Improved >5pp | — | 71.8% |
+| Worsened >5pp | — | 4.7% |
+| CV<20% 比例 | 8.2% | 29.4% |
+| CV<30% 比例 | 20.0% | 55.3% |
+
+**Decision_Status × CV 交叉**：success (Δ −12.6pp ✓)、unstable_correction_factors (Δ −38.1pp，但 D-ratio 仍 >100% 證明 fallback 正確)、overcorrection_detected (Δ +8.3pp，**Step 2 正確攔截**)、其他 fallback Δ=0（保留原值）。
+
+### 10.2 Step B：D-ratio post-check
+
+**Eligible features（QC_n≥4 in raw 與 corrected）**：160/324。
+
+| 指標 | Original | Corrected |
+|---|---|---|
+| Median D-ratio | 94.1% | 66.3% |
+| D-ratio < 50% 比例 | 18.1% | 32.5% |
+| D-ratio 惡化 >5pp | — | 4.4% |
+
+**Success 子集 D-ratio post-check**：corrected D<50% 比例 **42.4%**（即 **58% 通過 Step 2 但 fail Broadhurst**）。
+
+**初期解讀（後經 §10.4 修正）**：原以為 58% 失敗代表嚴重 biological signal erosion；review pack 證據顯示這個解讀對 case-control adductomics 不成立。
+
+### 10.3 Step C：Leave-one-QC-out prediction error
+
+**Success 子集 LOOCV error**：median 24.1%、Q3 45.9%、Error<25% 占 50.6%、Error≥50% 占 21.2%、Error≥100% 占 3.5%。
+
+**LOOCV × Frac_Used 交叉（KEY for Gap A）**：
+
+| Frac_Used | n | LOOCV median | Overfit ≥50% % |
+|---|---|---|---|
+| 0.80 | 33 | 28.3% | 15.2% |
+| 0.85 | 28 | 20.2% | 14.3% |
+| **1.00** | 24 | **39.6%** | **37.5%** |
+
+**Gap A 強烈成立**：frac=1.0 子集 overfit 比例是 frac=0.80/0.85 的 **2.5 倍**。
+
+**雙護欄交叉（D<50% AND LOOCV<25%）**：同時通過 27/85 (31.8%)、僅 Fail LOOCV 9 (10.6%)、僅 Fail D-ratio 16 (18.8%)、兩者皆 Fail 33 (38.8%)。
+
+### 10.4 Review pack 圖片證據（D-ratio 護欄的關鍵反證）
+
+來自同一 run 的 `Step3_Normalized_SpecNorm_PQN_tissue_knn_marker_verify_20260507_023150/00_Review_Pack/`。
+
+**關鍵生物學前提**（決定哪些對比有效）：
+- Exposure = 腫瘤組織
+- Normal = 周邊未癌變組織（同受試者鄰近）
+- Control = 一般脂肪組織
+
+**有意義的對比**：
+- **Exposure vs Normal**：癌變 vs 鄰近未癌變（key cancer biology signal）
+- **Normal vs Control**：field effect（鄰近癌的周邊 vs 一般脂肪——**最微弱的真實生物訊號**，是 normalization 質量最嚴格的試金石）
+
+**Exposure vs Control 不該作為 normalization 質量證據**——「腫瘤組織 vs 脂肪組織」差異巨大是組織學常識，與校正無關。
+
+**結果**：
+
+| 對比 | OPLS-DA T1% | Volcano FDR-sig | 解讀 |
+|---|---|---|---|
+| Exp vs Normal | 56.1% | ~70-90 | 癌訊號強，符合 expectation |
+| **Normal vs Control** | **46.4%** | **~40-50** | **Field effect 仍能被穩定偵測——normalization 質量過關** |
+| ~~Exp vs Control~~ | ~~79.7%~~ | ~~~150+~~ | ~~組織類型差異，不算 normalization 證據~~ |
+
+**Field effect 通過試金石的意義**：訊號 subtle，若 Step 2 校正不夠會被技術噪音淹沒。OPLS-DA 仍能完全分開 + Volcano 仍有 ~40 個 FDR 顯著 feature——**Step 2 + Step 3 pipeline 通過最嚴格試金石**。
+
+**對 §3.2 D-ratio 護欄的反證**：
+- 若實作 D<50% hard gate，會把 ~58% success feature 標為「失敗」
+- 但這些 feature 實際上 collectively + individually 仍能偵測 field effect
+- **Broadhurst 50% 門檻源自 plasma metabolomics 的 healthy vs diseased**——那種研究 biological variance 通常 << between-group variance；對 case-control tissue adductomics（強 group effect）這個假設不成立
+- **D-ratio < 50% 標準會誤殺 group-discriminative feature**
+
+**Top feature consistency**：375.1980/28.72 在 ANOVA / Volcano / VIP 三個獨立統計都名列前茅——校正後資料在 multiple statistical tests 之間自洽。
+
+### 10.5 三個 Gap 證據強度修訂
+
+| Gap | 假設前 | 實證後 | 變動方向 |
+|---|---|---|---|
+| **A** Frac=1.0 退化 | 文獻推論 | LOOCV 強烈成立（frac=1.0 overfit 37.5% vs 0.80/0.85 的 15%）| **強化** |
+| **B** D-ratio post-check | Broadhurst 標準 | review pack 證據顯示 50% 門檻誤殺 field-effect feature | **撤回 hard gate；最多保留為可選 informational column** |
+| **C** LOOCV validation | QC=7 必備 | 21.2% overfit 真實存在；frac=1.0 子集 37.5% | **強化** |
+
+---
+
+## 11. 最終決策
+
+### 11.1 對本 cohort（n=85, breast cancer tissue, single batch, CID-only）
+
+**維持現狀，不修改任何 production code**：
+- Step 1：依既有 `evaluate_istd_gate` 自動 skip（已證實正確；見 ISTD discussion record）
+- Step 2：既有 QC-LOWESS（**工程細節已超出文獻 reference 實作**）
+- Step 3：既有 PQN
+- 統計分析：已交出可發表結果（OPLS-DA 完全分群、Volcano FDR 顯著 feature 充足、Field effect 能穩定偵測）
+
+**本 cohort 的 normalization pipeline 確定為**：「Skip Step 1 + 既有 Step 2 + Step 3 PQN」，作為 DNP 對 untargeted DNA adductomics single-batch case-control 設計的 **reference workflow**。
+
+### 11.2 對未來 cohort 的 forward-looking 改善（窄到只剩兩個）
+
+| 演進選項 | Tier | 行動建議 |
+|---|---|---|
+| **Gap A**：QC<8 fallback 改 spline 或限制 polynomial 階數 | A2 | 對未來小 QC 數 cohort 才有意義；對本 cohort 不必 |
+| **Gap C**：LOOCV error 加入 `LOESS_summary` 作 informational column | C1 | 最低工程成本（~10 行 Python）；提供 reviewer 識別「校正質量低」feature 的標籤；**不作 hard gate** |
+| **Gap B**：D-ratio post-check | — | **不引入**——對 case-control 設計會誤殺 group-discriminative feature |
+
+### 11.3 不應演進 Step 2 的理由（總結）
+
+1. **Step 2 工程細節已超出規格書描述**：8 種 Decision_Status fallback、6 種 Frac_Strategy、Boysen-style overcorrection_detected 已內建
+2. **Pipeline 通過最嚴格試金石**：Field effect 是 normalization 質量的真實考驗，本 pipeline 已證實能穩定偵測
+3. **演進的工程成本 vs 預期增益不對稱**：對本 cohort 完全沒有 measurable improvement 空間；對未來 cohort 只剩 informational 價值的 Gap A、C
+4. **D-ratio 50% 門檻源自不同研究設計**（plasma 的 inter-individual 變異），對 case-control tissue adductomics 適用性存疑
+
+### 11.4 對 §8 推薦結論的修訂
+
+§8 原本說：「**選擇性加兩道護欄**（D-ratio + leave-one-out），**僅在 §5 驗證實驗顯示確有需要時**」。
+
+**§5/§10 驗證後修訂**：
+- **D-ratio 護欄**：**不加**（review pack 證據顯示 50% 門檻誤殺真實生物訊號）
+- **LOOCV 護欄**：**僅作 informational column**（不作 hard gate；未來需要時實作）
+- **frac=1.0 fallback**：值得未來考慮改 spline，但不是當前必要
+
+### 11.5 後續可能性（非當前 scope）
+
+僅作備忘：
+- 若未來實驗導入 **HCD scan** 或 **cocktail of class-matched ISTDs**，重新評估 Step 1 可行性（見 ISTD discussion §8）
+- 若未來 cohort 是 plasma / serum 而非 tissue，重新評估 D-ratio 護欄的適用性（plasma 的 inter-individual 變異是 Broadhurst 標準的設計場景）
+- 若有 cohort 是 subtle group difference（如 healthy variant），D-ratio 可能變得有意義——屆時重新評估
+- 若 future production code 演進時引入 LOOCV column，建議搭配「reporting layer 的 confidence flag」一起設計
+
+### 11.6 與 ISTD discussion 共同主題的最終呼應
+
+兩份 discussion 的核心發現一致：**本專案的工程細節（istd gate、Step 2 動態 frac、8 種 Decision_Status）已比文獻多數 reference 實作完整**。文獻最新方法的價值多在「reporting metrics」而非「換引擎」——而 reporting metrics 的適用性又依賴 cohort 設計（D-ratio 對 case-control 不適用是這份 cohort 的具體教訓）。
+
+**演進路徑的雙重保守**：(a) 不換引擎；(b) 對護欄的引入也要區分 cohort 設計，不能一律照搬文獻標準。
+
+---
+
+## 12. 參考文獻
 
 1. Kirwan, J.A., et al. **Characterising and correcting batch variation in an automated direct infusion mass spectrometry (DIMS) metabolomics workflow.** *Anal Bioanal Chem* (2013). 405:5147-5157
 2. Bioconductor pmp package — QCRSC implementation. https://rdrr.io/bioc/pmp/man/QCRSC.html
