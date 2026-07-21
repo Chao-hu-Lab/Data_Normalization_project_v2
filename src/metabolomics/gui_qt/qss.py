@@ -79,22 +79,32 @@ def _mode_from_color_scheme(color_scheme: Qt.ColorScheme) -> ThemeMode:
 def build_stylesheet(mode: ThemeMode) -> str:
     """Return the complete Qt stylesheet for a resolved light/dark mode."""
     color = lambda token: theme.resolve(token, mode)
+    # Single source of truth for typography. One UI font stack (with CJK
+    # fallbacks so mixed Chinese/English text renders consistently) and one
+    # coherent size scale: display 24pt / section 14pt / body 12pt / small
+    # 10pt, with the monospace console at 11pt.
+    ui_font = (
+        '"Segoe UI Variable Text", "Segoe UI", "Microsoft JhengHei UI", '
+        '"Noto Sans TC", "Helvetica Neue", Arial, sans-serif'
+    )
+    mono_font = '"Cascadia Mono", Consolas, Menlo, monospace'
     return f"""
 QWidget {{
     background-color: {color("surface")};
     color: {color("text")};
-    font-family: "Segoe UI", "Helvetica Neue", sans-serif;
-    font-size: 10pt;
+    font-family: {ui_font};
+    font-size: 12pt;
 }}
 QMainWindow, QWidget#centralWidget, QWidget#workflowCards {{
     background-color: {color("surface")};
 }}
 QLabel#pageTitle {{
-    font-size: 20pt;
+    font-size: 24pt;
     font-weight: 700;
 }}
 QLabel#pageSubtitle, QLabel#cardHint, QLabel#sessionPath {{
     color: {color("text_muted")};
+    font-size: 10pt;
 }}
 QFrame#pageDivider {{
     color: {color("divider")};
@@ -131,7 +141,7 @@ QFrame#cardActionPanel {{
     border-left: 1px solid {color("divider")};
 }}
 QLabel#cardTitle {{
-    font-size: 12pt;
+    font-size: 14pt;
     font-weight: 700;
 }}
 QLabel#chainLabel {{
@@ -139,8 +149,7 @@ QLabel#chainLabel {{
 }}
 QLabel#chainSource {{
     color: {color("text_muted")};
-    font-family: Consolas, Menlo, monospace;
-    font-size: 9pt;
+    font-size: 10pt;
 }}
 QLabel#selectedFile {{
     color: {color("text_muted")};
@@ -224,7 +233,8 @@ QPlainTextEdit#executionLog, QTextEdit#executionLog {{
     color: {color("console_fg")};
     border: 1px solid {color("border")};
     border-radius: 5px;
-    font-family: Consolas, Menlo, monospace;
+    font-family: {mono_font};
+    font-size: 11pt;
 }}
 QStatusBar {{
     background-color: {color("surface_raised")};
