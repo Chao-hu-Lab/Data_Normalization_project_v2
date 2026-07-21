@@ -96,20 +96,54 @@ QLabel#pageTitle {{
 QLabel#pageSubtitle, QLabel#cardHint, QLabel#sessionPath {{
     color: {color("text_muted")};
 }}
+QFrame#pageDivider {{
+    color: {color("divider")};
+}}
 QFrame#stepCard1, QFrame#stepCard2, QFrame#stepCard3, QFrame#stepCard4,
 QFrame#logPane, QFrame#fileBar {{
     background-color: {color("surface_raised")};
     border: 1px solid {color("border")};
     border-radius: 8px;
 }}
+QWidget#cardInfo {{
+    background-color: {color("surface_raised")};
+}}
+QWidget#cardInfo QLabel, QFrame#logPane QLabel, QFrame#fileBar QLabel {{
+    background-color: transparent;
+}}
+QFrame#stepCard1[nextStep="true"], QFrame#stepCard2[nextStep="true"],
+QFrame#stepCard3[nextStep="true"], QFrame#stepCard4[nextStep="true"] {{
+    border: 2px solid {color("accent")};
+}}
 QFrame#stepBadge {{
-    background-color: {color("nav_bg")};
-    border-radius: 5px;
+    background-color: {color("surface_subtle")};
+    border: 0;
+    border-top-left-radius: 7px;
+    border-bottom-left-radius: 7px;
 }}
 QFrame#stepBadge QLabel {{
     background: transparent;
-    color: {color("nav_fg_active")};
+    color: {color("text_muted")};
     font-weight: 600;
+}}
+QFrame#cardActionPanel {{
+    background-color: {color("surface_subtle")};
+    border-left: 1px solid {color("divider")};
+}}
+QLabel#cardTitle {{
+    font-size: 12pt;
+    font-weight: 700;
+}}
+QLabel#chainLabel {{
+    color: {color("text_muted")};
+}}
+QLabel#chainSource {{
+    color: {color("text_muted")};
+    font-family: Consolas, Menlo, monospace;
+    font-size: 9pt;
+}}
+QLabel#selectedFile {{
+    color: {color("text_muted")};
 }}
 QFrame#cardDivider {{
     color: {color("divider")};
@@ -127,19 +161,28 @@ QPushButton:hover {{
 QPushButton:disabled {{
     color: {color("action_disabled")};
 }}
-QPushButton#primaryAction, QPushButton#browseButton, QPushButton#autoRunButton {{
+QPushButton#primaryAction, QPushButton#browseButton {{
     background-color: {color("accent")};
     color: {color("accent_fg")};
     border-color: {color("accent")};
 }}
-QPushButton#primaryAction:hover, QPushButton#browseButton:hover,
-QPushButton#autoRunButton:hover {{
+QPushButton#primaryAction:hover, QPushButton#browseButton:hover {{
     background-color: {color("accent_hover")};
+}}
+QPushButton#autoRunButton {{
+    background-color: {color("control_run_bg")};
+    color: {color("control_fg")};
+    border-color: {color("control_run_bg")};
 }}
 QPushButton#stopButton {{
     background-color: {color("control_stop_bg")};
     color: {color("control_fg")};
     border-color: {color("control_stop_bg")};
+}}
+QPushButton#resetButton {{
+    background-color: {color("control_reset_bg")};
+    color: {color("control_fg")};
+    border-color: {color("control_reset_bg")};
 }}
 QPushButton#themeOption {{
     border-radius: 0;
@@ -176,7 +219,7 @@ QLabel#statusPill[state="cancelled"] {{
     background-color: {color("status_cancelled")};
     color: {color("status_fg")};
 }}
-QPlainTextEdit#executionLog {{
+QPlainTextEdit#executionLog, QTextEdit#executionLog {{
     background-color: {color("console_bg")};
     color: {color("console_fg")};
     border: 1px solid {color("border")};
@@ -186,6 +229,22 @@ QPlainTextEdit#executionLog {{
 QStatusBar {{
     background-color: {color("surface_raised")};
     border-top: 1px solid {color("divider")};
+}}
+QProgressBar#progressHeartbeat {{
+    background-color: {color("action")};
+    border: 1px solid {color("border")};
+    border-radius: 4px;
+}}
+QProgressBar#progressHeartbeat::chunk {{
+    background-color: {color("accent")};
+    border-radius: 3px;
+}}
+QComboBox {{
+    background-color: {color("action")};
+    color: {color("text")};
+    border: 1px solid {color("border")};
+    border-radius: 4px;
+    padding: 4px 8px;
 }}
 QSplitter::handle {{
     background-color: {color("divider")};
