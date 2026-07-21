@@ -53,6 +53,72 @@ class TestQCLOWESSInput:
         assert istd_df is not None
         assert sample_info_df is not None
 
+    def test_load_validates_sample_info_before_resolving_source(
+        self,
+        qc_lowess_module,
+        tmp_path,
+    ):
+        workbook_path = tmp_path / "invalid_sample_info_and_missing_source.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            pd.DataFrame({"Unrelated": ["value"]}).to_excel(
+                writer,
+                sheet_name="SampleInfo",
+                index=False,
+            )
+
+        with pytest.raises(ValueError, match="Step 2 SampleInfo validation failed"):
+            qc_lowess_module.load_and_process_data(workbook_path)
+
+    def test_load_preserves_missing_source_error(self, qc_lowess_module, tmp_path):
+        workbook_path = tmp_path / "missing_source.xlsx"
+        sample_names = [f"QC_{index}" for index in range(1, 6)]
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            pd.DataFrame(
+                {
+                    "Sample_Name": sample_names,
+                    "Sample_Type": ["QC"] * 5,
+                    "Injection_Order": range(1, 6),
+                }
+            ).to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        with pytest.raises(ValueError, match="Worksheet named 'RawIntensity' not found"):
+            qc_lowess_module.load_and_process_data(workbook_path)
+
+    def test_raw_fallback_returns_independent_original_snapshot(
+        self,
+        qc_lowess_module,
+        tmp_path,
+    ):
+        workbook_path = tmp_path / "raw_fallback_snapshot.xlsx"
+        sample_names = [f"QC_{index}" for index in range(1, 6)]
+        raw_df = pd.DataFrame(
+            {
+                "Mz/RT": ["Sample_Type", "100.1/1.0"],
+                **{name: ["QC", float(index)] for index, name in enumerate(sample_names, 1)},
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": sample_names,
+                "Sample_Type": ["QC"] * 5,
+                "Injection_Order": range(1, 6),
+            }
+        )
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            raw_df.to_excel(writer, sheet_name="RawIntensity", index=False)
+            sample_info_df.to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        loaded_raw, source_df, _, sample_type_row = (
+            qc_lowess_module.load_and_process_data(workbook_path)
+        )
+
+        pd.testing.assert_frame_equal(loaded_raw, raw_df)
+        assert loaded_raw is not source_df
+        assert "Mz/RT" in loaded_raw.columns
+        assert "FeatureID" in source_df.columns
+        assert source_df["FeatureID"].tolist() == ["100.1/1.0"]
+        assert sample_type_row is not None
+
     def test_load_fails_closed_when_no_sample_columns_match_sampleinfo(self, qc_lowess_module, tmp_path):
         raw_df = pd.DataFrame(
             {

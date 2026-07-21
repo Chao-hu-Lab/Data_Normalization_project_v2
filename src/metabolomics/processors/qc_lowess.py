@@ -43,6 +43,13 @@ from metabolomics.utils.data_validation import DataValidator, require_valid
 from metabolomics.utils.excel_colors import cell_has_red_font
 from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
 from metabolomics.utils.console import safe_print as print
+from metabolomics.utils.workbook_input import (
+    MissingSampleInfoSheetError,
+    MissingSourceSheetError,
+    ProcessorWorkbookInput,
+    WorkbookPurpose,
+    WorkbookReadError,
+)
 from metabolomics.utils.excel_format import (
     SECTION_DIVIDER_FILL,
     SECTION_LABEL_FILL,
@@ -965,6 +972,7 @@ def get_valid_values(row, columns):
 
 def load_and_process_data(file_path):
     """載入並驗證數據（含完整防呆檢查）"""
+    workbook_input = None
     try:
         validator = DataValidator()
         require_valid(
@@ -991,17 +999,34 @@ def load_and_process_data(file_path):
         print(f"📄 檔案大小: {file_size / 1024:.2f} KB")
 
         # ===== 防呆4: Excel 文件有效性檢查 =====
+        workbook_input = ProcessorWorkbookInput(file_path, WorkbookPurpose.QC_LOWESS)
         try:
-            excel_file = pd.ExcelFile(file_path)
-        except Exception as e:
-            raise ValueError(f"無法讀取 Excel 檔案，可能已損壞或格式不正確: {e}") from e
+            workbook_input.__enter__()
+        except MissingSampleInfoSheetError as error:
+            available_sheets = ", ".join(error.sheet_names) or "(none)"
+            raise ValueError(
+                "Step 2 workbook sheets validation failed: "
+                "Step 2 input workbook 缺少必要工作表: SampleInfo。 "
+                f"找到的工作表: {available_sheets}"
+            ) from None
+        except WorkbookReadError as error:
+            if error.stage == "catalog":
+                raise ValueError(
+                    "無法讀取 Excel 檔案，可能已損壞或格式不正確: "
+                    f"{error}"
+                ) from error.__cause__
+            if error.__cause__ is not None:
+                raise error.__cause__ from None
+            raise
+
+        sheet_names = workbook_input.sheet_names
 
         # ===== 防呆5: 必要工作表檢查 =====
-        print(f"📋 找到的工作表: {', '.join(excel_file.sheet_names)}")
+        print(f"📋 找到的工作表: {', '.join(sheet_names)}")
 
         require_valid(
             validator.validate_required_sheets(
-                excel_file.sheet_names,
+                sheet_names,
                 required_sheets=[SHEET_NAMES['sample_info']],
                 context="Step 2 input workbook",
             ),
@@ -1009,23 +1034,17 @@ def load_and_process_data(file_path):
         )
 
         required_sheets = [SHEET_NAMES['sample_info']]
-        missing_sheets = [sheet for sheet in required_sheets if sheet not in excel_file.sheet_names]
+        missing_sheets = [sheet for sheet in required_sheets if sheet not in sheet_names]
 
         if missing_sheets:
             raise ValueError(
                 f"輸入檔案缺少必要的工作表: {', '.join(missing_sheets)}。"
-                f" 找到的工作表: {', '.join(excel_file.sheet_names)}。"
+                f" 找到的工作表: {', '.join(sheet_names)}。"
                 f" QC-LOESS 校正需要至少包含 RawIntensity 或 ISTD_Correction"
             )
 
         # ===== 防呆6: SampleInfo 完整性檢查 =====
-        source_sheet_name = (
-            SHEET_NAMES['istd_correction']
-            if SHEET_NAMES['istd_correction'] in excel_file.sheet_names
-            else SHEET_NAMES['raw_intensity']
-        )
-
-        sample_info_df = pd.read_excel(excel_file, sheet_name=SHEET_NAMES['sample_info'])
+        sample_info_df = workbook_input.sample_info_df
         print(f"✓ 成功讀取 '{SHEET_NAMES['sample_info']}' 工作表，包含 {len(sample_info_df)} 筆樣本資訊")
 
         if sample_info_df.empty:
@@ -1112,7 +1131,17 @@ def load_and_process_data(file_path):
                 print(f"⚠️  警告：已為缺少 Injection_Order 的樣本指派遞增序號，請於 SampleInfo 中確認")
 
         # ===== 防呆10: ISTD_Correction 基本檢查 =====
-        istd_df = pd.read_excel(excel_file, sheet_name=source_sheet_name)
+        try:
+            loaded_workbook = workbook_input.load()
+        except MissingSourceSheetError:
+            raise ValueError("Worksheet named 'RawIntensity' not found") from None
+        except WorkbookReadError as error:
+            if error.__cause__ is not None:
+                raise error.__cause__ from None
+            raise
+
+        source_sheet_name = loaded_workbook.source_sheet
+        istd_df = loaded_workbook.source_df
         print(f"✓ 成功讀取 '{source_sheet_name}' 工作表，包含 {len(istd_df)} 個特徵")
 
         if istd_df.empty:
@@ -1231,9 +1260,9 @@ def load_and_process_data(file_path):
 
         # 載入 RawIntensity（可選）
         raw_df = None
-        if SHEET_NAMES['raw_intensity'] in excel_file.sheet_names:
+        if SHEET_NAMES['raw_intensity'] in sheet_names:
             try:
-                raw_df = pd.read_excel(excel_file, sheet_name=SHEET_NAMES['raw_intensity'])
+                raw_df = pd.read_excel(file_path, sheet_name=SHEET_NAMES['raw_intensity'])
                 print(f"✓ 已載入 '{SHEET_NAMES['raw_intensity']}' 工作表（可選）")
             except Exception as e:
                 print(f"⚠️  警告：無法載入 '{SHEET_NAMES['raw_intensity']}' 工作表: {e}")
@@ -1260,6 +1289,9 @@ def load_and_process_data(file_path):
         import traceback
         traceback.print_exc()
         raise
+    finally:
+        if workbook_input is not None:
+            workbook_input.close()
 
 
 # ========== ✅ 修正：統計檢定（Levene's test + 整體 Wilcoxon test）==========

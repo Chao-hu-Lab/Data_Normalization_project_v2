@@ -4,6 +4,7 @@ import pytest
 from metabolomics.utils import workbook_input
 from metabolomics.utils.workbook_input import (
     MissingSampleInfoSheetError,
+    MissingSourceSheetError,
     ProcessorWorkbookInput,
     WorkbookPurpose,
 )
@@ -30,6 +31,70 @@ def _record_sheet_reads(monkeypatch):
 def _load_workbook(path, purpose):
     with ProcessorWorkbookInput(path, purpose) as workbook:
         return workbook.load()
+
+
+def test_qc_lowess_prefers_istd_and_reads_only_selected_sheets(tmp_path, monkeypatch):
+    workbook_path = tmp_path / "qc_lowess_input.xlsx"
+    raw_df = pd.DataFrame({"Mz/RT": ["100/1"], "S1": [1.5]})
+    istd_df = pd.DataFrame({"Mz/RT": ["100/1"], "S1": [2.5]})
+    sample_info_df = pd.DataFrame(
+        {"Sample_Name": ["S1"], "Sample_Type": ["QC"]}
+    )
+    _write_workbook(
+        workbook_path,
+        {
+            "RawIntensity": raw_df,
+            "ISTD_Correction": istd_df,
+            "SampleInfo": sample_info_df,
+            "Large_Audit": pd.DataFrame({"unused": range(100)}),
+        },
+    )
+    calls = _record_sheet_reads(monkeypatch)
+
+    loaded = _load_workbook(workbook_path, WorkbookPurpose.QC_LOWESS)
+
+    assert loaded.source_sheet == "ISTD_Correction"
+    pd.testing.assert_frame_equal(loaded.source_df, istd_df)
+    assert {sheet_name for sheet_name, _ in calls} == {
+        "ISTD_Correction",
+        "SampleInfo",
+    }
+
+
+def test_qc_lowess_falls_back_to_raw_intensity(tmp_path):
+    workbook_path = tmp_path / "qc_lowess_raw_fallback.xlsx"
+    raw_df = pd.DataFrame({"Mz/RT": ["100/1"], "S1": [1.5]})
+    _write_workbook(
+        workbook_path,
+        {
+            "RawIntensity": raw_df,
+            "SampleInfo": pd.DataFrame(
+                {"Sample_Name": ["S1"], "Sample_Type": ["QC"]}
+            ),
+        },
+    )
+
+    loaded = _load_workbook(workbook_path, WorkbookPurpose.QC_LOWESS)
+
+    assert loaded.source_sheet == "RawIntensity"
+    pd.testing.assert_frame_equal(loaded.source_df, raw_df)
+
+
+def test_qc_lowess_defers_missing_source_until_after_sample_info(tmp_path):
+    workbook_path = tmp_path / "qc_lowess_missing_source.xlsx"
+    _write_workbook(
+        workbook_path,
+        {
+            "SampleInfo": pd.DataFrame(
+                {"Sample_Name": ["S1"], "Sample_Type": ["QC"]}
+            ),
+        },
+    )
+
+    with ProcessorWorkbookInput(workbook_path, WorkbookPurpose.QC_LOWESS) as workbook:
+        assert workbook.sample_info_df["Sample_Name"].tolist() == ["S1"]
+        with pytest.raises(MissingSourceSheetError):
+            workbook.load()
 
 
 def test_normalization_loads_only_selected_and_optional_sheets(tmp_path, monkeypatch):
