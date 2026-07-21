@@ -410,17 +410,23 @@ class DNPMainWindow(QMainWindow):
     def _run_next_step(self) -> None:
         if self._focus_consumes_workflow_shortcut() or self.controller.is_running:
             return
+        next_step = self._next_workflow_step()
+        if next_step is not None:
+            self._start_step(next_step)
+
+    def _next_workflow_step(self) -> str | None:
         workflow = self.controller.workflow
         if not workflow.selected_file_path:
-            return
+            return None
         completed = workflow.completed_steps
         for index, step_name in enumerate(STEP_NAMES):
             if step_name in completed:
                 continue
             predecessor_ready = index == 0 or STEP_NAMES[index - 1] in completed
             if predecessor_ready:
-                self._start_step(step_name)
-            return
+                return step_name
+            return None
+        return None
 
     def _stop_from_shortcut(self) -> None:
         if not self._focus_consumes_workflow_shortcut():
@@ -497,15 +503,7 @@ class DNPMainWindow(QMainWindow):
         self.file_label.setToolTip(selected or "")
         completed = workflow.completed_steps
 
-        next_step: str | None = None
-        if selected:
-            for index, step_name in enumerate(STEP_NAMES):
-                if step_name in completed:
-                    continue
-                predecessor_ready = index == 0 or STEP_NAMES[index - 1] in completed
-                if predecessor_ready:
-                    next_step = step_name
-                    break
+        next_step = self._next_workflow_step()
 
         for index, step_name in enumerate(STEP_NAMES):
             if index == 0:
