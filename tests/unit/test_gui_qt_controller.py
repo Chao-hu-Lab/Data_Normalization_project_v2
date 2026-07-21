@@ -1,12 +1,11 @@
 import os
 import sys
 import threading
-import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QThread
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QThread, Qt
+import shiboken6
 
 from metabolomics.gui.workflow import (
     STEP1_NAME,
@@ -17,21 +16,7 @@ from metabolomics.gui.workflow import (
 )
 from metabolomics.gui_qt.controller import WorkflowController, skip_guidance
 from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
-
-
-def _app():
-    return QApplication.instance() or QApplication([])
-
-
-def _wait_until(predicate, timeout_ms=3000):
-    app = _app()
-    deadline = time.monotonic() + (timeout_ms / 1000)
-    while time.monotonic() < deadline:
-        app.processEvents()
-        if predicate():
-            return
-        time.sleep(0.005)
-    raise AssertionError("Timed out waiting for Qt controller state")
+from tests.gui_qt_helpers import qt_app, wait_until
 
 
 def _result(input_path, output_path):
@@ -59,7 +44,7 @@ def test_single_step_success_runs_at_processor_boundary_without_success_notice()
     controller.select_input("C:/input.xlsx")
 
     controller.start_step(STEP1_NAME)
-    _wait_until(lambda: not controller.is_running)
+    wait_until(lambda: not controller.is_running)
 
     assert controller.workflow.status_of(STEP1_NAME) is StepState.SUCCEEDED
     assert controller.workflow.result_for(STEP1_NAME).output_path == "C:/session/step1.xlsx"
@@ -93,7 +78,7 @@ def test_auto_run_chains_immediate_outputs_through_step_three_only():
     controller.select_input("C:/input.xlsx")
 
     controller.start_auto_run()
-    _wait_until(
+    wait_until(
         lambda: controller.workflow.status_of(STEP3_NAME) is StepState.SUCCEEDED
         and not controller.is_running
     )
@@ -131,11 +116,11 @@ def test_stop_mid_run_discards_the_finished_result():
     )
     controller.select_input("C:/input.xlsx")
     controller.start_step(STEP1_NAME)
-    _wait_until(entered.is_set)
+    wait_until(entered.is_set)
 
     assert controller.request_stop()
     release.set()
-    _wait_until(lambda: not controller.is_running)
+    wait_until(lambda: not controller.is_running)
 
     assert controller.workflow.status_of(STEP1_NAME) is StepState.CANCELLED
     assert controller.workflow.result_for(STEP1_NAME) is None
@@ -162,7 +147,7 @@ def test_error_invalidates_and_retry_uses_a_new_run():
     controller.select_input("C:/input.xlsx")
 
     failed_run = controller.start_step(STEP1_NAME)
-    _wait_until(
+    wait_until(
         lambda: controller.workflow.status_of(STEP1_NAME) is StepState.FAILED
         and not controller.is_running
     )
@@ -172,7 +157,7 @@ def test_error_invalidates_and_retry_uses_a_new_run():
     assert "See the Log panel" in notices[-1][2]
 
     retry_run = controller.retry_step(STEP1_NAME)
-    _wait_until(
+    wait_until(
         lambda: controller.workflow.status_of(STEP1_NAME) is StepState.SUCCEEDED
         and not controller.is_running
     )
@@ -213,7 +198,7 @@ def test_manual_skip_keeps_the_chain_and_emits_guidance_notice():
     controller.select_input("C:/input.xlsx")
 
     controller.start_step(STEP1_NAME)
-    _wait_until(lambda: not controller.is_running)
+    wait_until(lambda: not controller.is_running)
 
     assert controller.workflow.status_of(STEP1_NAME) is StepState.SKIPPED
     assert controller.workflow.resolve_input(STEP2_NAME) == "C:/input.xlsx"
@@ -249,12 +234,12 @@ def test_selected_step_three_method_and_manual_step_four_kwargs_reach_processors
     controller.set_normalization_method("PQN")
 
     controller.start_auto_run()
-    _wait_until(
+    wait_until(
         lambda: controller.workflow.status_of(STEP3_NAME) is StepState.SUCCEEDED
         and not controller.is_running
     )
     controller.start_step(STEP4_NAME)
-    _wait_until(lambda: not controller.is_running)
+    wait_until(lambda: not controller.is_running)
 
     step3_kwargs = next(kwargs for step, kwargs in calls if step == STEP3_NAME)
     step4_kwargs = next(kwargs for step, kwargs in calls if step == STEP4_NAME)
@@ -268,7 +253,7 @@ def test_worker_runs_off_gui_thread_and_streams_stdout_and_stderr():
     ran_on_gui_thread = []
 
     def processor(**kwargs):
-        ran_on_gui_thread.append(QThread.currentThread() is _app().thread())
+        ran_on_gui_thread.append(QThread.currentThread() is qt_app().thread())
         print("processor info line")
         print("processor error line", file=sys.stderr)
         return _result(kwargs["input_file"], "C:/session/step1.xlsx")
@@ -282,7 +267,7 @@ def test_worker_runs_off_gui_thread_and_streams_stdout_and_stderr():
     controller.select_input("C:/input.xlsx")
 
     controller.start_step(STEP1_NAME)
-    _wait_until(lambda: not controller.is_running)
+    wait_until(lambda: not controller.is_running)
 
     assert ran_on_gui_thread == [False]
     assert ("info", "processor info line") in logs
@@ -305,14 +290,14 @@ def test_shutdown_keeps_thread_ownership_when_worker_has_not_finished():
     )
     controller.select_input("C:/input.xlsx")
     controller.start_step(STEP1_NAME)
-    _wait_until(entered.is_set)
+    wait_until(entered.is_set)
 
     assert not controller.shutdown(timeout_ms=10)
     assert controller.is_running
     assert controller.workflow.stop_requested
 
     release.set()
-    _wait_until(lambda: not controller.is_running)
+    wait_until(lambda: not controller.is_running)
 
     assert controller.workflow.status_of(STEP1_NAME) is StepState.CANCELLED
     assert controller.shutdown(timeout_ms=1000)
@@ -330,7 +315,7 @@ def test_invalid_processor_result_becomes_a_retryable_failure():
     controller.select_input("C:/input.xlsx")
 
     controller.start_step(STEP1_NAME)
-    _wait_until(lambda: not controller.is_running)
+    wait_until(lambda: not controller.is_running)
 
     assert controller.workflow.status_of(STEP1_NAME) is StepState.FAILED
     assert notices[-1][0] == "retry"
@@ -372,7 +357,7 @@ def test_auto_run_skip_continues_without_an_intermediate_blocking_notice():
     controller.select_input("C:/input.xlsx")
 
     controller.start_auto_run()
-    _wait_until(
+    wait_until(
         lambda: controller.workflow.status_of(STEP3_NAME) is StepState.SUCCEEDED
         and not controller.is_running
     )
@@ -401,13 +386,129 @@ def test_worker_log_capture_does_not_steal_gui_thread_output(capsys):
     controller.log_line.connect(lambda *args: logs.append(args))
     controller.select_input("C:/input.xlsx")
     controller.start_step(STEP1_NAME)
-    _wait_until(entered.is_set)
+    wait_until(entered.is_set)
 
     print("gui-thread line")
     release.set()
-    _wait_until(lambda: not controller.is_running)
+    wait_until(lambda: not controller.is_running)
 
     assert "gui-thread line" in capsys.readouterr().out
     assert ("info", "worker-owned line") in logs
     assert all("gui-thread line" not in message for _level, message in logs)
     assert controller.shutdown(timeout_ms=1000)
+
+
+def test_finish_applied_before_stop_keeps_the_successful_result():
+    controller = WorkflowController(
+        processors={
+            STEP1_NAME: lambda **kwargs: _result(
+                kwargs["input_file"],
+                "C:/session/applied.xlsx",
+            )
+        },
+        session_factory=lambda _input: "C:/session",
+    )
+    controller.select_input("C:/input.xlsx")
+    controller.start_step(STEP1_NAME)
+    wait_until(lambda: not controller.is_running)
+
+    assert not controller.request_stop()
+    assert controller.workflow.status_of(STEP1_NAME) is StepState.SUCCEEDED
+    assert controller.workflow.result_for(STEP1_NAME).output_path == "C:/session/applied.xlsx"
+
+
+def test_stop_after_finished_signal_but_before_slot_discards_result():
+    entered = threading.Event()
+    allow_finish = threading.Event()
+    terminal_emitted = threading.Event()
+
+    def processor(**kwargs):
+        entered.set()
+        assert allow_finish.wait(2)
+        return _result(kwargs["input_file"], "C:/session/queued.xlsx")
+
+    controller = WorkflowController(
+        processors={STEP1_NAME: processor},
+        session_factory=lambda _input: "C:/session",
+    )
+    controller.select_input("C:/input.xlsx")
+    controller.start_step(STEP1_NAME)
+    wait_until(entered.is_set)
+
+    worker = controller._worker
+    assert worker is not None
+    worker.finished.connect(
+        lambda _run_id, _result: terminal_emitted.set(),
+        Qt.ConnectionType.DirectConnection,
+    )
+    allow_finish.set()
+    assert terminal_emitted.wait(2)
+    assert controller.workflow.status_of(STEP1_NAME) is StepState.RUNNING
+
+    assert controller.request_stop()
+    wait_until(lambda: not controller.is_running)
+
+    assert controller.workflow.status_of(STEP1_NAME) is StepState.CANCELLED
+    assert controller.workflow.result_for(STEP1_NAME) is None
+
+
+def test_duplicate_and_stale_terminal_signals_do_not_change_the_current_run():
+    entered_second = threading.Event()
+    release_second = threading.Event()
+    attempts = 0
+
+    def processor(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return _result(kwargs["input_file"], "C:/session/first.xlsx")
+        entered_second.set()
+        assert release_second.wait(2)
+        return _result(kwargs["input_file"], "C:/session/second.xlsx")
+
+    controller = WorkflowController(
+        processors={STEP1_NAME: processor},
+        session_factory=lambda _input: "C:/session",
+    )
+    controller.select_input("C:/input.xlsx")
+    old_run_id = controller.start_step(STEP1_NAME)
+    wait_until(lambda: not controller.is_running)
+
+    new_run_id = controller.start_step(STEP1_NAME)
+    wait_until(entered_second.is_set)
+    assert new_run_id != old_run_id
+
+    stale = _result("C:/input.xlsx", "C:/session/stale.xlsx")
+    controller._on_finished(old_run_id, stale)
+    controller._on_failed(old_run_id, "RuntimeError: stale failure")
+
+    assert controller.workflow.status_of(STEP1_NAME) is StepState.RUNNING
+    release_second.set()
+    wait_until(lambda: not controller.is_running)
+
+    assert controller.workflow.status_of(STEP1_NAME) is StepState.SUCCEEDED
+    assert controller.workflow.result_for(STEP1_NAME).output_path == "C:/session/second.xlsx"
+
+    controller._on_finished(new_run_id, stale)
+    assert controller.workflow.result_for(STEP1_NAME).output_path == "C:/session/second.xlsx"
+
+
+def test_finished_thread_deletes_its_worker_object():
+    controller = WorkflowController(
+        processors={
+            STEP1_NAME: lambda **kwargs: _result(
+                kwargs["input_file"],
+                "C:/session/step1.xlsx",
+            )
+        },
+        session_factory=lambda _input: "C:/session",
+    )
+    controller.select_input("C:/input.xlsx")
+    controller.start_step(STEP1_NAME)
+    worker = controller._worker
+    assert worker is not None
+
+    wait_until(lambda: not controller.is_running)
+    wait_until(lambda: not shiboken6.isValid(worker))
+
+    assert not shiboken6.isValid(worker)

@@ -163,6 +163,7 @@ class WorkflowController(QObject):
         worker.log_line.connect(self._on_log_line)
         worker.finished.connect(self._on_finished)
         worker.failed.connect(self._on_failed)
+        thread.finished.connect(worker.deleteLater)
         thread.finished.connect(self._on_thread_finished)
 
         self._thread = thread
@@ -301,8 +302,6 @@ class WorkflowController(QObject):
 
     def _drop_thread_references(self, thread: QThread) -> None:
         thread.wait(0)
-        if self._worker is not None:
-            self._worker.deleteLater()
         thread.deleteLater()
         self._thread = None
         self._worker = None
