@@ -101,10 +101,15 @@ class StepCard(QFrame):
         badge.setObjectName("stepBadge")
         badge.setFixedWidth(82)
         badge_layout = QVBoxLayout(badge)
-        badge_layout.setContentsMargins(8, 8, 8, 8)
+        # Top-align "Step N" with the card title's baseline instead of centring
+        # it over the full card height (which floats it between the title and
+        # the input row). Top margin is tuned to match the info column so the
+        # number reads as the heading of the title row.
+        badge_layout.setContentsMargins(8, 14, 8, 8)
         badge_label = QLabel(f"Step {step_number}")
-        badge_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        badge_layout.addWidget(badge_label, 1)
+        badge_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        badge_layout.addWidget(badge_label)
+        badge_layout.addStretch(1)
         layout.addWidget(badge)
 
         info = QWidget()
