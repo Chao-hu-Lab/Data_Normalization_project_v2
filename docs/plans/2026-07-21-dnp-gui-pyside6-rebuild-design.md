@@ -182,6 +182,27 @@ Direction is endorsed by both reviewers; these three gate *construction*, not th
 - WS4.5 not implemented (blocked); Skip list not implemented.
 - Entry-point switch is a single revertible commit; tk GUI remains launchable until then.
 
+## Post-P4 visual direction — "A cockpit + conditional B receipt" (decided 2026-07-21; NOT yet implemented)
+
+This section is a **deliberate redesign** decided *after* P4 passed parity/functional/resize acceptance. It is explicitly **out of scope for the parity rebuild** above (it supersedes N4 / R4 only for this later, separately-gated effort) and **must not be written back to the production branch until the P4 review is formally closed.**
+
+**Context.** The accepted P4 UI is correct but visually generic ("boring"). A `creative-breakout` pass produced two throwaway browser prototypes (worktree `.worktrees/dnp-gui-breakout-prototype`, branch `codex/dnp-gui-breakout-prototype`): **A — Focus Stage** (current step is the stage; completed steps compress into a workflow rail; log becomes a drawer) and **B — Evidence-first Lineage** (scientific evidence/plots own the screen; workflow becomes a compact lineage bar). A fresh-context review recommended a mix, not a 2-of-1 choice.
+
+**Decision (operator's).** Not pure A, not pure B, not a full dashboard. Build **A's action-first operational cockpit as the main shell**, with **B's evidence treatment grafted into a conditional, real-data-driven right-hand receipt** that takes over *after* a step completes or when a completed step is selected. Weighting is **not 50/50** — the operator's primary job is *driving the next step*; verifying the result is secondary. This maps cleanly to the existing pipeline: ordered 4-step dependency, Steps 1–3 support Auto Run, Step 4 is manual diagnostics-only. A-as-backbone therefore also carries the lowest Qt risk.
+
+**Evidence receipt — v1 contract (the real constraint).** [`ProcessingResult`](../../src/metabolomics/utils/results.py) (results.py:17) today only stably exposes `output`, `metabolites`, `samples`, `plots_dir`; **Steps 1–3 expose no structured scientific metrics.** So the first receipt version MUST:
+
+- show **real existing plot thumbnails** from the shared plots dir, filtered by `Step1_`…`Step4_` prefixes;
+- show **metabolites / samples / artifact counts + the output file**;
+- for **Step 4**, add a **`diagnostics-only` / "No correction applied"** warning;
+- **never fabricate** CV or improvement tiles, and **never scrape** numbers from the log or the Excel workbook.
+
+Numeric scientific tiles (CV, RLE, D-ratio, before/after deltas) are **deferred** until a formal evidence contract exposes them on `ProcessingResult`. Which steps do have genuine before/after *plots* today (for thumbnails, not fabricated numbers): **Step 1** — QC CV comparison, density overlay, ISTD tracking; **Step 2** — QC CV overview, LOESS trend before/after; **Step 3** — CV, RLE, density, D-ratio before/after; **Step 4** — comparison plots but only as a *diagnostics proxy* (must be labelled "No correction applied").
+
+**Theme.** **Light mode stays first-class.** Distinctiveness must come from the three-column IA + step stage + evidence receipt, **not** from committing to a dark-only palette. The existing [`ThemeManager`](../../src/metabolomics/gui_qt/qss.py) (qss.py:18) already supports System / Light / Dark; no functional regression for visual identity.
+
+**Already landed (P4-review follow-up, on `feature/dnp-gui-qt`).** The type-system half of the prototypes' intent is done independently of the A/B shell: unified UI font stack + coherent scale (display 24 / section 14 / body 12 / small 10pt, monospace reserved for the execution log) and a work-area-aware window-fit fix (commits `fix(gui-qt): unify typography…`, `fix(gui-qt): clamp window size…`). The IA restructuring (A shell + B receipt) remains unimplemented and gated as above — treat it as a **P5** effort with its own tests and controller contract.
+
 ## Lessons to capture on completion (Agent Memory)
 
 - **Pure-tkinter has a hard resize/polish ceiling on dense desktop UIs** (synchronous full-tree relayout, no debounce/GPU). For showcase-grade desktop apps, prefer Qt (PySide6) — especially when a Qt project already exists in the stack.
