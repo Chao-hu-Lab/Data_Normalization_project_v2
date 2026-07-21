@@ -1,4 +1,4 @@
-"""P3 parity-first PySide6 view for the DNP workflow."""
+"""Production PySide6 view for the DNP workflow."""
 
 from __future__ import annotations
 
@@ -6,7 +6,15 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QTextCharFormat, QTextCursor
+from PySide6.QtGui import (
+    QColor,
+    QCloseEvent,
+    QDesktopServices,
+    QKeySequence,
+    QShortcut,
+    QTextCharFormat,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -14,8 +22,10 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QSplitter,
@@ -219,7 +229,7 @@ class StepCard(QFrame):
 
 
 class DNPMainWindow(QMainWindow):
-    """Parity-first P3 view over ``WorkflowController``."""
+    """Production Qt view over ``WorkflowController``."""
 
     def __init__(
         self,
@@ -241,6 +251,7 @@ class DNPMainWindow(QMainWindow):
     def _build_ui(self) -> None:
         self.setObjectName("dnpQtMainWindow")
         self.setWindowTitle(WINDOW_TITLE)
+        self._apply_window_defaults()
 
         central = QWidget()
         central.setObjectName("centralWidget")
@@ -372,6 +383,48 @@ class DNPMainWindow(QMainWindow):
         self.heartbeat = QTimer(self)
         self.heartbeat.setInterval(400)
         self.heartbeat.timeout.connect(self._advance_heartbeat)
+
+        self.run_next_shortcuts = [
+            QShortcut(QKeySequence(Qt.Key.Key_Return), self),
+            QShortcut(QKeySequence(Qt.Key.Key_Enter), self),
+        ]
+        for shortcut in self.run_next_shortcuts:
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(self._run_next_step)
+        self.stop_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self.stop_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self.stop_shortcut.activated.connect(self._stop_from_shortcut)
+
+    def _apply_window_defaults(self) -> None:
+        self.setMinimumSize(1200, 700)
+        available = self.screen().availableGeometry()
+        width = max(1200, min(1480, round(available.width() * 0.92)))
+        height = max(700, min(940, round(available.height() * 0.92)))
+        self.resize(width, height)
+
+    @staticmethod
+    def _focus_consumes_workflow_shortcut() -> bool:
+        focused = QApplication.focusWidget()
+        return isinstance(focused, (QComboBox, QLineEdit, QPlainTextEdit, QTextEdit))
+
+    def _run_next_step(self) -> None:
+        if self._focus_consumes_workflow_shortcut() or self.controller.is_running:
+            return
+        workflow = self.controller.workflow
+        if not workflow.selected_file_path:
+            return
+        completed = workflow.completed_steps
+        for index, step_name in enumerate(STEP_NAMES):
+            if step_name in completed:
+                continue
+            predecessor_ready = index == 0 or STEP_NAMES[index - 1] in completed
+            if predecessor_ready:
+                self._start_step(step_name)
+            return
+
+    def _stop_from_shortcut(self) -> None:
+        if not self._focus_consumes_workflow_shortcut():
+            self.controller.request_stop()
 
     def _connect_controller(self) -> None:
         self.controller.changed.connect(self._render)
