@@ -180,7 +180,7 @@ def _build_log_pane() -> QWidget:
     log.setReadOnly(True)
     log.setPlainText(
         "Qt P0 resize probe\n"
-        "Packaged executable: pending build\n"
+        "Packaged Qt resize probe is running.\n"
         "Drag every window edge and the splitter handle to evaluate responsiveness."
     )
     layout.addWidget(log, 1)
