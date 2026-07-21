@@ -1,7 +1,7 @@
 {
   "purpose": "P3 Qt-internal visual review baseline",
   "warning": "Do not pixel-compare against tkinter or across platform/font/DPI environments.",
-  "commit": "60c77d1451909f003f4e03d4705e792dadb5e75e",
+  "commit": "38a168bbe9ebb54beea9b8c11b3f274a5feb3063",
   "python": "3.12.13",
   "pyside6": "6.11.1",
   "qt": "6.11.1",

@@ -28,6 +28,7 @@ tmp_pytest_*/
 *.jpeg
 *.svg
 *.pdf
+!tests/baselines/gui_qt/**/*.png
 
 # 日誌
 /logs/

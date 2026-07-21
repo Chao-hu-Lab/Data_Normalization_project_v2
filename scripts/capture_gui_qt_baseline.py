@@ -11,6 +11,8 @@ import json
 import platform
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 
@@ -50,9 +52,26 @@ def _commit() -> str:
         return "unknown"
 
 
-def _controller_for(scenario: str) -> WorkflowController:
+def _controller_for(
+    scenario: str,
+    release_running: threading.Event | None = None,
+) -> WorkflowController:
+    processors = {}
+    if release_running is not None:
+        def running_processor(**kwargs):
+            if not release_running.wait(10):
+                raise TimeoutError("Baseline running-state worker was not released")
+            return ProcessingResult(
+                kwargs["input_file"],
+                "C:/DNP_output/session_preview/step1.xlsx",
+                1200,
+                48,
+            )
+
+        processors[STEP1_NAME] = running_processor
+
     controller = WorkflowController(
-        processors={},
+        processors=processors,
         session_factory=lambda _input: "C:/DNP_output/session_preview",
     )
     if scenario == "fresh":
@@ -64,9 +83,9 @@ def _controller_for(scenario: str) -> WorkflowController:
     if scenario == "file_selected":
         return controller
 
-    controller.workflow.begin(STEP1_NAME)
     if scenario == "running":
         return controller
+    controller.workflow.begin(STEP1_NAME)
     if scenario == "done":
         controller.workflow.complete(
             STEP1_NAME,
@@ -98,15 +117,16 @@ def capture(output_dir: Path) -> dict[str, object]:
     captures = []
 
     for scenario in SCENARIOS:
-        controller = _controller_for(scenario)
+        release_running = threading.Event() if scenario == "running" else None
+        controller = _controller_for(scenario, release_running)
         window = DNPMainWindow(controller=controller)
         window.theme_manager.set_preference("light")
-        if scenario not in {"fresh", "file_selected"}:
+        if scenario == "running":
+            controller.start_step(STEP1_NAME)
+        elif scenario not in {"fresh", "file_selected"}:
             controller.session_changed.emit("C:/DNP_output/session_preview")
         window.resize(1280, 760)
         window.show()
-        if scenario == "running":
-            window._set_busy(True)
         app.processEvents()
         pixmap = window.grab()
         image_path = output_dir / f"{scenario}.png"
@@ -121,7 +141,13 @@ def capture(output_dir: Path) -> dict[str, object]:
                 "device_pixel_ratio": pixmap.devicePixelRatio(),
             }
         )
-        window.heartbeat.stop()
+        if release_running is not None:
+            release_running.set()
+            deadline = time.monotonic() + 10
+            while controller.is_running and time.monotonic() < deadline:
+                app.processEvents()
+            if controller.is_running:
+                raise TimeoutError("Baseline running-state worker did not finish")
         window.close()
         app.processEvents()
 

@@ -29,7 +29,7 @@ def test_p2_window_starts_with_four_plain_rows_and_six_visible_states():
     app.processEvents()
 
     assert window.isVisible()
-    assert set(window.step_rows) == set(STEP_NAMES)
+    assert set(window.step_cards) == set(STEP_NAMES)
     assert window.findChild(QSplitter, "workspaceSplitter").count() == 2
     assert {state.value for state in VISIBLE_STATES} == {
         "pending",
@@ -291,11 +291,11 @@ def test_p2_view_runs_a_step_and_renders_the_terminal_state():
     window.show()
     controller.select_input("C:/input.xlsx")
 
-    window.step_rows[STEP1_NAME].run_button.click()
+    window.step_cards[STEP1_NAME].run_button.click()
     wait_until(lambda: not controller.is_running)
 
     assert controller.workflow.status_of(STEP1_NAME) is StepState.SUCCEEDED
-    assert window.step_rows[STEP1_NAME].status_label.text() == "Done"
+    assert window.step_cards[STEP1_NAME].status_label.text() == "Done"
     assert "Starting Step 1" in window.log.toPlainText()
     window.close()
 
@@ -321,7 +321,7 @@ def test_heartbeat_is_owned_by_the_ui_timer_not_the_worker():
     window = DNPMainWindow(controller=controller)
     window.show()
     controller.select_input("C:/input.xlsx")
-    window.step_rows[STEP1_NAME].run_button.click()
+    window.step_cards[STEP1_NAME].run_button.click()
     wait_until(entered.is_set)
 
     assert window.heartbeat.isActive()
@@ -362,7 +362,7 @@ def test_close_event_keeps_window_alive_until_worker_finishes(monkeypatch):
     window = DNPMainWindow(controller=controller)
     window.show()
     controller.select_input("C:/input.xlsx")
-    window.step_rows[STEP1_NAME].run_button.click()
+    window.step_cards[STEP1_NAME].run_button.click()
     wait_until(entered.is_set)
 
     window.close()

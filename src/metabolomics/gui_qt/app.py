@@ -323,8 +323,6 @@ class DNPMainWindow(QMainWindow):
             step_card.method_changed.connect(self.controller.set_normalization_method)
             self.step_cards[step_name] = step_card
             step_layout.addWidget(step_card, 1)
-        # Keep the P2 test/inspection seam while the concrete widgets become cards.
-        self.step_rows = self.step_cards
         splitter.addWidget(step_container)
 
         log_pane = QFrame()
