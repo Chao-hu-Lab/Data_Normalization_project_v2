@@ -396,11 +396,18 @@ class DNPMainWindow(QMainWindow):
         self.stop_shortcut.activated.connect(self._stop_from_shortcut)
 
     def _apply_window_defaults(self) -> None:
-        self.setMinimumSize(1200, 700)
         available = self.screen().availableGeometry()
-        width = max(1200, min(1480, round(available.width() * 0.92)))
-        height = max(700, min(940, round(available.height() * 0.92)))
-        self.resize(width, height)
+        # Never demand more than the current work area can actually show. On
+        # small laptops or Windows display scaling, availableGeometry() is in
+        # logical pixels (e.g. 1080p @150% -> ~1280x720), so a hard-coded
+        # 1200x700 minimum would push controls off-screen. Leave headroom for
+        # the title bar / window frame and clamp the design minimum to fit.
+        max_w = max(320, available.width() - 32)
+        max_h = max(320, available.height() - 48)
+        min_w = min(1200, max_w)
+        min_h = min(700, max_h)
+        self.setMinimumSize(min_w, min_h)
+        self.resize(min(1480, max_w), min(940, max_h))
 
     @staticmethod
     def _focus_consumes_workflow_shortcut() -> bool:

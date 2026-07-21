@@ -142,10 +142,14 @@ def test_p4_escape_shortcut_stops_except_from_text_focus(monkeypatch):
 def test_p4_window_has_final_startup_and_minimum_size():
     window = DNPMainWindow(controller=WorkflowController(processors={}))
 
-    assert window.minimumWidth() == 1200
-    assert window.minimumHeight() == 700
-    assert window.width() >= 1200
-    assert window.height() >= 700
+    available = window.screen().availableGeometry()
+    # Design minimum is 1200x700, but it must never exceed the work area so the
+    # window always fits on small or display-scaled screens.
+    assert 320 <= window.minimumWidth() <= min(1200, available.width())
+    assert 320 <= window.minimumHeight() <= min(700, available.height())
+    # Startup size stays within [minimum, work area] on every screen.
+    assert window.minimumWidth() <= window.width() <= available.width()
+    assert window.minimumHeight() <= window.height() <= available.height()
     assert {
         shortcut.key().toString() for shortcut in window.run_next_shortcuts
     } == {"Return", "Enter"}
