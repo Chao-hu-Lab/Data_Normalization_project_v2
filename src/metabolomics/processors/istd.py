@@ -1342,11 +1342,12 @@ def plot_cv_comparison(cv_results_df, plots_dir, timestamp):
 
     ax1.boxplot(
         [original_values, corrected_values],
-        labels=['Before', 'After'],
         patch_artist=True,
         boxprops=dict(facecolor='#c9d6df', alpha=0.85),
         medianprops=dict(color='#222222', linewidth=2),
     )
+    ax1.set_xticks([1, 2])
+    ax1.set_xticklabels(['Before', 'After'])
     for idx, values in enumerate((original_values, corrected_values), start=1):
         jitter = np.random.uniform(-0.08, 0.08, size=len(values))
         ax1.scatter(np.full(len(values), idx) + jitter, values, color='#4c4c4c', alpha=0.35, s=16)

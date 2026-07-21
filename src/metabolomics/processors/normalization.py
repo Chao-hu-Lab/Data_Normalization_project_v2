@@ -1100,8 +1100,11 @@ def plot_rle(original_data, normalized_data, sample_names, output_path, method_n
     # ===== Panel 1: Original RLE =====
     bp1 = ax1.boxplot(
         [original_rle[:, i][~np.isnan(original_rle[:, i])] for i in range(original_rle.shape[1])],
-        labels=sample_names, patch_artist=True, widths=0.6, showfliers=False,
+        patch_artist=True, widths=0.6, showfliers=False,
     )
+    box_positions = np.arange(1, len(sample_names) + 1)
+    ax1.set_xticks(box_positions)
+    ax1.set_xticklabels(sample_names)
     for patch, group in zip(bp1['boxes'], sample_groups):
         patch.set_facecolor(SAMPLE_TYPE_COLORS.get(group, SAMPLE_TYPE_COLORS['UNKNOWN']))
         patch.set_alpha(0.7)
@@ -1126,8 +1129,10 @@ def plot_rle(original_data, normalized_data, sample_names, output_path, method_n
     # ===== Panel 2: Normalized RLE =====
     bp2 = ax2.boxplot(
         [normalized_rle[:, i][~np.isnan(normalized_rle[:, i])] for i in range(normalized_rle.shape[1])],
-        labels=sample_names, patch_artist=True, widths=0.6, showfliers=False,
+        patch_artist=True, widths=0.6, showfliers=False,
     )
+    ax2.set_xticks(box_positions)
+    ax2.set_xticklabels(sample_names)
     for patch, group in zip(bp2['boxes'], sample_groups):
         patch.set_facecolor(SAMPLE_TYPE_COLORS.get(group, SAMPLE_TYPE_COLORS['UNKNOWN']))
         patch.set_alpha(0.7)
