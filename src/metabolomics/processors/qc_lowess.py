@@ -384,6 +384,8 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
             continue
         if np.isfinite(order) and (order < qc_span_min or order > qc_span_max):
             outside_qc_range_count += 1
+            corrected.append(float(intensity))
+            continue
         fitted = predict(order)
         if not np.isfinite(fitted) or fitted <= 0 or fitted < median_qc * 0.01:
             corrected.append(float(intensity))
@@ -785,7 +787,6 @@ def perform_lowess_normalization(istd_df, sample_info_df):
 
             qc_corrected_dict = {sample: row[sample] for sample in qc_samples if sample in row.index}
             corrected_candidates = {}
-            fallback_candidates = {}
             batch_metric_buffer = []
             batch_statuses = []
             frac_value_buffer = []
@@ -803,10 +804,9 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 batch_entry[status] = batch_entry.get(status, 0) + 1
 
                 corrected_map = batch_result['corrected_samples']
-                if corrected_map:
-                    target_buffer = corrected_candidates if status == 'success' else fallback_candidates
+                if status == 'success' and corrected_map:
                     for sample, value in corrected_map.items():
-                        target_buffer.setdefault(sample, []).append(value)
+                        corrected_candidates.setdefault(sample, []).append(value)
 
                 step2_metrics = batch_result.get('step2_metrics') or {}
                 if step2_metrics:
@@ -824,14 +824,10 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             for sample in sample_columns:
                 if sample in corrected_candidates:
                     result_row[sample] = safe_nanmedian(corrected_candidates[sample])
-                elif sample in fallback_candidates:
-                    result_row[sample] = safe_nanmedian(fallback_candidates[sample])
 
             for sample in qc_corrected_dict:
                 if sample in corrected_candidates:
                     qc_corrected_dict[sample] = safe_nanmedian(corrected_candidates[sample])
-                elif sample in fallback_candidates:
-                    qc_corrected_dict[sample] = safe_nanmedian(fallback_candidates[sample])
 
             stable_batch_statuses = {'success', 'no_drift_detected'}
             success_batches = sum(status in stable_batch_statuses for status in batch_statuses)
@@ -1312,21 +1308,30 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
             lowess_row = lowess_df.iloc[idx]
             feature_id = istd_row['FeatureID']
 
-            qc_values_istd = get_valid_values(istd_row, qc_columns)
-
             if feature_id in qc_corrected_values:
                 qc_corrected_dict = qc_corrected_values[feature_id]
-                qc_values_lowess = []
-                for qc in qc_columns:
-                    if qc in qc_corrected_dict:
-                        val = qc_corrected_dict[qc]
-                        if not pd.isna(val) and val > 0:
-                            qc_values_lowess.append(val)
+                corrected_source = qc_corrected_dict
             else:
-                qc_values_lowess = get_valid_values(lowess_row, qc_columns)
+                corrected_source = lowess_row
 
-            min_len = min(len(qc_values_istd), len(qc_values_lowess))
-            if min_len < 3:
+            raw_qc = np.array(
+                [pd.to_numeric(istd_row.get(qc), errors='coerce') for qc in qc_columns],
+                dtype=float,
+            )
+            corrected_qc = np.array(
+                [pd.to_numeric(corrected_source.get(qc), errors='coerce') for qc in qc_columns],
+                dtype=float,
+            )
+            joint_valid = (
+                np.isfinite(raw_qc)
+                & np.isfinite(corrected_qc)
+                & (raw_qc > 0)
+                & (corrected_qc > 0)
+            )
+            qc_values_istd = raw_qc[joint_valid]
+            qc_values_lowess = corrected_qc[joint_valid]
+
+            if len(qc_values_istd) < 3:
                 cv_results.append({
                     'FeatureID': feature_id,
                     'Original_QC_CV%': np.nan,
@@ -1338,9 +1343,6 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
                     'Variance_Test_pvalue': np.nan
                 })
                 continue
-
-            qc_values_istd = np.array(qc_values_istd[:min_len])
-            qc_values_lowess = np.array(qc_values_lowess[:min_len])
 
             # ========== 計算 CV% ==========
             original_cv = (np.std(qc_values_istd, ddof=1) / np.mean(qc_values_istd)) * 100
@@ -1434,93 +1436,108 @@ def calculate_qc_cv_with_statistical_test(istd_df, lowess_df, sample_columns, sa
 def plot_qc_cv_overview(cv_results_df, decision_stats, plots_dir, timestamp):
     """繪製 QC CV% 校正效果總覽圖（三面板）。
 
-    Panel 1: Before/After QC CV% scatter（對角線以下 = 改善）
-    Panel 2: CV% Improvement 分佈直方圖
-    Panel 3: Per-batch correction success rate bar chart
+    Panel 1: applied features 的 Before/After QC CV% scatter
+    Panel 2: applied features 的校正後絕對 QC CV% 分布
+    Panel 3: fit、accepted batch tasks、applied features 中 QC CV 改善的比例
     """
     if cv_results_df is None or cv_results_df.empty:
         print("  ⚠ cv_results_df 為空，跳過 QC CV Overview")
         return
 
-    cv_before = cv_results_df['Original_QC_CV%'].dropna().values
-    cv_after = cv_results_df['Corrected_QC_CV%'].dropna().values
-    cv_improvement = cv_results_df['CV_Improvement%'].dropna().values
-
-    if len(cv_before) < 3:
-        print("  ⚠ 有效特徵不足，跳過 QC CV Overview")
-        return
+    plot_values = cv_results_df[
+        ['Original_QC_CV%', 'Corrected_QC_CV%', 'CV_Improvement%']
+    ].apply(pd.to_numeric, errors='coerce')
+    decision_status = cv_results_df.get(
+        'Decision_Status',
+        pd.Series('unknown', index=cv_results_df.index, dtype=object),
+    ).fillna('unknown')
+    applied_mask = decision_status.isin({'success', 'partial_success'})
+    paired_mask = plot_values[['Original_QC_CV%', 'Corrected_QC_CV%']].notna().all(axis=1)
+    applied_pairs = plot_values.loc[applied_mask & paired_mask]
+    applied_improvements = plot_values.loc[
+        applied_mask & plot_values['CV_Improvement%'].notna(),
+        'CV_Improvement%',
+    ].to_numpy()
 
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 6.5))
 
-    # ===== Panel 1: Before vs After scatter =====
-    min_len = min(len(cv_before), len(cv_after))
-    cv_b, cv_a = cv_before[:min_len], cv_after[:min_len]
-
-    ax1.scatter(cv_b, cv_a, alpha=0.5, s=25, color='steelblue', edgecolors='none')
-    lim = max(np.max(cv_b), np.max(cv_a)) * 1.05
-    ax1.plot([0, lim], [0, lim], 'r--', linewidth=1.5, label='No change')
-    ax1.set_xlim(0, lim)
-    ax1.set_ylim(0, lim)
+    # ===== Panel 1: applied Before vs After scatter =====
+    if not applied_pairs.empty:
+        cv_b = applied_pairs['Original_QC_CV%'].to_numpy()
+        cv_a = applied_pairs['Corrected_QC_CV%'].to_numpy()
+        ax1.scatter(cv_b, cv_a, alpha=0.5, s=25, color='steelblue', edgecolors='none')
+        lim = max(float(np.max(cv_b)), float(np.max(cv_a)), 1.0) * 1.05
+        ax1.plot([0, lim], [0, lim], 'r--', linewidth=1.5, label='No change')
+        ax1.set_xlim(0, lim)
+        ax1.set_ylim(0, lim)
+        improved = int(np.sum(cv_a < cv_b))
+        ax1.text(
+            0.05, 0.95,
+            f'Applied features with lower QC CV: {improved}/{len(cv_b)} '
+            f'({improved/len(cv_b)*100:.0f}%)',
+            transform=ax1.transAxes, fontsize=10, va='top',
+            bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8),
+        )
+        ax1.legend(fontsize=9, loc='lower right')
+    else:
+        ax1.text(
+            0.5, 0.5, 'No applied features with paired QC CV values',
+            ha='center', va='center', transform=ax1.transAxes, fontsize=11,
+        )
     ax1.set_xlabel('QC CV% Before LOESS', fontsize=11, fontweight='bold')
     ax1.set_ylabel('QC CV% After LOESS', fontsize=11, fontweight='bold')
-    ax1.set_title('Feature-wise QC CV% Change', fontsize=13, fontweight='bold')
-    improved = np.sum(cv_a < cv_b)
-    ax1.text(
-        0.05, 0.95,
-        f'Improved: {improved}/{min_len} ({improved/min_len*100:.0f}%)',
-        transform=ax1.transAxes, fontsize=10, va='top',
-        bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8),
-    )
-    ax1.legend(fontsize=9, loc='lower right')
+    ax1.set_title('Applied Feature QC CV% Change', fontsize=13, fontweight='bold')
     ax1.grid(True, alpha=0.3)
     ax1.set_aspect('equal', adjustable='box')
 
-    # ===== Panel 2: Improvement histogram =====
-    ax2.hist(cv_improvement, bins=30, color='#4C72B0', edgecolor='black', alpha=0.75)
-    median_imp = np.median(cv_improvement)
-    ax2.axvline(x=median_imp, color='red', linestyle='--', linewidth=2,
-                label=f'Median: {median_imp:.1f}%')
-    ax2.axvline(x=0, color='gray', linestyle=':', linewidth=1.5, label='No change')
-    ax2.set_xlabel('CV% Improvement (Before − After)', fontsize=11, fontweight='bold')
-    ax2.set_ylabel('Frequency', fontsize=11, fontweight='bold')
-    ax2.set_title('QC CV% Improvement Distribution', fontsize=13, fontweight='bold')
-    ax2.legend(fontsize=9)
+    # ===== Panel 2: applied absolute corrected QC CV =====
+    corrected_applied = applied_pairs['Corrected_QC_CV%'].to_numpy()
+    cv_bands = [
+        int(np.sum(corrected_applied <= 20)),
+        int(np.sum((corrected_applied > 20) & (corrected_applied <= 30))),
+        int(np.sum(corrected_applied > 30)),
+    ]
+    ax2.bar(['≤20%', '20–30%', '>30%'], cv_bands,
+            color=['#2ca02c', '#ffbf00', '#d62728'], alpha=0.8)
+    for idx, count in enumerate(cv_bands):
+        ax2.text(idx, count + 0.05, str(count), ha='center', fontsize=10, fontweight='bold')
+    ax2.set_xlabel('Corrected QC CV% Band', fontsize=11, fontweight='bold')
+    ax2.set_ylabel('Applied Feature Count', fontsize=11, fontweight='bold')
+    ax2.set_title('Applied Feature Absolute QC CV%', fontsize=13, fontweight='bold')
     ax2.grid(True, alpha=0.3, axis='y')
 
-    # ===== Panel 3: Per-batch correction rate =====
-    per_batch = decision_stats.get('per_batch', {})
-    if per_batch:
-        batch_names = sorted(per_batch.keys())
-        success_counts = []
-        other_counts = []
-        for bn in batch_names:
-            stats = per_batch[bn]
-            total = sum(stats.values())
-            s = stats.get('success', 0)
-            success_counts.append(s)
-            other_counts.append(total - s)
-
-        x = np.arange(len(batch_names))
-        bar_w = 0.5
-        ax3.bar(x, success_counts, bar_w, label='Success', color='#2ca02c', alpha=0.85)
-        ax3.bar(x, other_counts, bar_w, bottom=success_counts,
-                label='Insufficient / Skipped', color='#d62728', alpha=0.6)
-
-        for i, (s, o) in enumerate(zip(success_counts, other_counts)):
-            total = s + o
-            if total > 0:
-                ax3.text(i, total + 0.5, f'{s/total*100:.0f}%', ha='center', fontsize=10, fontweight='bold')
-
-        ax3.set_xticks(x)
-        ax3.set_xticklabels([f'Batch {bn}' for bn in batch_names], fontsize=10)
-        ax3.set_ylabel('Feature Count', fontsize=11, fontweight='bold')
-        ax3.set_title('Per-Batch Correction Success Rate', fontsize=13, fontweight='bold')
-        ax3.legend(fontsize=9)
-        ax3.grid(True, alpha=0.3, axis='y')
-    else:
-        ax3.text(0.5, 0.5, 'No per-batch data available',
-                 ha='center', va='center', transform=ax3.transAxes, fontsize=12)
-        ax3.set_title('Per-Batch Correction Rate', fontsize=13, fontweight='bold')
+    # ===== Panel 3: distinct fit / acceptance / outcome rates =====
+    event_counts = decision_stats.get('event_counts', {})
+    total_tasks = int(decision_stats.get('total_feature_batch_tasks', 0) or sum(event_counts.values()))
+    fit_result_statuses = {
+        'success', 'no_drift_detected', 'insufficient_improvement',
+        'unstable_correction_factors', 'overcorrection_detected',
+    }
+    fit_attempted = sum(int(event_counts.get(status, 0)) for status in fit_result_statuses)
+    accepted_batch_tasks = int(event_counts.get('success', 0))
+    applied_cv_total = len(applied_pairs)
+    applied_cv_improved = int(np.sum(applied_improvements > 0))
+    rates = [
+        fit_attempted / total_tasks * 100 if total_tasks else 0.0,
+        accepted_batch_tasks / total_tasks * 100 if total_tasks else 0.0,
+        applied_cv_improved / applied_cv_total * 100 if applied_cv_total else 0.0,
+    ]
+    labels = ['Fit attempted', 'Accepted batch tasks', 'QC CV improved\namong applied features']
+    denominators = [total_tasks, total_tasks, applied_cv_total]
+    numerators = [fit_attempted, accepted_batch_tasks, applied_cv_improved]
+    bars = ax3.bar(labels, rates, color=['#4C72B0', '#2ca02c', '#55a868'], alpha=0.85)
+    for bar, rate, numerator, denominator in zip(bars, rates, numerators, denominators):
+        ax3.text(
+            bar.get_x() + bar.get_width() / 2,
+            rate + 1,
+            f'{numerator}/{denominator}\n({rate:.0f}%)',
+            ha='center', fontsize=9, fontweight='bold',
+        )
+    ax3.set_ylim(0, 110)
+    ax3.set_ylabel('Rate (%)', fontsize=11, fontweight='bold')
+    ax3.set_title('Fit, Acceptance, and QC CV Outcome', fontsize=13, fontweight='bold')
+    ax3.tick_params(axis='x', labelrotation=10)
+    ax3.grid(True, alpha=0.3, axis='y')
 
     plt.tight_layout()
 
@@ -1912,8 +1929,27 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
                 f"{_fmt(np.nanmax(frac_values), digits=2)}"
             )
 
-        median_cv_improvement = float(np.nanmedian(cv_improvement)) if total_count else np.nan
-        improved_ratio = (cv_improvement > 0).mean() * 100 if total_count else np.nan
+        evaluable_cv_improvement = cv_improvement.dropna()
+        median_cv_improvement = (
+            float(np.nanmedian(evaluable_cv_improvement))
+            if not evaluable_cv_improvement.empty
+            else np.nan
+        )
+        improved_ratio = (
+            float((evaluable_cv_improvement > 0).mean() * 100)
+            if not evaluable_cv_improvement.empty
+            else np.nan
+        )
+        feature_status = cv_results_df['FeatureID'].map(
+            trend_stats_df.set_index('FeatureID')['Decision_Status']
+        )
+        applied_feature_mask = feature_status.isin({'success', 'partial_success'})
+        applied_cv_improvement = cv_improvement[applied_feature_mask].dropna()
+        applied_improved_ratio = (
+            float((applied_cv_improvement > 0).mean() * 100)
+            if not applied_cv_improvement.empty
+            else np.nan
+        )
         if (
             np.isfinite(median_cv_improvement)
             and median_cv_improvement >= 10
@@ -1942,14 +1978,24 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             ("Median QC CV improvement", _fmt(median_cv_improvement, pct=True)),
             ("Wilcoxon p-value", _fmt(wilcoxon_pvalue, digits=4)),
             (
-                "Improved features",
+                "QC CV improved (all evaluable)",
                 _fmt(improved_ratio, digits=1, pct=True),
             ),
             (
-                "Features >5% improved",
-                _fmt((cv_improvement > 5).mean() * 100 if total_count else np.nan, digits=1, pct=True),
+                "QC CV >5% improved (all evaluable)",
+                _fmt(
+                    (evaluable_cv_improvement > 5).mean() * 100
+                    if not evaluable_cv_improvement.empty else np.nan,
+                    digits=1,
+                    pct=True,
+                ),
             ),
-            ("Worsened features", int((cv_improvement < 0).sum()) if total_count else 0),
+            ("Worsened features (all evaluable)", int((evaluable_cv_improvement < 0).sum())),
+            ("Features with applied correction", int(applied_feature_mask.sum())),
+            (
+                "QC CV improved among applied features",
+                _fmt(applied_improved_ratio, digits=1, pct=True),
+            ),
             ("Batch execution", ""),
             ("All-batch success", decision_stats.get('success', 0)),
             ("All-batch no drift detected", decision_stats.get('no_drift_detected', 0)),
@@ -2305,7 +2351,12 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
 
         # QC CV% 校正效果總覽圖
         try:
-            plot_qc_cv_overview(cv_results_df, decision_stats, plots_dir, timestamp)
+            overview_df = cv_results_df.merge(
+                trend_stats_df[['FeatureID', 'Decision_Status']],
+                on='FeatureID',
+                how='left',
+            )
+            plot_qc_cv_overview(overview_df, decision_stats, plots_dir, timestamp)
         except Exception as e:
             print(f"  ⚠ QC CV Overview 圖生成失敗: {e}")
 

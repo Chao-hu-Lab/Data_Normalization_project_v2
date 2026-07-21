@@ -96,6 +96,8 @@ RMSE = √[Σ(觀測值 - 擬合值)² / n]
 
 **安全限制:** 校正因子限制在 [0.5, 2.0] 範圍內，避免極端校正導致數據失真。
 
+只有 `Decision_Status = success` 的 batch 會把校正值寫入主輸出與 QC CV 計算來源；其他狀態（包括 `no_drift_detected` 與各種 rejection）一律保留原始強度。位於有效 QC injection-order span 之外的樣本也保留原始強度，不做 flat extrapolation 校正。
+
 此外，Step 2 會額外輸出：
 - `Clamped_Factor_Ratio`
 - `Outside_QC_Range_Count`
@@ -252,7 +254,8 @@ QC_LOESS_YYYYMMDD_HHMMSS.xlsx
 
 **Original_QC_CV% vs Corrected_QC_CV%:**
 - 目標: QC CV% < 20% (可接受) 或 < 15% (良好)
-- 觀察整體改善分布
+- before/after 只使用兩邊同時有效的同名 QC，避免缺值造成 QC 子集合錯位
+- 總覽圖只把實際套用至少一個成功 batch 的 feature（`success` 或 `partial_success`）納入 applied correction 的 CV 指標，並分開顯示 fit attempted rate、accepted batch-task rate 與校正後絕對 QC CV 分布
 
 **Decision_Status / LOWESS_Trend_pvalue:**
 - `success`: 有足夠證據支持 batch-local drift correction
