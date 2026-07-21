@@ -1,34 +1,19 @@
 import os
 import threading
-import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMessageBox, QSplitter
+from PySide6.QtWidgets import QMessageBox, QSplitter
 
 from metabolomics.gui.workflow import STEP1_NAME, StepState
 from metabolomics.gui_qt.app import DNPMainWindow, STEP_NAMES, VISIBLE_STATES
 from metabolomics.gui_qt.controller import WorkflowController
 from metabolomics.utils.results import ProcessingResult
+from tests.gui_qt_helpers import qt_app, wait_until
 
 
-def _app():
-    return QApplication.instance() or QApplication([])
-
-
-def _wait_until(predicate, timeout_ms=3000):
-    app = _app()
-    deadline = time.monotonic() + timeout_ms / 1000
-    while time.monotonic() < deadline:
-        app.processEvents()
-        if predicate():
-            return
-        time.sleep(0.005)
-    raise AssertionError("Timed out waiting for Qt view state")
-
-
-def test_p2_window_starts_with_four_cards_and_six_visible_states():
-    app = _app()
+def test_p2_window_starts_with_four_plain_rows_and_six_visible_states():
+    app = qt_app()
     controller = WorkflowController(
         processors={},
         session_factory=lambda _input: "C:/session",
@@ -41,7 +26,7 @@ def test_p2_window_starts_with_four_cards_and_six_visible_states():
     app.processEvents()
 
     assert window.isVisible()
-    assert set(window.cards) == set(STEP_NAMES)
+    assert set(window.step_rows) == set(STEP_NAMES)
     assert window.findChild(QSplitter, "workspaceSplitter").count() == 2
     assert {state.value for state in VISIBLE_STATES} == {
         "pending",
@@ -71,11 +56,11 @@ def test_p2_view_runs_a_step_and_renders_the_terminal_state():
     window.show()
     controller.select_input("C:/input.xlsx")
 
-    window.cards[STEP1_NAME].run_button.click()
-    _wait_until(lambda: not controller.is_running)
+    window.step_rows[STEP1_NAME].run_button.click()
+    wait_until(lambda: not controller.is_running)
 
     assert controller.workflow.status_of(STEP1_NAME) is StepState.SUCCEEDED
-    assert window.cards[STEP1_NAME].status_label.text() == "Done"
+    assert window.step_rows[STEP1_NAME].status_label.text() == "Done"
     assert "Starting Step 1" in window.log.toPlainText()
     window.close()
 
@@ -101,15 +86,15 @@ def test_heartbeat_is_owned_by_the_ui_timer_not_the_worker():
     window = DNPMainWindow(controller=controller)
     window.show()
     controller.select_input("C:/input.xlsx")
-    window.cards[STEP1_NAME].run_button.click()
-    _wait_until(entered.is_set)
+    window.step_rows[STEP1_NAME].run_button.click()
+    wait_until(entered.is_set)
 
     assert window.heartbeat.isActive()
     assert window.progress_label.text().startswith("Running")
 
     controller.request_stop()
     release.set()
-    _wait_until(lambda: not controller.is_running)
+    wait_until(lambda: not controller.is_running)
 
     assert not window.heartbeat.isActive()
     assert controller.workflow.status_of(STEP1_NAME) is StepState.CANCELLED
@@ -142,17 +127,17 @@ def test_close_event_keeps_window_alive_until_worker_finishes(monkeypatch):
     window = DNPMainWindow(controller=controller)
     window.show()
     controller.select_input("C:/input.xlsx")
-    window.cards[STEP1_NAME].run_button.click()
-    _wait_until(entered.is_set)
+    window.step_rows[STEP1_NAME].run_button.click()
+    wait_until(entered.is_set)
 
     window.close()
-    _app().processEvents()
+    qt_app().processEvents()
 
     assert window.isVisible()
     assert controller.is_running
 
     release.set()
-    _wait_until(lambda: not controller.is_running)
+    wait_until(lambda: not controller.is_running)
     window.close()
-    _app().processEvents()
+    qt_app().processEvents()
     assert not window.isVisible()

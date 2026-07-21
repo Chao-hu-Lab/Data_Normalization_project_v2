@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -11,17 +10,13 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QFileDialog,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QScrollArea,
-    QSizePolicy,
     QSplitter,
-    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
@@ -51,67 +46,39 @@ VISIBLE_STATES = {
 }
 
 
-class StepCard(QFrame):
+class StepRow(QWidget):
     run_requested = Signal(str)
     method_changed = Signal(str)
 
-    def __init__(self, step_number: int, step_name: str) -> None:
+    def __init__(self, step_name: str) -> None:
         super().__init__()
         self.step_name = step_name
-        self.setObjectName(f"stepCard{step_number}")
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(8)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(7)
-
-        header = QHBoxLayout()
-        badge = QFrame()
-        badge.setObjectName("stepBadge")
-        badge_layout = QVBoxLayout(badge)
-        badge_layout.setContentsMargins(7, 3, 7, 3)
-        badge_layout.addWidget(QLabel(f"Step {step_number}"))
-        header.addWidget(badge)
-        title = QLabel(step_name.replace(f"Step {step_number}: ", ""))
+        title = QLabel(step_name)
         title.setWordWrap(True)
-        header.addWidget(title, 1)
+        layout.addWidget(title, 1)
         self.status_label = QLabel("Idle")
-        self.status_label.setObjectName("statusPill")
-        self.status_label.setProperty("state", "idle")
-        header.addWidget(self.status_label)
-        layout.addLayout(header)
-
-        source_row = QHBoxLayout()
-        source_row.addWidget(QLabel("Input:"))
-        self.input_label = QLabel("Waiting for upstream output...")
-        self.input_label.setObjectName("cardHint")
-        self.input_label.setWordWrap(True)
-        source_row.addWidget(self.input_label, 1)
-        layout.addLayout(source_row)
+        layout.addWidget(self.status_label)
 
         self.method_combo: QComboBox | None = None
         if step_name == STEP3_NAME:
-            method_row = QHBoxLayout()
-            method_row.addWidget(QLabel("Method:"))
+            layout.addWidget(QLabel("Method:"))
             self.method_combo = QComboBox()
             for label, value in STEP3_METHOD_OPTIONS:
                 self.method_combo.addItem(label, value)
             self.method_combo.currentIndexChanged.connect(self._emit_method)
-            method_row.addWidget(self.method_combo, 1)
-            layout.addLayout(method_row)
+            layout.addWidget(self.method_combo)
 
         self.run_button = QPushButton("Run Step")
-        self.run_button.setObjectName("primaryAction")
         self.run_button.clicked.connect(lambda: self.run_requested.emit(self.step_name))
         layout.addWidget(self.run_button)
 
-    def render(self, state: StepState, input_text: str, can_run: bool) -> None:
-        label, token = VISIBLE_STATES[state]
+    def render(self, state: StepState, can_run: bool) -> None:
+        label, _token = VISIBLE_STATES[state]
         self.status_label.setText(label)
-        self.status_label.setProperty("state", token)
-        self.status_label.style().unpolish(self.status_label)
-        self.status_label.style().polish(self.status_label)
-        self.input_label.setText(input_text)
         self.run_button.setEnabled(can_run)
 
     def set_method_enabled(self, enabled: bool) -> None:
@@ -146,8 +113,6 @@ class DNPMainWindow(QMainWindow):
     def _build_ui(self) -> None:
         self.setObjectName("dnpQtMainWindow")
         self.setWindowTitle(WINDOW_TITLE)
-        self.resize(1480, 940)
-        self.setMinimumSize(1100, 700)
 
         central = QWidget()
         central.setObjectName("centralWidget")
@@ -169,23 +134,14 @@ class DNPMainWindow(QMainWindow):
         title_row.addWidget(ThemeSelector(self.theme_manager))
         root.addLayout(title_row)
 
-        file_bar = QFrame()
-        file_bar.setObjectName("fileBar")
-        file_layout = QHBoxLayout(file_bar)
-        file_layout.setContentsMargins(10, 8, 10, 8)
+        file_layout = QHBoxLayout()
         file_layout.addWidget(QLabel("Input"))
         self.file_label = QLabel("No file selected...")
-        self.file_label.setObjectName("cardHint")
-        self.file_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Preferred,
-        )
         file_layout.addWidget(self.file_label, 1)
         self.browse_button = QPushButton("Browse")
-        self.browse_button.setObjectName("browseButton")
         self.browse_button.clicked.connect(self._browse)
         file_layout.addWidget(self.browse_button)
-        root.addWidget(file_bar)
+        root.addLayout(file_layout)
 
         controls = QHBoxLayout()
         self.auto_button = QPushButton("Auto Run")
@@ -206,28 +162,21 @@ class DNPMainWindow(QMainWindow):
         splitter.setObjectName("workspaceSplitter")
         splitter.setChildrenCollapsible(False)
 
-        scroll = QScrollArea()
-        scroll.setObjectName("workflowScrollArea")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        card_container = QWidget()
-        card_container.setObjectName("workflowCards")
-        card_layout = QVBoxLayout(card_container)
-        card_layout.setContentsMargins(0, 0, 6, 0)
-        card_layout.setSpacing(10)
-        self.cards: dict[str, StepCard] = {}
-        for step_number, step_name in enumerate(STEP_NAMES, start=1):
-            card = StepCard(step_number, step_name)
-            card.run_requested.connect(self._start_step)
-            card.method_changed.connect(self.controller.set_normalization_method)
-            self.cards[step_name] = card
-            card_layout.addWidget(card)
-        card_layout.addStretch(1)
-        scroll.setWidget(card_container)
-        splitter.addWidget(scroll)
+        step_container = QWidget()
+        step_layout = QVBoxLayout(step_container)
+        step_layout.setContentsMargins(0, 0, 6, 0)
+        step_layout.setSpacing(6)
+        self.step_rows: dict[str, StepRow] = {}
+        for step_name in STEP_NAMES:
+            step_row = StepRow(step_name)
+            step_row.run_requested.connect(self._start_step)
+            step_row.method_changed.connect(self.controller.set_normalization_method)
+            self.step_rows[step_name] = step_row
+            step_layout.addWidget(step_row)
+        step_layout.addStretch(1)
+        splitter.addWidget(step_container)
 
-        log_pane = QFrame()
-        log_pane.setObjectName("logPane")
+        log_pane = QWidget()
         log_layout = QVBoxLayout(log_pane)
         log_header = QHBoxLayout()
         log_header.addWidget(QLabel("Real-time execution output"))
@@ -246,17 +195,10 @@ class DNPMainWindow(QMainWindow):
         progress_row.addWidget(self.progress_label)
         progress_row.addStretch(1)
         log_layout.addLayout(progress_row)
-        self.session_label = QLabel("Session: none yet")
-        self.session_label.setObjectName("sessionPath")
-        self.session_label.setWordWrap(True)
-        log_layout.addWidget(self.session_label)
         splitter.addWidget(log_pane)
-        splitter.setSizes([620, 800])
         root.addWidget(splitter, 1)
 
         self.setCentralWidget(central)
-        self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage("Select an input workbook to begin")
 
         self.heartbeat = QTimer(self)
         self.heartbeat.setInterval(400)
@@ -267,7 +209,7 @@ class DNPMainWindow(QMainWindow):
         self.controller.busy_changed.connect(self._set_busy)
         self.controller.log_line.connect(self._append_log)
         self.controller.notice.connect(self._show_notice)
-        self.controller.session_changed.connect(self._set_session)
+        self.controller.session_changed.connect(self._log_session)
 
     def _browse(self) -> None:
         file_path, _selected_filter = QFileDialog.getOpenFileName(
@@ -304,34 +246,20 @@ class DNPMainWindow(QMainWindow):
 
         for index, step_name in enumerate(STEP_NAMES):
             if index == 0:
-                input_text = Path(selected).name if selected else "Waiting for file selection..."
                 predecessor_ready = bool(selected)
             else:
                 previous = STEP_NAMES[index - 1]
-                previous_result = workflow.result_for(previous)
-                input_text = (
-                    Path(previous_result.output_path).name
-                    if previous_result is not None
-                    else f"Output from Step {index}"
-                )
                 predecessor_ready = previous in completed
-            self.cards[step_name].render(
+            self.step_rows[step_name].render(
                 workflow.status_of(step_name),
-                input_text,
                 can_run=not busy and predecessor_ready,
             )
-            self.cards[step_name].set_method_enabled(not busy)
+            self.step_rows[step_name].set_method_enabled(not busy)
 
         self.browse_button.setEnabled(not busy)
         self.auto_button.setEnabled(not busy and bool(selected))
         self.stop_button.setEnabled(busy and not workflow.stop_requested)
         self.reset_button.setEnabled(not busy)
-        if workflow.active_step:
-            self.statusBar().showMessage(workflow.active_step)
-        elif selected:
-            self.statusBar().showMessage("Ready")
-        else:
-            self.statusBar().showMessage("Select an input workbook to begin")
 
     def _set_busy(self, busy: bool) -> None:
         if busy:
@@ -353,10 +281,9 @@ class DNPMainWindow(QMainWindow):
         scrollbar = self.log.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
-    def _set_session(self, session_dir: str) -> None:
-        self.session_label.setText(
-            f"Session: {session_dir}" if session_dir else "Session: none yet"
-        )
+    def _log_session(self, session_dir: str) -> None:
+        if session_dir:
+            self._append_log("info", f"Session: {session_dir}")
 
     def _show_notice(
         self,
@@ -387,7 +314,7 @@ class DNPMainWindow(QMainWindow):
         if self.controller.shutdown(timeout_ms=1500):
             event.accept()
         else:
-            self.statusBar().showMessage(
+            self.progress_label.setText(
                 "Still finishing the current calculation; close again when it completes."
             )
             event.ignore()
