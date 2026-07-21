@@ -2,6 +2,8 @@ import pandas as pd
 
 from metabolomics.processors.qc_batch_scaling import build_batch_membership
 from metabolomics.utils.sample_classification import (
+    LEGACY_STEP3_BATCH_SEPARATORS,
+    SampleInfoIndex,
     build_sample_info_mapping,
     identify_candidate_sample_columns,
     identify_sample_columns,
@@ -22,6 +24,35 @@ def test_parse_batch_labels_splits_semicolon_values_and_ignores_blanks():
     assert parse_batch_labels(" A ;B;  ; C ") == ["A", "B", "C"]
     assert parse_batch_labels(None) == []
     assert parse_batch_labels(float("nan")) == []
+
+
+def test_parse_batch_labels_keeps_default_and_step3_delimiter_policies_distinct():
+    value = "A/B, C|D+E;F"
+
+    assert parse_batch_labels(value) == ["A/B, C|D+E", "F"]
+    assert parse_batch_labels(
+        value,
+        separators=LEGACY_STEP3_BATCH_SEPARATORS,
+    ) == ["A", "B", "C", "D", "E", "F"]
+
+
+def test_sample_info_index_prefers_exact_then_normalized_first_row():
+    sample_info_df = pd.DataFrame(
+        {
+            "Sample_Name": [
+                "Sample A",
+                "Sample_A",
+                "Tumor tissue BC2257_DNA",
+            ],
+            "Sample_Type": ["First", "Second", "Exposure"],
+        }
+    )
+    sample_index = SampleInfoIndex(sample_info_df, name_column="Sample_Name")
+
+    assert sample_index.row_for("Sample_A")["Sample_Type"] == "Second"
+    assert sample_index.row_for("Sample-A")["Sample_Type"] == "First"
+    assert sample_index.row_for("TumorBC2257_DNA")["Sample_Type"] == "Exposure"
+    assert sample_index.row_for("Missing") is None
 
 
 def test_normalize_sample_name_treats_special_chars_and_dna_rna_variants_as_equivalent():

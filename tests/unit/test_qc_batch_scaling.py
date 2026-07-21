@@ -84,6 +84,7 @@ class TestQCBatchScalingHelpers:
         assert module.parse_batch_labels("A;B") == ["A", "B"]
         assert module.parse_batch_labels("A; B") == ["A", "B"]
         assert module.parse_batch_labels(" A ; B ") == ["A", "B"]
+        assert module.parse_batch_labels("A/B") == ["A/B"]
 
     def test_multi_batch_qc_is_added_to_both_batch_qc_pools(self):
         module = load_qc_batch_scaling_module()

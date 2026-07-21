@@ -34,6 +34,16 @@ class TestConcentrationNormInput:
 
 
 class TestConcentrationNormHelpers:
+    def test_step3_batch_parser_preserves_legacy_delimiters(self, conc_norm_module):
+        assert conc_norm_module._parse_batch_labels("A/B,C|D+E;F") == [
+            "A",
+            "B",
+            "C",
+            "D",
+            "E",
+            "F",
+        ]
+
     def test_get_summary_sheet_name_uses_method_specific_labels(
         self,
         conc_norm_module,

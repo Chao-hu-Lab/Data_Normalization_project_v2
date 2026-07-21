@@ -28,6 +28,7 @@ from metabolomics.utils.constants import (
     is_non_sample_column,
 )
 from metabolomics.utils.sample_classification import (
+    SampleInfoIndex,
     normalize_sample_name,
     normalize_sample_type,
     identify_sample_columns,
@@ -558,15 +559,11 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         if not sample_columns:
             raise ValueError("找不到有效的樣本欄位")
 
-        sample_info_norm = sample_info_df.copy()
-        sample_info_norm['_norm_name'] = sample_info_norm['Sample_Name'].map(normalize_sample_name)
-        sample_info_norm = sample_info_norm[sample_info_norm['_norm_name'].astype(bool)]
-        sample_meta = sample_info_norm.drop_duplicates('_norm_name').set_index('_norm_name')
-        col_to_meta = {
-            col: normalize_sample_name(col)
-            for col in sample_columns
-            if normalize_sample_name(col) in sample_meta.index
-        }
+        sample_info_index = SampleInfoIndex(
+            sample_info_df,
+            name_column='Sample_Name',
+        )
+        col_to_meta = sample_info_index.map_rows(sample_columns)
         missing_meta = [col for col in sample_columns if col not in col_to_meta]
 
         if missing_meta and len(missing_meta) == len(sample_columns):
@@ -585,9 +582,9 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         # 判斷 QC 樣本：優先從 SampleInfo 查找，如找不到則從欄位名稱關鍵字判斷
         qc_samples = []
         for sample in sample_columns:
-            meta_key = col_to_meta.get(sample)
-            if meta_key in sample_meta.index:
-                if 'QC' in str(sample_meta.loc[meta_key].get('Sample_Type', '')).upper():
+            meta_row = col_to_meta.get(sample)
+            if meta_row is not None:
+                if 'QC' in str(meta_row.get('Sample_Type', '')).upper():
                     qc_samples.append(sample)
             elif 'QC' in sample.upper() or 'POOLED' in sample.upper():
                 qc_samples.append(sample)
@@ -598,10 +595,9 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         batch_groups = {}
         missing_order_samples = []
         for sample in sample_columns:
-            meta_name = col_to_meta.get(sample, sample)
-            if meta_name not in sample_meta.index:
+            meta_row = col_to_meta.get(sample)
+            if meta_row is None:
                 continue
-            meta_row = sample_meta.loc[meta_name]
             order = meta_row.get('Injection_Order')
             if pd.isna(order):
                 missing_order_samples.append(sample)

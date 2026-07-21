@@ -21,9 +21,12 @@ from metabolomics.utils.constants import (
     resolve_sheet_name,
 )
 from metabolomics.utils.sample_classification import (
+    LEGACY_STEP3_BATCH_SEPARATORS,
+    SampleInfoIndex,
     build_sample_info_mapping as shared_build_sample_info_mapping,
     identify_candidate_sample_columns,
     normalize_sample_name,
+    parse_batch_labels as shared_parse_batch_labels,
 )
 from metabolomics.utils.file_io import (
     build_plots_dir,
@@ -67,20 +70,9 @@ SAMPLE_TYPE_COLORS = {
 
 def _lookup_sample_type(sample, sample_info_df, col_to_info_row=None, default='UNKNOWN'):
     """Helper: look up sample type using col_to_info_row mapping or fallback."""
-    if col_to_info_row and sample in col_to_info_row:
-        return str(col_to_info_row[sample].get('Sample_Type', default)).upper()
-    # Direct lookup fallback
-    rows = sample_info_df[sample_info_df.iloc[:, 0] == sample]
-    if not rows.empty:
-        return str(rows.iloc[0].get('Sample_Type', default)).upper()
-    # Normalized-name fallback for common cross-tool naming differences
-    norm_sample = normalize_sample_name(sample)
-    if norm_sample:
-        norm_rows = sample_info_df[
-            sample_info_df.iloc[:, 0].map(normalize_sample_name) == norm_sample
-        ]
-        if not norm_rows.empty:
-            return str(norm_rows.iloc[0].get('Sample_Type', default)).upper()
+    info_row = _lookup_sample_info_row(sample, sample_info_df, col_to_info_row)
+    if info_row is not None:
+        return str(info_row.get('Sample_Type', default)).upper()
     # Column-name keyword fallback
     s_upper = str(sample).upper()
     if any(kw in s_upper for kw in ['QC', 'POOLED']):
@@ -98,37 +90,14 @@ def _lookup_sample_info_row(sample, sample_info_df, col_to_info_row=None):
     """Look up a SampleInfo row using mapping, exact name, then normalized name."""
     if col_to_info_row and sample in col_to_info_row:
         return col_to_info_row[sample]
-
-    sample_name_col = sample_info_df.columns[0]
-    exact_rows = sample_info_df[sample_info_df[sample_name_col] == sample]
-    if not exact_rows.empty:
-        return exact_rows.iloc[0]
-
-    norm_sample = normalize_sample_name(sample)
-    if not norm_sample:
-        return None
-
-    normalized_rows = sample_info_df[
-        sample_info_df[sample_name_col].map(normalize_sample_name) == norm_sample
-    ]
-    if normalized_rows.empty:
-        return None
-    return normalized_rows.iloc[0]
+    return SampleInfoIndex(sample_info_df).row_for(sample)
 
 def _parse_batch_labels(value):
     """Parse batch labels from SampleInfo while tolerating simple delimiters."""
-    if pd.isna(value):
-        return []
-    text = str(value).strip()
-    if not text:
-        return []
-    normalized = (
-        text.replace("|", ",")
-        .replace("/", ",")
-        .replace(";", ",")
-        .replace("+", ",")
+    return shared_parse_batch_labels(
+        value,
+        separators=LEGACY_STEP3_BATCH_SEPARATORS,
     )
-    return [part.strip() for part in normalized.split(",") if part.strip()]
 
 
 def _find_batch_column(sample_info_df):

@@ -26,8 +26,8 @@ from metabolomics.utils.file_io import build_output_path, build_plots_dir, resol
 from metabolomics.utils.plotting import build_batch_group_indices, setup_matplotlib
 from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
 from metabolomics.utils.sample_classification import (
+    SampleInfoIndex,
     identify_sample_columns,
-    normalize_sample_name,
     normalize_sample_type,
     parse_batch_labels as shared_parse_batch_labels,
 )
@@ -63,20 +63,19 @@ def build_batch_membership(sample_info_df, sample_columns=None):
     """Build batch-to-QC and batch-to-sample mappings from SampleInfo."""
     batch_to_qc = {}
     batch_to_samples = {}
-    column_lookup = {}
 
     if sample_columns:
-        column_lookup = {
-            normalize_sample_name(column): column
-            for column in sample_columns
-        }
+        sample_rows = SampleInfoIndex(
+            sample_info_df,
+            name_column="Sample_Name",
+        ).map_rows(sample_columns).items()
+    else:
+        sample_rows = (
+            (str(row["Sample_Name"]).strip(), row)
+            for _, row in sample_info_df.iterrows()
+        )
 
-    for _, row in sample_info_df.iterrows():
-        sample_name = str(row["Sample_Name"]).strip()
-        if column_lookup:
-            sample_name = column_lookup.get(normalize_sample_name(sample_name))
-            if not sample_name:
-                continue
+    for sample_name, row in sample_rows:
         sample_type = normalize_sample_type(row.get("Sample_Type", ""))
         batches = parse_batch_labels(row.get("Batch", ""))
 
@@ -244,20 +243,20 @@ def build_summary_df(
 
 def build_plot_metadata(sample_columns, sample_info_df):
     """Build sample type and batch metadata aligned with sample columns."""
-    sample_info_norm = sample_info_df.copy()
-    sample_info_norm["_norm_name"] = sample_info_norm["Sample_Name"].map(normalize_sample_name)
-    sample_info_norm = sample_info_norm[sample_info_norm["_norm_name"].astype(bool)]
-    sample_meta = sample_info_norm.drop_duplicates("_norm_name").set_index("_norm_name")
+    sample_rows = SampleInfoIndex(
+        sample_info_df,
+        name_column="Sample_Name",
+    ).map_rows(sample_columns)
 
     sample_types = []
     batch_memberships = []
     qc_indices = []
 
     for index, sample in enumerate(sample_columns):
-        meta_key = normalize_sample_name(sample)
-        if meta_key in sample_meta.index:
-            raw_type = str(sample_meta.loc[meta_key].get("Sample_Type", "Unknown"))
-            raw_batch = sample_meta.loc[meta_key].get("Batch", "Unknown")
+        meta_row = sample_rows.get(sample)
+        if meta_row is not None:
+            raw_type = str(meta_row.get("Sample_Type", "Unknown"))
+            raw_batch = meta_row.get("Batch", "Unknown")
         else:
             raw_type = "Unknown"
             raw_batch = "Unknown"

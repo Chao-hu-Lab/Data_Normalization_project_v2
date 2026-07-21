@@ -21,7 +21,7 @@ import numpy as np
 
 # Import shared constants
 from .constants import COLORBLIND_COLORS, SAMPLE_TYPE_COLORS, SAMPLE_TYPE_MARKERS
-from .sample_classification import normalize_sample_type
+from .sample_classification import normalize_sample_type, parse_batch_labels
 
 
 def normalize_batch_memberships(batch_labels=None, batch_memberships=None):
@@ -35,11 +35,11 @@ def normalize_batch_memberships(batch_labels=None, batch_memberships=None):
         if entry is None:
             parts = []
         elif isinstance(entry, str):
-            parts = [part.strip() for part in entry.split(';') if part.strip()]
+            parts = parse_batch_labels(entry)
         elif isinstance(entry, (list, tuple, set)):
             parts = []
             for item in entry:
-                parts.extend([part.strip() for part in str(item).split(';') if part.strip()])
+                parts.extend(parse_batch_labels(item))
         else:
             parts = [str(entry).strip()] if str(entry).strip() else []
 

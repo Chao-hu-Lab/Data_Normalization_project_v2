@@ -34,6 +34,9 @@ class TestQCLOWESSInput:
         for func_name in expected_functions:
             assert hasattr(qc_lowess_module, func_name), f"Missing function: {func_name}"
 
+    def test_step2_batch_parser_keeps_slash_as_one_label(self, qc_lowess_module):
+        assert qc_lowess_module.parse_batch_labels("A/B") == ["A/B"]
+
     def test_load_and_process_data_reports_actual_source_sheet(
         self,
         qc_lowess_module,
