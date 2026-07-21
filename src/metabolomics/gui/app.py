@@ -11,7 +11,6 @@ import subprocess
 from pathlib import Path
 
 from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
-from metabolomics.startup_bridge import apply_startup_bridge, parse_startup_args
 from metabolomics.gui.workflow import (
     DEFAULT_STEP3_METHOD,
     STEP1_NAME,
@@ -180,13 +179,10 @@ class DataNormalizationApp:
 
         # 執行狀態管理
         self.current_thread = None
-        self.progress_queue = queue.Queue()
-        self.is_executing = False
         self.log_queue = queue.Queue()
 
         # 檔案選擇相關
         self.file_selected = threading.Event()
-        self._ms_session_dir = None
 
         self.last_output_file = None  # 記錄最後一個輸出檔案
         self.steps = self._build_workflow_steps()
@@ -244,7 +240,6 @@ class DataNormalizationApp:
         self.setup_logging()
 
         # 開始檢查進度和日誌
-        self.check_progress()
         self.check_log_queue()
         # 初始化按鈕狀態
         self.update_button_states()
@@ -1310,26 +1305,6 @@ class DataNormalizationApp:
 
         self._render_pipeline_nav()
 
-    def check_progress(self):
-        """檢查進度隊列"""
-        try:
-            while True:
-                data = self.progress_queue.get_nowait()
-                data_dict = self._result_to_dict(data)
-
-                # 更新統計資訊
-                if 'metabolites' in data_dict:
-                    self.current_stats['metabolites'] = data_dict['metabolites']
-                if 'samples' in data_dict:
-                    self.current_stats['samples'] = data_dict['samples']
-                if 'output_path' in data_dict:
-                    self.current_stats['output_path'] = data_dict['output_path']
-
-        except queue.Empty:
-            pass
-        finally:
-            self.master.after(100, self.check_progress)
-
     def update_input_source_labels(self):
         """更新輸入來源顯示 (Chain of Custody)"""
         if not hasattr(self, 'step_input_labels'):
@@ -1429,6 +1404,9 @@ class DataNormalizationApp:
 
     def select_initial_file(self):
         """Select initial input file"""
+        if self.workflow.active_step is not None:
+            messagebox.showwarning("Cannot Change Input", "Wait for the current step to finish first")
+            return
         file_path = filedialog.askopenfilename(
             title="Select Input File",
             filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
@@ -1458,6 +1436,9 @@ class DataNormalizationApp:
 
     def import_from_preprocessing(self):
         """Import file from ms-preprocessing-toolkit and convert to DNP format."""
+        if self.workflow.active_step is not None:
+            messagebox.showwarning("Cannot Change Input", "Wait for the current step to finish first")
+            return
         file_path = filedialog.askopenfilename(
             title="Select ms-preprocessing output file",
             filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
@@ -1494,7 +1475,7 @@ class DataNormalizationApp:
             messagebox.showwarning("Notice", "Please select an input file first")
             return
 
-        if self.is_executing:
+        if self.workflow.active_step is not None:
             return
 
         if messagebox.askyesno("Confirm", "Are you sure you want to run all steps automatically?"):
@@ -1515,7 +1496,7 @@ class DataNormalizationApp:
 
     def execute_step(self, step):
         """Execute step"""
-        if self.is_executing:
+        if self.workflow.active_step is not None:
             messagebox.showwarning("Running", "A step is already running, please wait")
             return
 
@@ -1527,23 +1508,21 @@ class DataNormalizationApp:
         self.execution_start_time = datetime.now()
 
         try:
-            self.workflow.resolve_input(step['name'])
-        except ValueError as exc:
+            self.workflow.begin(step['name'])
+        except (ValueError, RuntimeError) as exc:
             messagebox.showwarning("Cannot Run Step", str(exc))
             return
 
         # Create session dir on first step execution
-        if self.current_session_dir is None:
-            from metabolomics.utils.file_io import create_session_dir, get_output_root
-            self.current_session_dir = create_session_dir(
-                output_root=get_output_root(input_file=self.workflow.selected_file_path)
-            )
-            self.logger.info(f"Session directory: {self.current_session_dir}")
-
         try:
-            self.workflow.begin(step['name'])
-        except (ValueError, RuntimeError) as exc:
-            messagebox.showwarning("Cannot Run Step", str(exc))
+            if self.current_session_dir is None:
+                from metabolomics.utils.file_io import create_session_dir, get_output_root
+                self.current_session_dir = create_session_dir(
+                    output_root=get_output_root(input_file=self.workflow.selected_file_path)
+                )
+                self.logger.info(f"Session directory: {self.current_session_dir}")
+        except Exception as exc:
+            self.on_step_error(step, str(exc))
             return
 
         # Update current step name
@@ -1627,7 +1606,6 @@ class DataNormalizationApp:
                 )
 
             self.logger.info(f"Received result: {result.to_dict()}")
-            self.progress_queue.put(result)
 
             # Complete
             self.master.after(0, lambda s=step, r=result: self.on_step_complete(s, r))
@@ -1646,8 +1624,6 @@ class DataNormalizationApp:
     def on_step_start(self, step):
         """UI update on step start"""
         index = self.steps.index(step)
-
-        self.is_executing = True
         self._set_step_status(index, 'running')
 
         for btn in self.step_buttons:
@@ -1716,10 +1692,18 @@ class DataNormalizationApp:
 
     def on_step_complete(self, step, result):
         """UI update on step complete"""
+        if self.workflow.should_discard_result(step['name']):
+            self.on_step_cancelled(
+                step,
+                "Stop requested; current calculation finished and its result was discarded",
+            )
+            return
+
         index = self.steps.index(step)
         self.workflow.complete(step['name'], result)
-
-        self.is_executing = False
+        self.current_stats['metabolites'] = result.metabolites
+        self.current_stats['samples'] = result.samples
+        self.current_stats['output_path'] = result.output_path
 
         # Check if the step was skipped (e.g. ISTD gate)
         was_skipped = self._is_result_skipped(result)
@@ -1791,7 +1775,6 @@ class DataNormalizationApp:
         """UI update on step error"""
         index = self.steps.index(step)
 
-        self.is_executing = False
         self.workflow.fail(step['name'], error)
         self._render_invalidated_step_and_downstream(step['name'])
         self._set_step_status(index, 'error')
@@ -1821,7 +1804,6 @@ class DataNormalizationApp:
         """UI update on step cancelled"""
         index = self.steps.index(step)
 
-        self.is_executing = False
         self.workflow.cancel(step['name'], reason)
         self._render_invalidated_step_and_downstream(step['name'])
 
@@ -1850,7 +1832,7 @@ class DataNormalizationApp:
 
     def reset_all_steps(self):
         """Reset all steps"""
-        if self.is_executing:
+        if self.workflow.active_step is not None:
             messagebox.showwarning("Cannot Reset", "Task is running, please cancel first")
             return
 
@@ -1930,15 +1912,12 @@ class StreamToLogger:
         pass
 
 
-def main(argv=None):
-    args = parse_startup_args(argv or sys.argv[1:])
+def main():
     root = tk.Tk()
     app = DataNormalizationApp(root)
-    app._ms_session_dir = args.ms_session_dir
-    root.after(0, lambda: apply_startup_bridge(app, args.ms_bridge_file))
 
     def on_closing():
-        if app.is_executing:
+        if app.workflow.active_step is not None:
             if messagebox.askokcancel("退出", "有任務正在執行，確定要退出嗎？\n這將強制終止當前任務。"):
                 app.workflow.request_stop()
                 app.logger.info("程式關閉，強制終止執行")

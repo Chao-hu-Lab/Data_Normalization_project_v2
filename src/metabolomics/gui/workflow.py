@@ -62,6 +62,8 @@ class WorkflowState:
     def select_input(self, file_path: str) -> None:
         if not file_path:
             raise ValueError("Input file path must not be empty")
+        if self.active_step is not None:
+            raise RuntimeError("Cannot change input while a workflow step is running")
         self.selected_file_path = file_path
         self.reset_steps()
 
@@ -139,9 +141,6 @@ class WorkflowState:
 
     def start_auto_run(self) -> None:
         self.auto_run = True
-
-    def stop_auto_run(self) -> None:
-        self.auto_run = False
 
     def next_auto_step(self, completed_step: str, terminal_step: str) -> str | None:
         completed_index = self._step_index(completed_step)

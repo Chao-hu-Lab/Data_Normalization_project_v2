@@ -28,6 +28,8 @@ def _result_to_dict(result: Any) -> dict[str, Any]:
         "output_path": str(getattr(result, "output_path", "")),
         "metabolites": getattr(result, "metabolites", None),
         "samples": getattr(result, "samples", None),
+        "status": getattr(getattr(result, "status", None), "value", None),
+        "reason": getattr(result, "reason", None),
         "extra": getattr(result, "extra", {}) or {},
     }
 
@@ -35,10 +37,8 @@ def _result_to_dict(result: Any) -> dict[str, Any]:
 def run_workflow(input_file: Path, method: str, session_dir: Path) -> dict[str, Any]:
     _configure_import_paths()
 
-    from metabolomics.bootstrap_paths import ensure_ms_core_src_on_path
     from metabolomics.processors import istd, normalization, qc_lowess
 
-    ensure_ms_core_src_on_path(str(_project_root()))
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / "plots").mkdir(exist_ok=True)
 

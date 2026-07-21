@@ -16,7 +16,7 @@ class TestOutputRootInference:
         assert tmp_path.exists()
 
     def test_get_output_root_prefers_input_file_output_ancestor(self, tmp_path):
-        upstream_output = tmp_path / "ms-core" / ".worktrees" / "cross-project-bridge" / "output"
+        upstream_output = tmp_path / "upstream-toolkit" / ".worktrees" / "feature-branch" / "output"
         input_file = upstream_output / "QC_LOESS_20260307_004818.xlsx"
         input_file.parent.mkdir(parents=True, exist_ok=True)
         input_file.touch()
@@ -26,7 +26,7 @@ class TestOutputRootInference:
         assert output_root == upstream_output
 
     def test_build_plots_dir_uses_inferred_output_root(self, tmp_path):
-        upstream_output = tmp_path / "ms-core" / ".worktrees" / "cross-project-bridge" / "output"
+        upstream_output = tmp_path / "upstream-toolkit" / ".worktrees" / "feature-branch" / "output"
         input_file = upstream_output / "QC_LOESS_20260307_004818.xlsx"
         input_file.parent.mkdir(parents=True, exist_ok=True)
         input_file.touch()
@@ -43,7 +43,7 @@ class TestOutputRootInference:
         assert plots_dir.exists()
 
     def test_get_output_root_still_accepts_legacy_qc_lowess_filename(self, tmp_path):
-        upstream_output = tmp_path / "ms-core" / ".worktrees" / "cross-project-bridge" / "output"
+        upstream_output = tmp_path / "upstream-toolkit" / ".worktrees" / "feature-branch" / "output"
         input_file = upstream_output / "QC_LOWESS_20260307_004818.xlsx"
         input_file.parent.mkdir(parents=True, exist_ok=True)
         input_file.touch()

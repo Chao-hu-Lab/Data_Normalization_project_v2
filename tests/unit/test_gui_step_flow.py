@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-import queue
 
 from metabolomics.gui.app import DataNormalizationApp
 from metabolomics.gui.workflow import WorkflowState
@@ -47,7 +46,6 @@ def _make_app():
     app.workflow = WorkflowState(tuple(step["name"] for step in app.steps))
     app.master = _DummyMaster()
     app.logger = _DummyLogger()
-    app.progress_queue = queue.Queue()
     app.execution_start_time = datetime.now()
     app.current_stats = {
         "step_name": "",
@@ -332,6 +330,21 @@ def test_stop_request_waits_for_current_calculation(monkeypatch):
     assert app.workflow.auto_run is False
     assert "finishing current calculation" in progress_calls[-1][0][0]
     assert app.cancel_btn.config_calls[-1]["state"] == "disabled"
+
+
+def test_completion_callback_discards_result_when_stop_arrives_after_worker_check():
+    app = _make_app()
+    step = app.steps[0]
+    app.workflow.select_input("C:/tmp/input.xlsx")
+    app.workflow.begin(step["name"])
+    app.update_button_states = lambda: None
+    app.set_progress = lambda *_args, **_kwargs: None
+    app.workflow.request_stop()
+
+    app.on_step_complete(step, _result("C:/tmp/step1-output.xlsx"))
+
+    assert app.workflow.status_of(step["name"]).value == "cancelled"
+    assert app.workflow.result_for(step["name"]) is None
 
 
 def test_auto_run_stops_after_step3_and_does_not_schedule_step4(monkeypatch):

@@ -21,10 +21,10 @@ class ProcessingResult:
     output_path: str
     metabolites: int
     samples: int
-    status: WorkflowOutcome = WorkflowOutcome.SUCCEEDED
-    reason: Optional[str] = None
     plots_dir: Optional[str] = None
     extra: Dict[str, Any] = field(default_factory=dict)
+    status: WorkflowOutcome = WorkflowOutcome.SUCCEEDED
+    reason: Optional[str] = None
 
     def __post_init__(self) -> None:
         self.status = WorkflowOutcome(self.status)

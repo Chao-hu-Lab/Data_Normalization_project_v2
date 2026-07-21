@@ -127,3 +127,34 @@ def test_processing_result_rejects_failed_processor_outcome():
         assert "succeeded or skipped" in str(exc)
     else:
         raise AssertionError("processors must raise instead of returning failed results")
+
+
+def test_processing_result_keeps_legacy_positional_optional_fields():
+    result = ProcessingResult(
+        "C:/input.xlsx",
+        "C:/output.xlsx",
+        10,
+        5,
+        "C:/plots",
+        {"diagnostic": True},
+    )
+
+    assert result.plots_dir == "C:/plots"
+    assert result.extra == {"diagnostic": True}
+    assert result.status is WorkflowOutcome.SUCCEEDED
+
+
+def test_workflow_rejects_input_change_while_step_is_running():
+    state = WorkflowState(STEP_NAMES)
+    state.select_input("C:/input.xlsx")
+    state.begin(STEP1_NAME)
+
+    try:
+        state.select_input("C:/replacement.xlsx")
+    except RuntimeError as exc:
+        assert "running" in str(exc)
+    else:
+        raise AssertionError("active workflow input should be immutable")
+
+    assert state.selected_file_path == "C:/input.xlsx"
+    assert state.active_step == STEP1_NAME
