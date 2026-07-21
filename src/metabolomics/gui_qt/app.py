@@ -93,53 +93,55 @@ class StepCard(QFrame):
         self.setObjectName(f"stepCard{step_number}")
         self.setProperty("nextStep", False)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        # Clean list item: a number chip heads the title, the three actions sit
+        # top-right in a fixed order on every card, and the metadata (input
+        # source, plus the Step-3 method) lines up on an indented row beneath
+        # the title. Uniform across all four cards — the buttons never drift and
+        # Step 3 gains no orphan row.
+        indent = 38  # chip width (28) + header spacing (10): aligns rows under the title
 
-        badge = QFrame()
-        badge.setObjectName("stepBadge")
-        badge.setFixedWidth(82)
-        badge_layout = QVBoxLayout(badge)
-        # Top-align "Step N" with the card title's baseline instead of centring
-        # it over the full card height (which floats it between the title and
-        # the input row). Top margin is tuned to match the info column so the
-        # number reads as the heading of the title row.
-        badge_layout.setContentsMargins(8, 14, 8, 8)
-        badge_label = QLabel(f"Step {step_number}")
-        badge_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        badge_layout.addWidget(badge_label)
-        badge_layout.addStretch(1)
-        layout.addWidget(badge)
+        card = QVBoxLayout(self)
+        card.setContentsMargins(16, 10, 16, 10)
+        card.setSpacing(5)
+        card.addStretch(1)
 
-        info = QWidget()
-        info.setObjectName("cardInfo")
-        info_layout = QVBoxLayout(info)
-        info_layout.setContentsMargins(16, 10, 16, 10)
-        info_layout.setSpacing(5)
-
-        title_row = QHBoxLayout()
+        header_row = QHBoxLayout()
+        header_row.setSpacing(10)
+        self.step_chip = QLabel(str(step_number))
+        self.step_chip.setObjectName("stepChip")
+        self.step_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.step_chip.setFixedSize(28, 28)
+        header_row.addWidget(self.step_chip, 0, Qt.AlignmentFlag.AlignVCenter)
         title, note = _step_title(step_name)
         self.title_label = QLabel(title)
         self.title_label.setObjectName("cardTitle")
-        self.title_label.setWordWrap(True)
-        title_row.addWidget(self.title_label)
+        header_row.addWidget(self.title_label)
         self.status_label = QLabel("Idle")
         self.status_label.setObjectName("statusPill")
         self.status_label.setProperty("state", "idle")
-        title_row.addWidget(self.status_label)
-        title_row.addStretch(1)
-        info_layout.addLayout(title_row)
+        header_row.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        header_row.addStretch(1)
 
-        self.note_label = QLabel(note)
-        self.note_label.setObjectName("cardHint")
-        self.note_label.setVisible(bool(note))
-        info_layout.addWidget(self.note_label)
+        self.run_button = QPushButton("Run Step")
+        self.run_button.clicked.connect(lambda: self.run_requested.emit(self.step_name))
+        header_row.addWidget(self.run_button)
+        self.excel_button = QPushButton("Excel")
+        self.excel_button.setObjectName("ghostButton")
+        self.excel_button.clicked.connect(
+            lambda: self.open_excel_requested.emit(self.step_name)
+        )
+        header_row.addWidget(self.excel_button)
+        self.plots_button = QPushButton("Plots")
+        self.plots_button.setObjectName("ghostButton")
+        self.plots_button.clicked.connect(
+            lambda: self.open_plots_requested.emit(self.step_name)
+        )
+        header_row.addWidget(self.plots_button)
+        card.addLayout(header_row)
 
-        input_row = QHBoxLayout()
-        input_label = QLabel("Input:")
-        input_label.setObjectName("chainLabel")
-        input_row.addWidget(input_label)
+        info_row = QHBoxLayout()
+        info_row.setSpacing(10)
+        info_row.addSpacing(indent)
         self.input_source_label = QLabel(
             "Waiting for file selection..."
             if step_number == 1
@@ -149,56 +151,39 @@ class StepCard(QFrame):
         self.input_source_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        input_row.addWidget(self.input_source_label, 1)
-        info_layout.addLayout(input_row)
+        info_row.addWidget(self.input_source_label)
+
+        self.note_label = QLabel(note)
+        self.note_label.setObjectName("cardHint")
+        self.note_label.setVisible(bool(note))
+        if note:
+            info_row.addWidget(self.note_label)
 
         self.method_combo: QComboBox | None = None
         self.method_hint: QLabel | None = None
         if step_name == STEP3_NAME:
-            method_row = QHBoxLayout()
-            method_row.addWidget(QLabel("Method:"))
+            info_row.addSpacing(8)
+            method_label = QLabel("Method:")
+            method_label.setObjectName("chainLabel")
+            info_row.addWidget(method_label)
             self.method_combo = QComboBox()
             for label, value in STEP3_METHOD_OPTIONS:
                 self.method_combo.addItem(label, value)
-            self.method_combo.currentIndexChanged.connect(self._emit_method)
-            method_row.addWidget(self.method_combo, 1)
-            info_layout.addLayout(method_row)
-            self.method_hint = QLabel(
+            for index in range(self.method_combo.count()):
+                self.method_combo.setItemData(
+                    index,
+                    Qt.AlignmentFlag.AlignCenter,
+                    Qt.ItemDataRole.TextAlignmentRole,
+                )
+            self.method_combo.setFixedWidth(220)
+            self.method_combo.setToolTip(
                 "Default builds a QC-based reference; plain PQN is reference-free."
             )
-            self.method_hint.setObjectName("cardHint")
-            self.method_hint.setWordWrap(True)
-            info_layout.addWidget(self.method_hint)
-
-        layout.addWidget(info, 1)
-
-        actions = QFrame()
-        actions.setObjectName("cardActionPanel")
-        actions.setFixedWidth(236)
-        action_layout = QVBoxLayout(actions)
-        action_layout.setContentsMargins(14, 10, 14, 10)
-        action_layout.setSpacing(6)
-        action_layout.addStretch(1)
-
-        self.run_button = QPushButton("Run Step")
-        self.run_button.clicked.connect(lambda: self.run_requested.emit(self.step_name))
-        action_layout.addWidget(self.run_button)
-
-        artifacts = QHBoxLayout()
-        artifacts.setSpacing(6)
-        self.excel_button = QPushButton("Open Excel")
-        self.excel_button.clicked.connect(
-            lambda: self.open_excel_requested.emit(self.step_name)
-        )
-        artifacts.addWidget(self.excel_button)
-        self.plots_button = QPushButton("Open Plots")
-        self.plots_button.clicked.connect(
-            lambda: self.open_plots_requested.emit(self.step_name)
-        )
-        artifacts.addWidget(self.plots_button)
-        action_layout.addLayout(artifacts)
-        action_layout.addStretch(1)
-        layout.addWidget(actions)
+            self.method_combo.currentIndexChanged.connect(self._emit_method)
+            info_row.addWidget(self.method_combo)
+        info_row.addStretch(1)
+        card.addLayout(info_row)
+        card.addStretch(1)
 
     def render(
         self,
@@ -216,6 +201,7 @@ class StepCard(QFrame):
 
         self.setProperty("nextStep", is_next_step)
         _repolish(self)
+        _repolish(self.step_chip)
         self.run_button.setObjectName("primaryAction" if is_next_step else "runStepButton")
         _repolish(self.run_button)
 
@@ -338,7 +324,16 @@ class DNPMainWindow(QMainWindow):
             step_card.open_plots_requested.connect(self._open_step_plots)
             step_card.method_changed.connect(self.controller.set_normalization_method)
             self.step_cards[step_name] = step_card
+            # Equal stretch so the four cards + their gaps fill the column and
+            # bottom-align with the log pane (a horizontal splitter gives both
+            # sides the same height). Uniform minimum height keeps them equal
+            # even when Step 3's method control makes its content taller.
             step_layout.addWidget(step_card, 1)
+        uniform_card_height = max(
+            card.sizeHint().height() for card in self.step_cards.values()
+        )
+        for card in self.step_cards.values():
+            card.setMinimumHeight(uniform_card_height)
         splitter.addWidget(step_container)
 
         log_pane = QFrame()
@@ -410,9 +405,9 @@ class DNPMainWindow(QMainWindow):
         max_w = max(320, available.width() - 32)
         max_h = max(320, available.height() - 48)
         min_w = min(1200, max_w)
-        min_h = min(700, max_h)
+        min_h = min(560, max_h)
         self.setMinimumSize(min_w, min_h)
-        self.resize(min(1480, max_w), min(940, max_h))
+        self.resize(min(1480, max_w), min(720, max_h))
 
     @staticmethod
     def _focus_consumes_workflow_shortcut() -> bool:

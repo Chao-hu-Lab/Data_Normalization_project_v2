@@ -115,30 +115,42 @@ QFrame#logPane, QFrame#fileBar {{
     border: 1px solid {color("border")};
     border-radius: 8px;
 }}
-QWidget#cardInfo {{
-    background-color: {color("surface_raised")};
-}}
-QWidget#cardInfo QLabel, QFrame#logPane QLabel, QFrame#fileBar QLabel {{
+QLabel#cardTitle, QLabel#cardHint, QLabel#chainLabel, QLabel#chainSource,
+QFrame#logPane QLabel, QFrame#fileBar QLabel {{
     background-color: transparent;
 }}
 QFrame#stepCard1[nextStep="true"], QFrame#stepCard2[nextStep="true"],
 QFrame#stepCard3[nextStep="true"], QFrame#stepCard4[nextStep="true"] {{
     border: 2px solid {color("accent")};
 }}
-QFrame#stepBadge {{
+QLabel#stepChip {{
     background-color: {color("surface_subtle")};
-    border: 0;
-    border-top-left-radius: 7px;
-    border-bottom-left-radius: 7px;
-}}
-QFrame#stepBadge QLabel {{
-    background: transparent;
     color: {color("text_muted")};
-    font-weight: 600;
+    border: 1px solid {color("border")};
+    border-radius: 14px;
+    font-weight: 700;
 }}
-QFrame#cardActionPanel {{
-    background-color: {color("surface_subtle")};
-    border-left: 1px solid {color("divider")};
+QFrame#stepCard1[nextStep="true"] QLabel#stepChip,
+QFrame#stepCard2[nextStep="true"] QLabel#stepChip,
+QFrame#stepCard3[nextStep="true"] QLabel#stepChip,
+QFrame#stepCard4[nextStep="true"] QLabel#stepChip {{
+    background-color: {color("accent")};
+    color: {color("accent_fg")};
+    border-color: {color("accent")};
+}}
+QPushButton#ghostButton {{
+    background-color: transparent;
+    color: {color("text")};
+    border: 1px solid {color("border")};
+    border-radius: 5px;
+    padding: 6px 12px;
+}}
+QPushButton#ghostButton:hover {{
+    background-color: {color("hover")};
+}}
+QPushButton#ghostButton:disabled {{
+    color: {color("action_disabled")};
+    background-color: transparent;
 }}
 QLabel#cardTitle {{
     font-size: 14pt;
