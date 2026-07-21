@@ -40,6 +40,14 @@ from metabolomics.utils.normalization_contract import (
     canonicalize_normalization_method,
     get_summary_sheet_name,
 )
+from metabolomics.utils.workbook_input import (
+    MissingSampleInfoSheetError,
+    MissingSourceSheetError,
+    ProcessorWorkbookInput,
+    WorkbookReadError,
+    WorkbookPurpose,
+    select_processor_source_sheet,
+)
 
 warnings.filterwarnings('ignore')
 
@@ -1780,18 +1788,17 @@ def load_excel_sheets(file_path):
 
 def determine_correction_sheet(sheets):
     """按指定順序確定要標準化的資料工作表"""
-    for sheet_key in [
-        'qc_lowess',
-        'istd_correction',
-        'raw_intensity',
-    ]:
-        sheet_name = resolve_sheet_name(sheets.keys(), sheet_key)
-        if sheet_name is not None:
-            print(f"✓ 依優先順序選擇工作表: {sheet_name}")
-            return sheets[sheet_name], sheet_name
+    try:
+        sheet_name = select_processor_source_sheet(
+            tuple(sheets),
+            WorkbookPurpose.NORMALIZATION,
+        )
+    except MissingSourceSheetError:
+        print("警告：未找到指定的資料工作表")
+        return None, None
 
-    print("警告：未找到指定的資料工作表")
-    return None, None
+    print(f"✓ 依優先順序選擇工作表: {sheet_name}")
+    return sheets[sheet_name], sheet_name
 
 
 def find_sample_info_sheet(sheets):
@@ -2413,51 +2420,61 @@ def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALI
 
     print(f"\n✓ 選擇的檔案: {Path(input_file).name}")
 
-    # 載入Excel工作表
-    sheets, sheet_names = load_excel_sheets(input_file)
-    if not sheets:
-        raise Exception("無法載入 Excel 工作表")
+    # 先載入並驗證 SampleInfo，再解析處理所需的來源工作表。
+    try:
+        with ProcessorWorkbookInput(
+            input_file,
+            WorkbookPurpose.NORMALIZATION,
+        ) as workbook_input:
+            sheet_names = list(workbook_input.sheet_names)
 
-    print(f"✓ 找到 {len(sheet_names)} 個工作表")
+            print(f"✓ 找到 {len(sheet_names)} 個工作表")
 
-    # 尋找樣本資訊工作表
-    sample_info_df, sample_info_sheet_name = find_sample_info_sheet(sheets)
-    if sample_info_df is None:
-        print("❌ 錯誤：找不到包含樣本資訊的工作表")
-        raise Exception("找不到樣本資訊工作表")
+            sample_info_df = workbook_input.sample_info_df
+            sample_info_sheet_name = workbook_input.sample_info_sheet
 
-    print(f"✓ 使用樣本資訊工作表: {sample_info_sheet_name}")
-    require_valid(
-        validator.validate_required_sheets(
-            sheet_names,
-            required_sheets=[sample_info_sheet_name],
-            context="Step 3 input workbook",
-        ),
-        context="Step 3 workbook sheets",
-    )
-    require_valid(
-        validator.validate_sample_info(sample_info_df),
-        context="Step 3 SampleInfo",
-    )
-
-    # SpecNorm_PQN 模式需要 specimen-reference 欄位
-    correction_col = None
-    if normalization_method == 'SpecNorm_PQN':
-        correction_col, correction_type = find_correction_column(sample_info_df)
-        if not correction_col:
-            raise ValueError(
-                "SampleInfo 中找不到 SpecNorm+PQN 所需的 specimen-reference 欄位。\n"
-                "請確認 SampleInfo 工作表包含具 reference 語意的數值型欄位\n"
-                "（例如 Creatinine、DNA、protein、concentration、reference 或 amount）。"
+            print(f"✓ 使用樣本資訊工作表: {sample_info_sheet_name}")
+            require_valid(
+                validator.validate_required_sheets(
+                    sheet_names,
+                    required_sheets=[sample_info_sheet_name],
+                    context="Step 3 input workbook",
+                ),
+                context="Step 3 workbook sheets",
             )
-        print(f"✓ 校正欄位: {correction_col} (類型: {correction_type})")
+            require_valid(
+                validator.validate_sample_info(sample_info_df),
+                context="Step 3 SampleInfo",
+            )
 
-    # 確定要標準化的資料工作表
-    data_df, data_sheet_name = determine_correction_sheet(sheets)
-    if data_df is None:
-        print("❌ 錯誤：找不到要標準化的資料工作表")
-        raise Exception("找不到資料工作表")
+            # SpecNorm_PQN 模式需要 specimen-reference 欄位
+            correction_col = None
+            if normalization_method == 'SpecNorm_PQN':
+                correction_col, correction_type = find_correction_column(sample_info_df)
+                if not correction_col:
+                    raise ValueError(
+                        "SampleInfo 中找不到 SpecNorm+PQN 所需的 specimen-reference 欄位。\n"
+                        "請確認 SampleInfo 工作表包含具 reference 語意的數值型欄位\n"
+                        "（例如 Creatinine、DNA、protein、concentration、reference 或 amount）。"
+                    )
+                print(f"✓ 校正欄位: {correction_col} (類型: {correction_type})")
 
+            try:
+                loaded_workbook = workbook_input.load()
+            except MissingSourceSheetError:
+                print("❌ 錯誤：找不到要標準化的資料工作表")
+                raise Exception("找不到資料工作表") from None
+    except MissingSampleInfoSheetError:
+        print("❌ 錯誤：找不到包含樣本資訊的工作表")
+        raise Exception("找不到樣本資訊工作表") from None
+    except WorkbookReadError as error:
+        print(f"讀取Excel檔案時發生錯誤: {error}")
+        raise Exception("無法載入 Excel 工作表") from None
+
+    data_df = loaded_workbook.source_df
+    data_sheet_name = loaded_workbook.source_sheet
+
+    print(f"✓ 依優先順序選擇工作表: {data_sheet_name}")
     print(f"✓ 使用資料工作表: {data_sheet_name}")
     require_valid(
         validator.validate_raw_intensity(
@@ -2471,7 +2488,7 @@ def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALI
     step2_advanced_stats_df = None
     step2_advanced_sheet_name = resolve_sheet_name(sheet_names, "qc_lowess_advanced")
     if step2_advanced_sheet_name is not None:
-        step2_advanced_stats_df = sheets[step2_advanced_sheet_name]
+        step2_advanced_stats_df = loaded_workbook.optional_sheets[step2_advanced_sheet_name]
         print(f"✓ 使用 Step 2 advanced stats: {step2_advanced_sheet_name}")
 
     # 提取 Sample_Type 資訊行（不參與數值計算，保存時回插）

@@ -15,7 +15,6 @@ from metabolomics.utils.constants import (
     FEATURE_ID_COLUMN,
     SHEET_NAMES,
     is_non_sample_column,
-    resolve_sheet_name,
 )
 from metabolomics.utils.data_helpers import extract_sample_type_row, insert_sample_type_row
 from metabolomics.utils.excel_format import (
@@ -33,6 +32,14 @@ from metabolomics.utils.sample_classification import (
     parse_batch_labels as shared_parse_batch_labels,
 )
 from metabolomics.utils.console import safe_print as print
+from metabolomics.utils.workbook_input import (
+    MissingSampleInfoSheetError,
+    MissingSourceSheetError,
+    ProcessorWorkbookInput,
+    WorkbookReadError,
+    WorkbookPurpose,
+    select_processor_source_sheet,
+)
 
 
 RESULT_SHEET_NAME = SHEET_NAMES.get("qc_batch_scaling", "QC_Batch_Scaling_result")
@@ -116,14 +123,15 @@ def scale_feature_by_batch_qc_median(feature_row, batch_to_qc, batch_to_samples)
 
 def select_source_sheet(sheet_names):
     """Pick the best upstream normalization sheet for Step 4."""
-    for sheet_name in ("SpecNorm_PQN_Result", SHEET_NAMES.get("pqn_result", "PQN_Result")):
-        if sheet_name in sheet_names:
-            return sheet_name
-    for sheet_key in ("qc_lowess", "istd_correction", "raw_intensity"):
-        sheet_name = resolve_sheet_name(sheet_names, sheet_key)
-        if sheet_name is not None:
-            return sheet_name
-    raise ValueError("No supported upstream data sheet found for QC batch scaling")
+    try:
+        return select_processor_source_sheet(
+            tuple(sheet_names),
+            WorkbookPurpose.BATCH_DIAGNOSTICS,
+        )
+    except MissingSourceSheetError:
+        raise ValueError(
+            "No supported upstream data sheet found for QC batch scaling"
+        ) from None
 
 
 def load_and_process_data(input_file):
@@ -131,13 +139,26 @@ def load_and_process_data(input_file):
     if not os.path.exists(input_file):
         raise FileNotFoundError(input_file)
 
-    excel_file = pd.ExcelFile(input_file)
-    if SHEET_NAMES["sample_info"] not in excel_file.sheet_names:
-        raise ValueError(f"Missing required sheet: {SHEET_NAMES['sample_info']}")
+    try:
+        with ProcessorWorkbookInput(
+            input_file,
+            WorkbookPurpose.BATCH_DIAGNOSTICS,
+        ) as workbook_input:
+            loaded_workbook = workbook_input.load()
+    except MissingSampleInfoSheetError:
+        raise ValueError(f"Missing required sheet: {SHEET_NAMES['sample_info']}") from None
+    except MissingSourceSheetError:
+        raise ValueError(
+            "No supported upstream data sheet found for QC batch scaling"
+        ) from None
+    except WorkbookReadError as error:
+        if error.__cause__ is not None:
+            raise error.__cause__ from None
+        raise
 
-    source_sheet_name = select_source_sheet(excel_file.sheet_names)
-    sample_info_df = pd.read_excel(excel_file, sheet_name=SHEET_NAMES["sample_info"])
-    data_df = pd.read_excel(excel_file, sheet_name=source_sheet_name)
+    source_sheet_name = loaded_workbook.source_sheet
+    sample_info_df = loaded_workbook.sample_info_df
+    data_df = loaded_workbook.source_df
 
     feature_col = data_df.columns[0]
     data_df, sample_type_row = extract_sample_type_row(data_df, feature_col)
