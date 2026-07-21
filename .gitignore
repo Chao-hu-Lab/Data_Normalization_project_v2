@@ -6,7 +6,8 @@ tmp_pytest_*/
 .cleanup_acceptance/
 
 # PyInstaller 輸出 (但保留 .spec 設定檔)
-/build/
+/build/*
+!/build/*.spec
 /dist/
 
 # 輸出資料夾
