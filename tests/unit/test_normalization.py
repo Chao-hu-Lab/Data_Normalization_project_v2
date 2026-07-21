@@ -1195,7 +1195,7 @@ class TestConcentrationNormOutput:
     @pytest.mark.integration
     def test_main_with_step2_output(self, istd_module, qc_lowess_module,
                                      qc_batch_scaling_module, conc_norm_module,
-                                     sample_input_file, validate_result_dict):
+                                     sample_input_file, validate_processing_result):
         """Test Concentration Normalization with Step 2 output."""
         # Run Steps 1-2
         step1_result = istd_module.main(input_file=sample_input_file)
@@ -1205,7 +1205,7 @@ class TestConcentrationNormOutput:
 
         step3_result = conc_norm_module.main(input_file=step2_output, normalization_method="PQN")
 
-        validation = validate_result_dict(
+        validation = validate_processing_result(
             step3_result,
             required_keys=['output_path']
         )

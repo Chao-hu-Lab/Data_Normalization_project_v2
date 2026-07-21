@@ -175,7 +175,10 @@ result4 = qc_batch_scaling.main(
 )
 ```
 
-Each processor returns a `ProcessingResult`. Downstream code should read `.output_path`, not infer filenames.
+Each processor returns a `ProcessingResult` with `status="succeeded"` or `status="skipped"`.
+Skipped results include a `reason` and pass through a valid `.output_path`; validation,
+calculation, and save failures raise exceptions. The GUI workflow owns the separate
+`failed` and `cancelled` outcomes. Downstream code should read `.output_path`, not infer filenames.
 
 Supported Step 3 method names:
 

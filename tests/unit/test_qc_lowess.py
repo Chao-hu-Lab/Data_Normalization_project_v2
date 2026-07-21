@@ -112,6 +112,45 @@ class TestQCLOWESSInput:
 
         assert detected == {"100.1/1.0"}
 
+    def test_main_raises_when_results_cannot_be_saved(
+        self,
+        qc_lowess_module,
+        tmp_path,
+        monkeypatch,
+    ):
+        input_path = tmp_path / "input.xlsx"
+        output_path = tmp_path / "output.xlsx"
+        plots_path = tmp_path / "plots"
+        raw_df = pd.DataFrame({"FeatureID": ["F1"], "QC_1": [1.0]})
+        sample_info_df = pd.DataFrame({"Sample_Name": ["QC_1"]})
+
+        monkeypatch.setattr(qc_lowess_module, "resolve_session_dir", lambda **_kwargs: None)
+        monkeypatch.setattr(qc_lowess_module, "get_output_root", lambda **_kwargs: str(tmp_path))
+        monkeypatch.setattr(
+            qc_lowess_module,
+            "load_and_process_data",
+            lambda _path: (raw_df, raw_df, sample_info_df, None),
+        )
+        monkeypatch.setattr(
+            qc_lowess_module,
+            "perform_lowess_normalization",
+            lambda *_args: (raw_df, ["QC_1"], {}, pd.DataFrame(), {}, {}),
+        )
+        monkeypatch.setattr(
+            qc_lowess_module,
+            "build_output_path",
+            lambda *_args, **_kwargs: output_path,
+        )
+        monkeypatch.setattr(
+            qc_lowess_module,
+            "build_plots_dir",
+            lambda *_args, **_kwargs: plots_path,
+        )
+        monkeypatch.setattr(qc_lowess_module, "save_results_to_excel", lambda *_args, **_kwargs: False)
+
+        with pytest.raises(RuntimeError, match="Failed to save QC-LOESS results"):
+            qc_lowess_module.main(input_file=str(input_path))
+
 
 class TestQCLOWESSOutput:
     """Tests for output validation."""
@@ -170,7 +209,7 @@ class TestQCLOWESSOutput:
     @pytest.mark.slow
     @pytest.mark.integration
     def test_main_with_step1_output(self, istd_module, qc_lowess_module,
-                                     sample_input_file, validate_result_dict):
+                                     sample_input_file, validate_processing_result):
         """Test QC-LOWESS with Step 1 output."""
         # First run Step 1
         step1_result = istd_module.main(input_file=sample_input_file)
@@ -181,7 +220,7 @@ class TestQCLOWESSOutput:
         # Then run Step 2
         step2_result = qc_lowess_module.main(input_file=step1_output)
 
-        validation = validate_result_dict(
+        validation = validate_processing_result(
             step2_result,
             required_keys=['output_path', 'metabolites', 'samples']
         )

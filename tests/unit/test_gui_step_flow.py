@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 import queue
-import threading
 
 from metabolomics.gui.app import DataNormalizationApp
+from metabolomics.gui.workflow import WorkflowState
+from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
 
 
 class _DummyWidget:
@@ -43,15 +44,19 @@ def _make_app():
         {"name": "Step 3: Concentration Normalization", "module": "metabolomics.processors.normalization", "accent": "#f9ab00"},
         {"name": "Step 4: QC Batch Scaling", "module": "metabolomics.processors.qc_batch_scaling", "accent": "#ea4335"},
     ]
+    app.workflow = WorkflowState(tuple(step["name"] for step in app.steps))
     app.master = _DummyMaster()
     app.logger = _DummyLogger()
-    app.cancel_flag = threading.Event()
     app.progress_queue = queue.Queue()
     app.execution_start_time = datetime.now()
-    app.selected_file_path = None
+    app.current_stats = {
+        "step_name": "",
+        "metabolites": 0,
+        "samples": 0,
+        "output_path": "",
+        "execution_time": 0,
+    }
     app.last_output_file = None
-    app.completed_steps = set()
-    app.step_outputs = {}
     app.current_session_dir = None
     app.step_status_labels = [_DummyWidget() for _ in app.steps]
     app.step_buttons = [_DummyWidget() for _ in app.steps]
@@ -69,6 +74,24 @@ def _make_app():
         "border": "#ddd",
     }
     return app
+
+
+def _result(path, *, status=WorkflowOutcome.SUCCEEDED, reason=None):
+    return ProcessingResult(
+        file_path=path,
+        output_path=path,
+        metabolites=10,
+        samples=5,
+        status=status,
+        reason=reason,
+    )
+
+
+def _complete_steps(app, output_paths):
+    app.workflow.select_input("C:/tmp/input.xlsx")
+    for step, output_path in zip(app.steps, output_paths):
+        app.workflow.begin(step["name"])
+        app.workflow.complete(step["name"], _result(output_path))
 
 
 def test_build_workflow_steps_exposes_four_ordered_steps():
@@ -155,35 +178,24 @@ def test_build_info_panel_tabs_only_exposes_execution_log():
     assert DataNormalizationApp._build_info_panel_tabs() == ("Execution Log",)
 
 
-def test_ensure_workflow_state_tracks_step_outputs_without_export_state():
+def test_app_uses_workflow_as_its_only_step_state():
     app = _make_app()
-    app.completed_steps = {
-        "Step 1: ISTD Correction",
-        "Step 2: QC-LOESS",
-        "Step 3: Concentration Normalization",
-    }
-    app.step_outputs = {
-        "Step 3: Concentration Normalization": {"output_path": "C:/tmp/step3-output.xlsx"},
-    }
+    _complete_steps(
+        app,
+        ["C:/tmp/step1.xlsx", "C:/tmp/step2.xlsx", "C:/tmp/step3.xlsx"],
+    )
 
-    app._ensure_workflow_state()
-
-    assert app.workflow_state["selected_file_path"] is None
-    assert app.workflow_state["completed_steps"] == app.completed_steps
-    assert app.workflow_state["step_outputs"] == app.step_outputs
-    assert "export_ready" not in app.workflow_state
-    assert [step["name"] for step in app.workflow_state["steps"]] == [
-        "Step 1: ISTD Correction",
-        "Step 2: QC-LOESS",
-        "Step 3: Concentration Normalization",
-        "Step 4: QC Batch Scaling",
-    ]
+    assert app.workflow.selected_file_path == "C:/tmp/input.xlsx"
+    assert app.workflow.result_for(app.steps[2]["name"]).output_path == "C:/tmp/step3.xlsx"
+    assert not hasattr(app, "completed_steps")
+    assert not hasattr(app, "step_outputs")
+    assert not hasattr(app, "workflow_state")
 
 
 def test_render_pipeline_nav_highlights_next_incomplete_step():
     app = _make_app()
     app.pipeline_nav_labels = [_DummyWidget() for _ in app.steps]
-    app.completed_steps = {"Step 1: ISTD Correction"}
+    _complete_steps(app, ["C:/tmp/step1.xlsx"])
     expected_primary = app.color_scheme.get("primary", "#1a73e8")
 
     app._render_pipeline_nav()
@@ -196,14 +208,10 @@ def test_render_pipeline_nav_highlights_next_incomplete_step():
 def test_update_button_states_does_not_require_export_button():
     app = _make_app()
     app.pipeline_nav_labels = [_DummyWidget() for _ in app.steps]
-    app.completed_steps = {
-        "Step 1: ISTD Correction",
-        "Step 2: QC-LOESS",
-        "Step 3: Concentration Normalization",
-    }
-    app.step_outputs = {
-        "Step 3: Concentration Normalization": {"output_path": "C:/tmp/step3-output.xlsx"},
-    }
+    _complete_steps(
+        app,
+        ["C:/tmp/step1.xlsx", "C:/tmp/step2.xlsx", "C:/tmp/step3-output.xlsx"],
+    )
 
     app.update_button_states()
 
@@ -221,18 +229,11 @@ def test_run_step_uses_previous_step_output_instead_of_last_output_file():
         def main(input_file=None, **kwargs):
             captured["input_file"] = input_file
             captured.update(kwargs)
-            return {
-                "output_path": "C:/tmp/step3-output.xlsx",
-                "metabolites": 10,
-                "samples": 5,
-            }
+            return _result("C:/tmp/step3-output.xlsx")
 
     app.last_output_file = "C:/tmp/stale-step4-output.xlsx"
-    app.step_outputs = {
-        "Step 2: QC-LOESS": {
-            "output_path": "C:/tmp/current-step2-output.xlsx",
-        }
-    }
+    _complete_steps(app, ["C:/tmp/step1.xlsx", "C:/tmp/current-step2-output.xlsx"])
+    app.workflow.begin(step["name"])
     app.load_script = lambda _module_name: _DummyModule()
 
     app.run_step(step)
@@ -251,17 +252,10 @@ def test_run_step_passes_selected_pqn_method_to_normalization():
         @staticmethod
         def main(input_file=None, **kwargs):
             captured.update(kwargs)
-            return {
-                "output_path": "C:/tmp/step3-output.xlsx",
-                "metabolites": 10,
-                "samples": 5,
-            }
+            return _result("C:/tmp/step3-output.xlsx")
 
-    app.step_outputs = {
-        "Step 2: QC-LOESS": {
-            "output_path": "C:/tmp/current-step2-output.xlsx",
-        }
-    }
+    _complete_steps(app, ["C:/tmp/step1.xlsx", "C:/tmp/current-step2-output.xlsx"])
+    app.workflow.begin(step["name"])
     app.load_script = lambda _module_name: _DummyModule()
 
     app.run_step(step)
@@ -279,17 +273,13 @@ def test_run_step_passes_diagnostics_only_to_step4():
         def main(input_file=None, **kwargs):
             captured["input_file"] = input_file
             captured.update(kwargs)
-            return {
-                "output_path": "C:/tmp/step4-diagnostics.xlsx",
-                "metabolites": 10,
-                "samples": 5,
-            }
+            return _result("C:/tmp/step4-diagnostics.xlsx")
 
-    app.step_outputs = {
-        "Step 3: Concentration Normalization": {
-            "output_path": "C:/tmp/current-step3-output.xlsx",
-        }
-    }
+    _complete_steps(
+        app,
+        ["C:/tmp/step1.xlsx", "C:/tmp/step2.xlsx", "C:/tmp/current-step3-output.xlsx"],
+    )
+    app.workflow.begin(step["name"])
     app.load_script = lambda _module_name: _DummyModule()
 
     app.run_step(step)
@@ -298,9 +288,57 @@ def test_run_step_passes_diagnostics_only_to_step4():
     assert captured["diagnostics_only"] is True
 
 
+def test_run_step_rejects_none_result_instead_of_completing():
+    app = _make_app()
+    step = app.steps[0]
+    app.workflow.select_input("C:/tmp/input.xlsx")
+    app.workflow.begin(step["name"])
+    errors = []
+
+    class _DummyModule:
+        @staticmethod
+        def main(**_kwargs):
+            return None
+
+    app.load_script = lambda _module_name: _DummyModule()
+    app.on_step_error = lambda _step, error: errors.append(error)
+
+    app.run_step(step)
+    for _delay, callback in app.master.after_calls:
+        callback()
+
+    assert errors == [
+        "Step 1: ISTD Correction returned NoneType; expected ProcessingResult"
+    ]
+    assert app.workflow.result_for(step["name"]) is None
+
+
+def test_stop_request_waits_for_current_calculation(monkeypatch):
+    app = _make_app()
+    step = app.steps[0]
+    app.workflow.select_input("C:/tmp/input.xlsx")
+    app.workflow.start_auto_run()
+    app.workflow.begin(step["name"])
+    progress_calls = []
+    app.set_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+    monkeypatch.setattr(
+        "metabolomics.gui.app.messagebox.askyesno",
+        lambda *_args, **_kwargs: True,
+    )
+
+    app.cancel_execution()
+
+    assert app.workflow.stop_requested is True
+    assert app.workflow.auto_run is False
+    assert "finishing current calculation" in progress_calls[-1][0][0]
+    assert app.cancel_btn.config_calls[-1]["state"] == "disabled"
+
+
 def test_auto_run_stops_after_step3_and_does_not_schedule_step4(monkeypatch):
     app = _make_app()
-    app.auto_run_mode = True
+    _complete_steps(app, ["C:/tmp/step1.xlsx", "C:/tmp/step2.xlsx"])
+    app.workflow.start_auto_run()
+    app.workflow.begin(app.steps[2]["name"])
     app.current_stats = {"execution_time": 1.0}
     app.update_input_source_labels = lambda: None
     app.update_button_states = lambda: None
@@ -313,10 +351,10 @@ def test_auto_run_stops_after_step3_and_does_not_schedule_step4(monkeypatch):
 
     app.on_step_complete(
         app.steps[2],
-        {"output_path": "C:/tmp/step3-output.xlsx", "plots_dir": None},
+        _result("C:/tmp/step3-output.xlsx"),
     )
 
-    assert app.auto_run_mode is False
+    assert app.workflow.auto_run is False
     assert app.master.after_calls == []
     assert info_calls
     assert "Step 3" in info_calls[0][0][1]
@@ -325,17 +363,16 @@ def test_auto_run_stops_after_step3_and_does_not_schedule_step4(monkeypatch):
 def test_on_step_error_invalidates_failed_step_and_downstream(monkeypatch):
     app = _make_app()
     step = app.steps[2]
-    app.completed_steps = {
-        "Step 1: ISTD Correction",
-        "Step 2: QC-LOESS",
-        "Step 3: Concentration Normalization",
-        "Step 4: QC Batch Scaling",
-    }
-    app.step_outputs = {
-        "Step 2: QC-LOESS": {"output_path": "C:/tmp/step2-output.xlsx"},
-        "Step 3: Concentration Normalization": {"output_path": "C:/tmp/step3-output.xlsx"},
-        "Step 4: QC Batch Scaling": {"output_path": "C:/tmp/step4-output.xlsx"},
-    }
+    _complete_steps(
+        app,
+        [
+            "C:/tmp/step1-output.xlsx",
+            "C:/tmp/step2-output.xlsx",
+            "C:/tmp/step3-output.xlsx",
+            "C:/tmp/step4-output.xlsx",
+        ],
+    )
+    app.workflow.begin(step["name"])
     app.last_output_file = "C:/tmp/step4-output.xlsx"
     app.update_button_states = lambda: None
     prompt_calls = []
@@ -346,10 +383,10 @@ def test_on_step_error_invalidates_failed_step_and_downstream(monkeypatch):
 
     app.on_step_error(step, "SampleInfo 中找不到 SpecNorm+PQN 所需的 specimen-reference 欄位")
 
-    assert "Step 3: Concentration Normalization" not in app.completed_steps
-    assert "Step 4: QC Batch Scaling" not in app.completed_steps
-    assert "Step 3: Concentration Normalization" not in app.step_outputs
-    assert "Step 4: QC Batch Scaling" not in app.step_outputs
+    assert "Step 3: Concentration Normalization" not in app.workflow.completed_steps
+    assert "Step 4: QC Batch Scaling" not in app.workflow.completed_steps
+    assert app.workflow.result_for("Step 3: Concentration Normalization") is None
+    assert app.workflow.result_for("Step 4: QC Batch Scaling") is None
     assert app.last_output_file == "C:/tmp/step2-output.xlsx"
     assert prompt_calls
     prompt_text = prompt_calls[0][0][1]

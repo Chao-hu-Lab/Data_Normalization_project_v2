@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from metabolomics.utils.file_io import create_session_dir
+from metabolomics.utils.results import WorkflowOutcome
 from scripts.generate_batcheffect_data import SCENARIO_LIBRARY, generate_scenario_workbook
 
 
@@ -28,9 +29,9 @@ def _assert_step1_result_allows_skip(result, input_file: str, session_dir: Path)
     assert result is not None
     assert Path(result.output_path).exists()
 
-    if getattr(result, "extra", {}).get("skipped"):
+    if result.status is WorkflowOutcome.SKIPPED:
         assert Path(result.output_path) == Path(input_file)
-        assert getattr(result, "extra", {}).get("skip_reason") == "insufficient_good_istd"
+        assert result.reason == "insufficient_good_istd"
         return
 
     _assert_result_in_session(result, session_dir, "Step1_")

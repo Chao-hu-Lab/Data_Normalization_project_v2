@@ -25,7 +25,7 @@ from metabolomics.utils.excel_format import (
 )
 from metabolomics.utils.file_io import build_output_path, build_plots_dir, resolve_session_dir
 from metabolomics.utils.plotting import build_batch_group_indices, setup_matplotlib
-from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
 from metabolomics.utils.sample_classification import (
     identify_sample_columns,
     normalize_sample_name,
@@ -800,10 +800,10 @@ def main(input_file=None, session_dir=None, diagnostics_only=False):
             output_path=input_file,
             metabolites=len(data_df),
             samples=len(sample_columns),
+            status=WorkflowOutcome.SKIPPED,
+            reason="single_batch",
             extra={
                 "batches": len(batch_to_samples),
-                "skipped": True,
-                "skip_reason": "single_batch",
                 "diagnostics_only": diagnostics_only,
             },
         )
@@ -817,10 +817,10 @@ def main(input_file=None, session_dir=None, diagnostics_only=False):
             output_path=input_file,
             metabolites=len(data_df),
             samples=len(sample_columns),
+            status=WorkflowOutcome.SKIPPED,
+            reason="paused_nonshared_qc_design",
             extra={
                 "batches": len(batch_to_samples),
-                "skipped": True,
-                "skip_reason": "paused_nonshared_qc_design",
                 "diagnostics_only": False,
                 "paused_reason": paused_reason,
             },
@@ -884,6 +884,7 @@ def main(input_file=None, session_dir=None, diagnostics_only=False):
         metabolites=len(data_df),
         samples=len(sample_columns),
         plots_dir=plots_dir,
+        status=WorkflowOutcome.SUCCEEDED,
         extra={
             "batches": len(batch_to_qc),
             "diagnostics_only": True,

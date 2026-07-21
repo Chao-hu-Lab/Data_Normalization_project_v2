@@ -33,7 +33,7 @@ from metabolomics.utils.file_io import (
 )
 from metabolomics.utils.data_helpers import apply_feature_metadata_passthrough
 from metabolomics.utils.data_validation import DataValidator, require_valid
-from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
 from metabolomics.utils.console import safe_print as print
 from metabolomics.utils.normalization_contract import (
     DEFAULT_NORMALIZATION_METHOD,
@@ -2554,7 +2554,8 @@ def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALI
         output_path=str(output_path),
         plots_dir=str(figures_dir),
         metabolites=metabolite_count,
-        samples=sample_count
+        samples=sample_count,
+        status=WorkflowOutcome.SUCCEEDED,
     )
 
 

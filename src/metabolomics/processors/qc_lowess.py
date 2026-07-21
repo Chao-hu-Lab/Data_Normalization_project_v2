@@ -41,7 +41,7 @@ from metabolomics.utils.file_io import (
 )
 from metabolomics.utils.data_validation import DataValidator, require_valid
 from metabolomics.utils.excel_colors import cell_has_red_font
-from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
 from metabolomics.utils.console import safe_print as print
 from metabolomics.utils.excel_format import (
     SECTION_DIVIDER_FILL,
@@ -2420,7 +2420,7 @@ def main(input_file=None, session_dir=None):
 
     if not success:
         print("❌ 結果保存失敗")
-        return
+        raise RuntimeError(f"Failed to save QC-LOESS results: {output_file}")
 
     print(f"\n  ✓ QC-LOESS 完成 → {os.path.basename(output_file)}")
 
@@ -2432,7 +2432,8 @@ def main(input_file=None, session_dir=None):
         output_path=str(output_file),
         plots_dir=str(_plots_dir),
         metabolites=metabolites_count,
-        samples=samples_count
+        samples=samples_count,
+        status=WorkflowOutcome.SUCCEEDED,
     )
 
 

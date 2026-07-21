@@ -14,6 +14,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font
 
 from metabolomics.utils.constants import FEATURE_ID_COLUMN, SHEET_NAMES
+from metabolomics.utils.results import WorkflowOutcome
 
 
 class TestISTDCorrectionInput:
@@ -177,18 +178,18 @@ class TestISTDCorrectionOutput:
 
         result = istd_module.main(input_file=str(workbook_path))
 
-        assert getattr(result, "extra", {}).get("skipped") is True
-        assert getattr(result, "extra", {}).get("skip_reason") == "insufficient_good_istd"
+        assert result.status is WorkflowOutcome.SKIPPED
+        assert result.reason == "insufficient_good_istd"
 
         # Skipped: output_path should point to the original input (no new file)
         assert result.output_path == str(workbook_path)
 
     @pytest.mark.slow
-    def test_main_returns_processing_result(self, istd_module, sample_input_file, validate_result_dict):
+    def test_main_returns_processing_result(self, istd_module, sample_input_file, validate_processing_result):
         """Test that main() returns a ProcessingResult."""
         result = istd_module.main(input_file=sample_input_file)
 
-        validation = validate_result_dict(
+        validation = validate_processing_result(
             result,
             required_keys=['output_path', 'metabolites', 'samples']
         )
@@ -206,7 +207,7 @@ class TestISTDCorrectionOutput:
         assert output_path, "Result should contain output_path"
 
         required_sheets = ['RawIntensity', 'SampleInfo']
-        if not getattr(result, "extra", {}).get("skipped"):
+        if result.status is not WorkflowOutcome.SKIPPED:
             required_sheets.append('ISTD_Correction')
 
         validation = validate_excel_output(
@@ -229,7 +230,7 @@ class TestISTDCorrectionOutput:
         # Run correction
         result = istd_module.main(input_file=sample_input_file)
 
-        if getattr(result, "extra", {}).get("skipped"):
+        if result.status is WorkflowOutcome.SKIPPED:
             # Skipped: output_path is the original input, no new file produced
             assert result.output_path == sample_input_file
             return
@@ -253,7 +254,7 @@ class TestISTDCorrectionOutput:
 
         session = create_session_dir(output_root=tmp_path)
         result = istd_module.main(input_file=sample_input_file, session_dir=session)
-        if result.extra.get("skipped"):
+        if result.status is WorkflowOutcome.SKIPPED:
             # Skipped: output_path points to original input (no new file produced)
             assert result.output_path == sample_input_file
         else:
@@ -273,7 +274,7 @@ class TestISTDCorrectionOutput:
 
         result = istd_module.main(input_file=input_with_extra_sheet)
 
-        if getattr(result, "extra", {}).get("skipped"):
+        if result.status is WorkflowOutcome.SKIPPED:
             # Skipped: output_path is the original input, no filtering expected
             assert result.output_path == input_with_extra_sheet
             return

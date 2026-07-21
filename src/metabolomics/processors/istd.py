@@ -35,7 +35,7 @@ from metabolomics.utils.file_io import (
 )
 from metabolomics.utils.data_validation import DataValidator, require_valid
 from metabolomics.utils.excel_colors import cell_has_red_font
-from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
 from metabolomics.utils.console import safe_print as print
 from metabolomics.utils.excel_format import (
     apply_cv_quality_fill,
@@ -1839,9 +1839,9 @@ def main(input_file=None, session_dir=None):
             output_path=input_file,
             metabolites=len(original_df),
             samples=len(gate_eval['sample_columns']),
+            status=WorkflowOutcome.SKIPPED,
+            reason='insufficient_good_istd',
             extra={
-                'skipped': True,
-                'skip_reason': 'insufficient_good_istd',
                 'total_istd': gate_eval['total_istd'],
                 'good_istd': gate_eval['good_istd_count'],
             }
@@ -1881,7 +1881,8 @@ def main(input_file=None, session_dir=None):
         output_path=str(output_file),
         plots_dir=str(_plots_dir),
         metabolites=len(original_df),
-        samples=len(sample_columns)
+        samples=len(sample_columns),
+        status=WorkflowOutcome.SUCCEEDED,
     )
 
 
