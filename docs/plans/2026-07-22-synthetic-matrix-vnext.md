@@ -45,7 +45,7 @@ leaves the affected cells unchanged and emits an observable reason. Slice D
 archetypes remain future work; they are not required to promote any processor
 threshold in this change.
 
-### Frozen six-QC holdout decision
+### Frozen sparse-QC holdout decisions
 
 After the five-QC boundary was rejected, the operator precommitted the
 six-QC promotion contract before opening the holdout: accepted corrections may
@@ -70,6 +70,37 @@ under `build/sparse_qc_holdout/`. The manifest locks the deterministic seed
 derivation, recipe version, semantic configuration digest, invariant classes,
 and promotion contract. Generated evidence records manifest, generator, runner,
 and Git provenance.
+
+The exposed v1 evidence was then used only as development data to choose one
+transparent protection: for 6–7 effective QC, apply half of the fitted
+log-scale correction (`area factor = full linear factor^0.5`). The original
+unshrunk model factor must still remain inside `[0.5, 2.0]`; shrinkage cannot
+rescue an unstable model. LOWESS at eight or more QC and rejection at five or
+fewer QC are unchanged.
+
+Before opening new evidence, v2 separately froze the same harm contract for six
+and seven QC, a 0.5 shrinkage candidate, and 20 new SHA256-derived seeds that do
+not overlap the 23 development seeds. Candidate code and the manifest were
+committed as `2bde141`, then the v2 holdout was run for the first time. Both
+targets passed and were independently recomputed:
+
+- 6 QC: 540 eligible tasks, 85 accepted (15.74%), zero mild or severe harm,
+  minimum recovery gain `0.2420`, median `0.4169`, sign-flip rate zero;
+- 7 QC: 420 eligible tasks, 128 accepted (30.48%), zero mild or severe harm,
+  minimum recovery gain `0.2572`, median `0.4809`, sign-flip rate zero.
+
+This promotes the shrunken 6–7 QC fallback under the precommitted safety
+contract. It is deliberately low-coverage: 84.3% of eligible six-QC tasks and
+69.5% of eligible seven-QC tasks remain unchanged. Passing the tail-harm gate
+therefore means “safe when accepted,” not “correct most sparse-QC features.” A
+future minimum-coverage requirement would need a new precommitted contract and
+another independent holdout.
+
+The v2 manifest is
+`tests/baselines/sparse_qc_shrinkage_holdout_v2.json`; generated evidence is
+written under `build/sparse_qc_shrinkage_holdout_v2/` and records manifest,
+generator, processor, runner, and Git fingerprints. The v1 manifest remains
+reproducible but is forced to report `characterization_only`.
 
 ## Problem
 
@@ -382,7 +413,9 @@ Verification gate:
   The sparse-QC runner now does this; the three composite archetypes remain.
 - Freeze and run the multi-seed holdout through a fresh-context reviewer. The
   v1 sparse-QC holdout is frozen, has failed its kill gate, and a fresh-context
-  reviewer independently reproduced the task counts and worst-case result.
+  reviewer independently reproduced the task counts and worst-case result. The
+  subsequent v2 shrinkage holdout was frozen independently, passed both 6-QC
+  and 7-QC contracts, and was independently recomputed after first execution.
 
 Verification gate:
 
