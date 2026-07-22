@@ -61,6 +61,7 @@ SHEET_NAMES = {
     'qc_batch_scaling_summary': 'QC_Batch_Scaling_summary',
     'concentration': 'ConcNormalization_Summary',
     'pqn_result': 'PQN_Result',
+    'specnorm_result': 'SpecNorm_Result',
 }
 
 # Legacy workbook names still accepted on read to avoid breaking old outputs.

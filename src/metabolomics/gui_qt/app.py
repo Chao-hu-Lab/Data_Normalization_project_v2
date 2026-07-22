@@ -177,7 +177,8 @@ class StepCard(QFrame):
                 )
             self.method_combo.setFixedWidth(220)
             self.method_combo.setToolTip(
-                "Default builds a QC-based reference; plain PQN is reference-free."
+                "PQN is the urine/global-dilution default. SpecNorm divides study "
+                "samples by a trusted tissue reference; the methods are alternatives."
             )
             self.method_combo.currentIndexChanged.connect(self._emit_method)
             info_row.addWidget(self.method_combo)

@@ -6,7 +6,7 @@
 
 - Step 1: `ISTD Correction`
 - Step 2: `QC-LOESS`
-- Step 3: `PQN` / `SpecNorm+PQN` active concentration normalization
+- Step 3: `PQN` / `SpecNorm` active concentration normalization; legacy hybrid is compatibility-only
 - Step 4: `QC Batch Scaling` paused; manual diagnostics-only
 
 舊版草案中的下列內容已過時：

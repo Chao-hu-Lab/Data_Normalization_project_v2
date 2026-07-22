@@ -37,8 +37,11 @@ def test_workflow_helper_defines_active_terminal_step():
         "Step 4: QC Batch Scaling",
     ]
     assert get_auto_run_terminal_step_name() == "Step 3: Concentration Normalization"
-    assert DEFAULT_STEP3_METHOD == "SpecNorm+PQN"
-    assert STEP3_METHOD_OPTIONS[0] == ("SpecNorm+PQN", "SpecNorm+PQN")
+    assert DEFAULT_STEP3_METHOD == "PQN"
+    assert STEP3_METHOD_OPTIONS == (
+        ("PQN — urine dilution", "PQN"),
+        ("SpecNorm — tissue reference", "SpecNorm"),
+    )
 
 
 def test_workflow_chains_success_and_skip_outputs():

@@ -10,7 +10,7 @@ Use these three layers as the default confidence ladder:
 | --- | --- | --- |
 | Fast tests | Routine unit and non-slow regression coverage | `python -m pytest -m "not slow and not integration" -q` |
 | Scenario smoke | Representative Step 1, Step 2, Step 3, and Step 4 diagnostics-only scenarios | `python -m pytest .\tests\integration\test_scenario_smoke.py -q` |
-| Acceptance workbook equivalence | Real-workbook Step 3 semantic equivalence after output-affecting processor changes | `python .\scripts\run_cleanup_acceptance_workflow.py --input "<workbook.xlsx>" --method "SpecNorm+PQN" --session-dir "<baseline_or_candidate_dir>"` then `python .\scripts\verify_workbook_equivalence.py --baseline "<baseline_step3.xlsx>" --candidate "<candidate_step3.xlsx>"` |
+| Acceptance workbook check | Real-workbook Step 3 semantic verification after output-affecting processor changes | Run `normalization.main(..., normalization_method="SpecNorm")` or the `PQN` equivalent in an isolated session directory, then verify the expected output sheet, missing mask, QC passthrough, and numerical formula. |
 
 The active scientific workflow ends at Step 3. Step 4 remains available only for manual diagnostics-only checks and should not be required for routine Step 3 artifact readiness.
 
@@ -66,7 +66,7 @@ Current scenario coverage in `test_scenario_smoke.py`:
 | `order_confounding` | Step 2 and Step 3 PQN |
 | `strong_batch` | Step 4 diagnostics-only |
 | `balanced_pipeline` | Step 3 PQN |
-| `specnorm_friendly` | Step 3 SpecNorm+PQN |
+| `specnorm_friendly` | Step 3 SpecNorm |
 
 ## Scenario Matrices
 
@@ -83,7 +83,7 @@ Common validation targets:
 - `strong_batch`: Step 4 diagnostics-only batch alignment checks
 - `structured_missingness`: Step 3 / Step 4 diagnostics-only NaN-heavy structured missingness
 - `balanced_pipeline`: full pipeline smoke test with PQN
-- `specnorm_friendly`: Step 3 SpecNorm+PQN behavior
+- `specnorm_friendly`: Step 3 SpecNorm division and downstream workbook selection
 - `matrix_effect_suppression`: Step 1 / Step 3 matrix-effect bias on one sample class
 - `istd_sample_interference`: Step 1 real-sample-only ISTD interference with QC looking better
 - `mixed_direction_batch_drift`: Step 2 / Step 4 diagnostics-only opposite QC drift directions by batch

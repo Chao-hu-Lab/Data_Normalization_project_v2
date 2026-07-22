@@ -77,6 +77,7 @@ class TestConcentrationNormHelpers:
         conc_norm_module,
     ):
         assert conc_norm_module.get_summary_sheet_name("PQN") == "PQN_summary"
+        assert conc_norm_module.get_summary_sheet_name("SpecNorm") == "SpecNorm_summary"
         assert conc_norm_module.get_summary_sheet_name("SpecNorm_PQN") == "SpecNorm_PQN_summary"
         assert conc_norm_module.get_summary_sheet_name("CustomMethod") == "CustomMethod_summary"
 
@@ -84,8 +85,9 @@ class TestConcentrationNormHelpers:
         self,
         conc_norm_module,
     ):
-        assert conc_norm_module.canonicalize_normalization_method(None) == "SpecNorm_PQN"
+        assert conc_norm_module.canonicalize_normalization_method(None) == "PQN"
         assert conc_norm_module.canonicalize_normalization_method("PQN") == "PQN"
+        assert conc_norm_module.canonicalize_normalization_method("SpecNorm") == "SpecNorm"
         assert conc_norm_module.canonicalize_normalization_method("SpecNorm+PQN") == "SpecNorm_PQN"
         assert conc_norm_module.canonicalize_normalization_method("SpecNorm_PQN") == "SpecNorm_PQN"
 
@@ -1049,6 +1051,7 @@ class TestConcentrationNormOutput:
         include_step4_metadata=False,
         sample_info_sheet_name=SHEET_NAMES["sample_info"],
         include_reference=False,
+        reference_values=None,
     ):
         raw_df = pd.DataFrame(
             {
@@ -1093,7 +1096,11 @@ class TestConcentrationNormOutput:
             }
         )
         if include_reference:
-            sample_info_df["Creatinine_mg_dL"] = [np.nan, np.nan, 2.0, 4.0]
+            sample_info_df["Creatinine_mg_dL"] = (
+                [np.nan, np.nan, 2.0, 4.0]
+                if reference_values is None
+                else reference_values
+            )
 
         with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
             raw_df.to_excel(writer, sheet_name=SHEET_NAMES["raw_intensity"], index=False)
@@ -1111,7 +1118,7 @@ class TestConcentrationNormOutput:
 
         assert result.output_path
 
-    def test_main_defaults_to_specnorm_pqn_when_reference_is_available(
+    def test_main_defaults_to_pqn_even_when_reference_is_available(
         self,
         conc_norm_module,
         tmp_path,
@@ -1125,9 +1132,73 @@ class TestConcentrationNormOutput:
 
         result = conc_norm_module.main(input_file=input_path)
 
-        assert "SpecNorm_PQN" in Path(result.output_path).name
+        assert "PQN" in Path(result.output_path).name
         workbook = pd.ExcelFile(result.output_path)
-        assert "SpecNorm_PQN_Result" in workbook.sheet_names
+        assert "PQN_Result" in workbook.sheet_names
+
+    def test_main_specnorm_divides_study_samples_and_keeps_qc(
+        self,
+        conc_norm_module,
+        tmp_path,
+    ):
+        input_path = tmp_path / "specnorm.xlsx"
+        self._write_step4_input_workbook(
+            input_path,
+            include_marker=False,
+            include_reference=True,
+        )
+
+        result = conc_norm_module.main(
+            input_file=input_path,
+            normalization_method="SpecNorm",
+        )
+
+        assert "Normalized_SpecNorm" in Path(result.output_path).name
+        result_df = pd.read_excel(result.output_path, sheet_name="SpecNorm_Result")
+        feature = result_df.loc[result_df["Mz/RT"].eq("100.1/1.0")].iloc[0]
+        assert feature["QC_1"] == pytest.approx(10.0)
+        assert feature["QC_2"] == pytest.approx(11.0)
+        assert feature["Sample_A"] == pytest.approx(50.0)
+        assert feature["Sample_B"] == pytest.approx(27.5)
+        expected_original_cv = conc_norm_module.calculate_cv_per_feature(
+            np.array([[100.0, 110.0]])
+        )[0]
+        expected_normalized_cv = conc_norm_module.calculate_cv_per_feature(
+            np.array([[50.0, 27.5]])
+        )[0]
+        assert feature["Original_CV%"] == pytest.approx(expected_original_cv)
+        assert feature["Normalized_CV%"] == pytest.approx(expected_normalized_cv)
+        assert "SpecNorm_summary" in pd.ExcelFile(result.output_path).sheet_names
+        summary_text = "\n".join(
+            pd.read_excel(
+                result.output_path,
+                sheet_name="SpecNorm_summary",
+                header=None,
+            )[0].astype(str)
+        )
+        assert "quality metrics 僅計算非 QC study samples" in summary_text
+        assert "feature-level reproducibility 未見改善" not in summary_text
+
+    @pytest.mark.parametrize("invalid_reference", [np.nan, 0.0, -1.0])
+    def test_main_specnorm_fails_when_any_study_reference_is_invalid(
+        self,
+        conc_norm_module,
+        tmp_path,
+        invalid_reference,
+    ):
+        input_path = tmp_path / f"invalid_specnorm_{invalid_reference}.xlsx"
+        self._write_step4_input_workbook(
+            input_path,
+            include_marker=False,
+            include_reference=True,
+            reference_values=[np.nan, np.nan, 2.0, invalid_reference],
+        )
+
+        with pytest.raises(ValueError, match="每個非 QC 樣本都必須提供有效的正數 reference"):
+            conc_norm_module.main(
+                input_file=input_path,
+                normalization_method="SpecNorm",
+            )
 
     def test_main_fails_closed_when_no_sample_columns_match_sampleinfo(self, conc_norm_module, tmp_path):
         raw_df = pd.DataFrame(
@@ -1211,6 +1282,9 @@ class TestConcentrationNormOutput:
 
         step4_result = conc_norm_module.main(input_file=str(input_path), normalization_method="PQN")
         step4_output = step4_result.output_path if hasattr(step4_result, "output_path") else step4_result.get("output_path")
+
+        assert step4_result.metabolites == 3
+        assert step4_result.samples == 4
 
         result_df = pd.read_excel(step4_output, sheet_name="PQN_Result", keep_default_na=False)
 

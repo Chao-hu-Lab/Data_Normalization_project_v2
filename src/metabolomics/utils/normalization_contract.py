@@ -1,14 +1,16 @@
 """Shared Step 3 normalization method contract."""
 
-DEFAULT_NORMALIZATION_METHOD = "SpecNorm+PQN"
+DEFAULT_NORMALIZATION_METHOD = "PQN"
 
 STEP3_METHOD_OPTIONS = (
-    ("SpecNorm+PQN", "SpecNorm+PQN"),
-    ("PQN", "PQN"),
+    ("PQN — urine dilution", "PQN"),
+    ("SpecNorm — tissue reference", "SpecNorm"),
 )
 
 METHOD_ALIASES = {
     "PQN": "PQN",
+    "SPECNORM": "SpecNorm",
+    "SPEC_NORM": "SpecNorm",
     "SPECNORM+PQN": "SpecNorm_PQN",
     "SPECNORM_PQN": "SpecNorm_PQN",
     "SPECNORM PQN": "SpecNorm_PQN",
@@ -16,6 +18,7 @@ METHOD_ALIASES = {
 
 NORMALIZATION_SUMMARY_SHEETS = {
     "PQN": "PQN_summary",
+    "SpecNorm": "SpecNorm_summary",
     "SpecNorm_PQN": "SpecNorm_PQN_summary",
 }
 

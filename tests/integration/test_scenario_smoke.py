@@ -89,7 +89,7 @@ def test_step3_scenario_smoke(istd_module, qc_lowess_module, qc_batch_scaling_mo
     [
         ("balanced_pipeline", "PQN", "Normalized_PQN"),
         ("order_confounding", "PQN", "Normalized_PQN"),
-        ("specnorm_friendly", "SpecNorm+PQN", "Normalized_SpecNorm_PQN"),
+        ("specnorm_friendly", "SpecNorm", "Normalized_SpecNorm"),
     ],
 )
 def test_step4_diagnostics_scenarios_smoke(

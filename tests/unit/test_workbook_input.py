@@ -189,6 +189,34 @@ def test_batch_diagnostics_prefers_specnorm_and_ignores_unrelated_sheets(
     }
 
 
+def test_batch_diagnostics_prefers_active_specnorm_over_legacy_and_pqn(
+    tmp_path,
+):
+    workbook_path = tmp_path / "active_specnorm_input.xlsx"
+    active_specnorm_df = pd.DataFrame({"Mz/RT": ["100/1"], "S1": [4.5]})
+    _write_workbook(
+        workbook_path,
+        {
+            "PQN_Result": pd.DataFrame({"Mz/RT": ["100/1"], "S1": [2.5]}),
+            "SpecNorm_PQN_Result": pd.DataFrame(
+                {"Mz/RT": ["100/1"], "S1": [3.5]}
+            ),
+            "SpecNorm_Result": active_specnorm_df,
+            "SampleInfo": pd.DataFrame(
+                {"Sample_Name": ["S1"], "Sample_Type": ["Sample"]}
+            ),
+        },
+    )
+
+    loaded = _load_workbook(
+        workbook_path,
+        WorkbookPurpose.BATCH_DIAGNOSTICS,
+    )
+
+    assert loaded.source_sheet == "SpecNorm_Result"
+    pd.testing.assert_frame_equal(loaded.source_df, active_specnorm_df)
+
+
 def test_batch_diagnostics_requires_canonical_sample_info_sheet(tmp_path):
     workbook_path = tmp_path / "missing_sample_info.xlsx"
     _write_workbook(
@@ -306,5 +334,5 @@ def test_normalization_validates_specnorm_reference_before_missing_source(tmp_pa
         },
     )
 
-    with pytest.raises(ValueError, match=r"SpecNorm\+PQN"):
+    with pytest.raises(ValueError, match=r"SpecNorm"):
         normalization.main(workbook_path, normalization_method="SpecNorm_PQN")

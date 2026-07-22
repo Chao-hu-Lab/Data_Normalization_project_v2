@@ -444,7 +444,7 @@ def specnorm_reference_division(data_matrix, sample_info_df, sample_columns,
     print(f"  樣本分類: QC={qc_count}, 真實={real_count}")
 
     # ========== Step 2: 參考物質校正（僅針對真實樣本）==========
-    real_data = data_matrix[:, real_indices]
+    real_data = np.asarray(data_matrix[:, real_indices], dtype=float)
     real_reference_values = reference_values[real_indices]
 
     valid_ref_mask = np.isfinite(real_reference_values) & (real_reference_values > 0)
@@ -463,7 +463,7 @@ def specnorm_reference_division(data_matrix, sample_info_df, sample_columns,
         print(f"    ⚠ 警告：找不到可用的 {ref_label} 值，保留原始真實樣本強度。")
 
     # ========== Step 3: 合併結果 ==========
-    final_data = data_matrix.copy()
+    final_data = np.asarray(data_matrix, dtype=float).copy()
     final_data[:, real_indices] = real_data_corrected
 
     median_label = f"{median_ref:.2f}" if np.isfinite(median_ref) else "nan"
@@ -1487,6 +1487,9 @@ def create_normalization_summary_report(
 
     summary_context = summary_context or {}
     subset_metrics = subset_metrics or {}
+    is_pure_specnorm = bool(
+        pqn_info and pqn_info.get('reference_strategy') == 'SpecNorm'
+    )
 
     # ========== 執行上下文 ==========
     report.append("")
@@ -1498,6 +1501,11 @@ def create_normalization_summary_report(
         report.append(f"Step 1 線索: {summary_context['step1_status']}")
     if summary_context.get('step2_status'):
         report.append(f"Step 2 狀態: {summary_context['step2_status']}")
+    if is_pure_specnorm:
+        report.append(
+            "SpecNorm 評估範圍: quality metrics 僅計算非 QC study samples；"
+            "QC 保留原始尺度並另列 QC-only 指標。"
+        )
 
     # ========== 基本資訊 ==========
     report.append("")
@@ -1515,22 +1523,26 @@ def create_normalization_summary_report(
     if pqn_info:
         report.append("")
         strategy = pqn_info['reference_strategy']
-        if strategy == 'SpecNorm_PQN':
+        if strategy in {'SpecNorm', 'SpecNorm_PQN'}:
             ref_label = pqn_info.get('ref_col_name', 'reference')
-            report.append(f"【SpecNorm+PQN 校正資訊（{ref_label}）】")
+            method_label = 'SpecNorm' if strategy == 'SpecNorm' else 'SpecNorm+PQN (legacy)'
+            report.append(f"【{method_label} 校正資訊（{ref_label}）】")
             report.append(f"真實樣本數量: {pqn_info['real_count']}")
             report.append(f"QC 樣本數量: {pqn_info['qc_count']}（不參與 SpecNorm / specimen-reference normalization）")
             report.append(f"{ref_label} 中位數: {pqn_info['ref_median']:.2f}")
             report.append(f"有效樣本數: {pqn_info['ref_valid_count']}/{pqn_info['real_count']}")
-            scale_back_strategy = pqn_info.get('scale_back_strategy', 'unknown')
-            report.append(f"Scale-back: {scale_back_strategy}")
-            if scale_back_strategy == 'none':
-                report.append("輸出尺度: SpecNorm / specimen-reference normalization 後 PQN 尺度（不乘回原始 feature 中位數）")
+            if strategy == 'SpecNorm':
+                report.append(f"輸出尺度: study sample intensity / {ref_label}；QC 保留原值")
             else:
-                report.append(
-                    "Scale-back 可用特徵數: "
-                    f"{pqn_info.get('scale_back_valid_features', 0)}/{n_features}"
-                )
+                scale_back_strategy = pqn_info.get('scale_back_strategy', 'unknown')
+                report.append(f"Scale-back: {scale_back_strategy}")
+                if scale_back_strategy == 'none':
+                    report.append("輸出尺度: SpecNorm 後 PQN 尺度；目前與 PQN 等價，不是兩層獨立校正")
+                else:
+                    report.append(
+                        "Scale-back 可用特徵數: "
+                        f"{pqn_info.get('scale_back_valid_features', 0)}/{n_features}"
+                    )
         else:
             report.append("【PQN 參考樣本資訊】")
             report.append(f"參考策略: {strategy}")
@@ -1554,7 +1566,8 @@ def create_normalization_summary_report(
 
     # ========== CV% 評估 ==========
     report.append("")
-    report.append("【Feature CV 變化（全部樣本）】")
+    cv_scope = "非 QC study samples" if is_pure_specnorm else "全部樣本"
+    report.append(f"【Feature CV 變化（{cv_scope}）】")
     report.append("上一步輸入:")
     report.append(f"  - 中位數CV%: {quality_metrics['median_cv_before']:.2f}%")
     report.append(f"  - 平均CV%: {quality_metrics['mean_cv_before']:.2f}%")
@@ -1597,7 +1610,7 @@ def create_normalization_summary_report(
 
     # ========== 樣本總強度變異 ==========
     report.append("")
-    report.append("【樣本總強度變異（全部樣本）】")
+    report.append(f"【樣本總強度變異（{cv_scope}）】")
     report.append(f"上一步輸入總強度CV%: {quality_metrics['total_cv_before']:.2f}%")
     report.append(f"Step 3 輸出總強度CV%: {quality_metrics['total_cv_after']:.2f}%")
     report.append(f"總強度CV%改善: {quality_metrics['total_cv_improvement']:.2f}%")
@@ -1617,7 +1630,7 @@ def create_normalization_summary_report(
 
     # ========== 樣本間相關性 ==========
     report.append("")
-    report.append("【樣本間相關性（全部樣本）】")
+    report.append(f"【樣本間相關性（{cv_scope}）】")
     if not np.isnan(quality_metrics['sample_corr_mean_before']):
         report.append("上一步輸入:")
         report.append(f"  - 平均相關性: {quality_metrics['sample_corr_mean_before']:.4f}")
@@ -1670,23 +1683,29 @@ def create_normalization_summary_report(
     # ========== 整體判讀 ==========
     report.append("")
     report.append("【整體判讀】")
-    feature_p = quality_metrics.get('cv_wilcoxon_pvalue', np.nan)
-    if quality_metrics['cv_improvement'] > 0 and quality_metrics['cv_improvement_pct'] >= 10:
-        report.append("✓ feature-level reproducibility 有明顯改善")
-    elif quality_metrics['cv_improvement'] > 0:
-        if not np.isnan(feature_p) and feature_p < 0.05:
-            report.append("✓ feature-level reproducibility 有小幅但可檢出的改善")
+    if is_pure_specnorm:
+        report.append(
+            "○ SpecNorm 改變 study estimand；CV 或總強度變異是否下降只作描述，"
+            "不能單獨作為方法成敗判準。"
+        )
+    if not is_pure_specnorm:
+        feature_p = quality_metrics.get('cv_wilcoxon_pvalue', np.nan)
+        if quality_metrics['cv_improvement'] > 0 and quality_metrics['cv_improvement_pct'] >= 10:
+            report.append("✓ feature-level reproducibility 有明顯改善")
+        elif quality_metrics['cv_improvement'] > 0:
+            if not np.isnan(feature_p) and feature_p < 0.05:
+                report.append("✓ feature-level reproducibility 有小幅但可檢出的改善")
+            else:
+                report.append("○ feature-level reproducibility 僅有限改善")
         else:
-            report.append("○ feature-level reproducibility 僅有限改善")
-    else:
-        report.append("⚠ feature-level reproducibility 未見改善")
+            report.append("⚠ feature-level reproducibility 未見改善")
 
-    if quality_metrics['total_cv_improvement'] > 10:
-        report.append("✓✓ sample total-intensity variability 改善明顯")
-    elif quality_metrics['total_cv_improvement'] > 0:
-        report.append("✓ sample total-intensity variability 有所改善")
-    else:
-        report.append("⚠ sample total-intensity variability 未見改善")
+        if quality_metrics['total_cv_improvement'] > 10:
+            report.append("✓✓ sample total-intensity variability 改善明顯")
+        elif quality_metrics['total_cv_improvement'] > 0:
+            report.append("✓ sample total-intensity variability 有所改善")
+        else:
+            report.append("⚠ sample total-intensity variability 未見改善")
 
     if not np.isnan(quality_metrics['sample_corr_std_before']):
         if quality_metrics['sample_corr_std_after'] < quality_metrics['sample_corr_std_before']:
@@ -1708,7 +1727,7 @@ def create_normalization_summary_report(
 
     # 方法相關建議
     if pqn_info:
-        if pqn_info['reference_strategy'] == 'SpecNorm_PQN':
+        if pqn_info['reference_strategy'] in {'SpecNorm', 'SpecNorm_PQN'}:
             ref_label = pqn_info.get('ref_col_name', 'reference')
             if pqn_info['ref_valid_count'] < pqn_info['real_count'] * 0.9:
                 missing = pqn_info['real_count'] - pqn_info['ref_valid_count']
@@ -1729,10 +1748,11 @@ def create_normalization_summary_report(
             report.append("⚠ 建議：組間差異保留率較低，建議檢查標準化方法是否適合您的數據")
 
     # CV% 改善相關建議
-    if quality_metrics['cv_improved_ratio'] < 50:
+    if not is_pure_specnorm and quality_metrics['cv_improved_ratio'] < 50:
         report.append("⚠ 建議：僅不到一半的特徵 CV% 得到改善，可能需要考慮其他標準化方法")
 
     if (
+        not is_pure_specnorm and
         quality_metrics['cv_improvement_pct'] <= 10 and
         quality_metrics['total_cv_improvement'] > 10
     ):
@@ -1819,7 +1839,7 @@ def find_correction_column(df):
     def _column_key(col):
         return re.sub(r'[^a-z0-9]+', '_', str(col).strip().lower()).strip('_')
 
-    print("SpecNorm+PQN 需要具 reference 語意的數值型 specimen-reference 欄位。")
+    print("SpecNorm 需要具 reference 語意的數值型 specimen-reference 欄位。")
     ignored_metadata = [
         str(col)
         for col in df.columns
@@ -1867,7 +1887,7 @@ def find_correction_column(df):
         print(f"✓ 偵測到 specimen-reference 欄位: {correction_col} (類型: {correction_type})")
         return correction_col, correction_type
 
-    print("錯誤：找不到可用於 SpecNorm+PQN 的 specimen-reference 欄位；若不需要 specimen-reference normalization，請選擇 PQN。")
+    print("錯誤：找不到可用於 SpecNorm 的 specimen-reference 欄位；若不需要 specimen-reference normalization，請選擇 PQN。")
     return None, None
 
 
@@ -1950,7 +1970,7 @@ def _extract_reference_values(sample_columns, col_to_info_row, correction_col):
     print(f"✓ 有效參考值數量: {valid_count}/{non_qc_count} (排除 {len(sample_columns) - non_qc_count} 個 QC 樣本)")
 
     if non_qc_count > 0 and valid_count < non_qc_count * 0.3:
-        print("❌ 警告：有效參考值不足 30%，無法執行 SpecNorm+PQN 標準化")
+        print("❌ 警告：有效參考值不足 30%，無法執行 specimen-reference normalization")
         return None
 
     return reference_values
@@ -1967,9 +1987,9 @@ def perform_normalization(data_df, sample_info_df, file_path,
     Parameters:
     -----------
     normalization_method : str
-        'PQN' or 'SpecNorm_PQN'; default is SpecNorm+PQN.
+        `PQN`, `SpecNorm`, or legacy `SpecNorm_PQN`; default is PQN.
     correction_col : str, optional
-        SpecNorm_PQN 模式下使用的 specimen-reference 欄位名稱
+        SpecNorm / legacy SpecNorm_PQN 模式使用的 specimen-reference 欄位名稱
     """
     method_name = canonicalize_normalization_method(normalization_method)
     normalization_method = method_name
@@ -2016,8 +2036,8 @@ def perform_normalization(data_df, sample_info_df, file_path,
     print(f"  名稱匹配: {len(col_to_info_row)}/{len(sample_columns)}")
 
     # ========== 根據方法分流 ==========
-    reference_values = None  # only set for SpecNorm_PQN
-    if normalization_method == 'SpecNorm_PQN':
+    reference_values = None
+    if normalization_method in {'SpecNorm', 'SpecNorm_PQN'}:
         # 提取參考值
         reference_values = _extract_reference_values(
             sample_columns, col_to_info_row, correction_col
@@ -2025,19 +2045,56 @@ def perform_normalization(data_df, sample_info_df, file_path,
         if reference_values is None:
             return None
 
+    if normalization_method == 'SpecNorm':
+        invalid_study_samples = [
+            sample
+            for index, sample in enumerate(sample_columns)
+            if _lookup_sample_type(
+                sample,
+                sample_info_df,
+                col_to_info_row,
+                default='UNKNOWN',
+            ) != 'QC'
+            and not (
+                np.isfinite(reference_values[index])
+                and reference_values[index] > 0
+            )
+        ]
+        if invalid_study_samples:
+            preview = ", ".join(invalid_study_samples[:5])
+            if len(invalid_study_samples) > 5:
+                preview += f" ... 還有 {len(invalid_study_samples) - 5} 個"
+            raise ValueError(
+                "SpecNorm 要求每個非 QC 樣本都必須提供有效的正數 reference；"
+                f"缺少或無效: {preview}"
+            )
+        normalized_data, pqn_info = specnorm_reference_division(
+            data_matrix,
+            sample_info_df,
+            sample_columns,
+            reference_values,
+            col_to_info_row=col_to_info_row,
+            correction_col_name=correction_col,
+        )
+    elif normalization_method == 'SpecNorm_PQN':
+        print(
+            "⚠ SpecNorm+PQN 是 legacy compatibility mode；目前輸出與 PQN "
+            "在有效 reference 樣本上等價，不應描述為兩層獨立校正。"
+        )
         normalized_data, pqn_info = specnorm_pqn_normalization(
             data_matrix, sample_info_df, sample_columns,
             reference_values, col_to_info_row=col_to_info_row,
             correction_col_name=correction_col,
             step2_advanced_stats_df=step2_advanced_stats_df,
         )
-    else:
-        # PQN（手動選擇）
+    elif normalization_method == 'PQN':
         normalized_data, pqn_info = enhanced_pqn_normalization(
             data_matrix, sample_info_df, sample_columns,
             col_to_info_row=col_to_info_row,
             step2_advanced_stats_df=step2_advanced_stats_df,
         )
+    else:
+        raise ValueError(f"Unsupported normalization method: {normalization_method!r}")
 
     print(f"✓ 標準化完成")
 
@@ -2054,7 +2111,7 @@ def perform_normalization(data_df, sample_info_df, file_path,
             "density": Path(figures_dir) / f"Step3_Density_{method_slug}.png",
             "dratio": Path(figures_dir) / f"Step3_Dratio_{method_slug}.png",
         }
-        if normalization_method == 'SpecNorm_PQN':
+        if normalization_method in {'SpecNorm', 'SpecNorm_PQN'}:
             figure_paths["scatter"] = Path(figures_dir) / f"Step3_Scatter_{method_slug}.png"
     else:
         figures_dir = build_plots_dir(
@@ -2077,7 +2134,7 @@ def perform_normalization(data_df, sample_info_df, file_path,
                 f"Step3_Dratio_{method_slug}", timestamp=run_timestamp, extension=".png"
             ),
         }
-        if normalization_method == 'SpecNorm_PQN':
+        if normalization_method in {'SpecNorm', 'SpecNorm_PQN'}:
             figure_paths["scatter"] = figures_dir / generate_output_filename(
                 f"Step3_Scatter_{method_slug}", timestamp=run_timestamp, extension=".png"
             )
@@ -2089,9 +2146,38 @@ def perform_normalization(data_df, sample_info_df, file_path,
     normalized_data_valid = normalized_data[:, valid_sample_mask]
     sample_columns_valid = [sample_columns[i] for i in range(len(sample_columns)) if valid_sample_mask[i]]
 
+    evaluation_sample_mask = valid_sample_mask.copy()
+    if normalization_method == 'SpecNorm':
+        study_sample_mask = np.array([
+            _lookup_sample_type(
+                sample,
+                sample_info_df,
+                col_to_info_row,
+                default='UNKNOWN',
+            ) != 'QC'
+            for sample in sample_columns
+        ])
+        evaluation_sample_mask &= study_sample_mask
+
+    original_data_evaluation = original_data[:, evaluation_sample_mask]
+    normalized_data_evaluation = normalized_data[:, evaluation_sample_mask]
+    sample_columns_evaluation = [
+        sample_columns[i]
+        for i in range(len(sample_columns))
+        if evaluation_sample_mask[i]
+    ]
+    evaluation_method_label = (
+        f"{method_name} (study only)"
+        if normalization_method == 'SpecNorm'
+        else method_name
+    )
+
     # ========== 評估標準化質量 ==========
     print("\n評估標準化質量...")
-    quality_metrics = evaluate_normalization_quality(original_data_valid, normalized_data_valid)
+    quality_metrics = evaluate_normalization_quality(
+        original_data_evaluation,
+        normalized_data_evaluation,
+    )
     subset_metrics = evaluate_subset_quality(
         original_data_valid,
         normalized_data_valid,
@@ -2114,20 +2200,20 @@ def perform_normalization(data_df, sample_info_df, file_path,
     print("\n生成視覺化圖表...")
 
     # 1. CV% 分佈圖
-    original_cv = calculate_cv_per_feature(original_data_valid)
-    normalized_cv = calculate_cv_per_feature(normalized_data_valid)
+    original_cv = calculate_cv_per_feature(original_data_evaluation)
+    normalized_cv = calculate_cv_per_feature(normalized_data_evaluation)
     plot_cv_comparison(
         original_cv, normalized_cv,
         figure_paths["cv"],
-        method_name
+        evaluation_method_label
     )
 
     # 2. RLE Plot + Sample Total Intensity（正規化品質評估黃金標準）
     try:
         plot_rle(
-            original_data_valid, normalized_data_valid, sample_columns_valid,
+            original_data_evaluation, normalized_data_evaluation, sample_columns_evaluation,
             figure_paths["rle"],
-            method_name,
+            evaluation_method_label,
             sample_info_df=sample_info_df,
             col_to_info_row=col_to_info_row,
         )
@@ -2137,9 +2223,9 @@ def perform_normalization(data_df, sample_info_df, file_path,
     # 4. NaN-aware KDE 密度圖
     try:
         plot_density_comparison(
-            original_data_valid, normalized_data_valid, sample_columns_valid,
+            original_data_evaluation, normalized_data_evaluation, sample_columns_evaluation,
             figure_paths["density"],
-            method_name,
+            evaluation_method_label,
             sample_info_df=sample_info_df,
             col_to_info_row=col_to_info_row,
         )
@@ -2156,7 +2242,7 @@ def perform_normalization(data_df, sample_info_df, file_path,
     except Exception as e:
         print(f"  ⚠ D-ratio 圖生成失敗: {e}")
 
-    # 7. Total Intensity vs Reference 散點圖（僅 SpecNorm+PQN）
+    # 7. Total Intensity vs Reference 散點圖（SpecNorm 或 legacy hybrid）
     if reference_values is not None and "scatter" in figure_paths:
         try:
             plot_intensity_vs_reference(
@@ -2180,8 +2266,15 @@ def perform_normalization(data_df, sample_info_df, file_path,
 
     # Step 3 output rule: keep CV metrics with unified Original/Normalized naming.
     # Keep unified CV naming for sample-level metrics; keep single QC_CV% only.
-    original_cv_full = calculate_cv_per_feature(original_data)
-    normalized_cv_full = calculate_cv_per_feature(normalized_data)
+    if normalization_method == 'SpecNorm':
+        cv_sample_indices = [
+            i for i, sample in enumerate(sample_columns)
+            if _lookup_sample_type(sample, sample_info_df, col_to_info_row) != 'QC'
+        ]
+    else:
+        cv_sample_indices = list(range(len(sample_columns)))
+    original_cv_full = calculate_cv_per_feature(original_data[:, cv_sample_indices])
+    normalized_cv_full = calculate_cv_per_feature(normalized_data[:, cv_sample_indices])
 
     normalized_df['Original_CV%'] = original_cv_full
     normalized_df['Normalized_CV%'] = normalized_cv_full
@@ -2361,7 +2454,8 @@ def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALI
     session_dir : str or Path, optional
         Session directory for pipeline-aware output.
     normalization_method : str
-        'PQN' or 'SpecNorm_PQN'（由 GUI 傳入）；預設為 SpecNorm+PQN。
+        `PQN` or `SpecNorm`（由 GUI 傳入）；預設為 PQN。Legacy
+        `SpecNorm_PQN` 僅保留程式相容性。
 
     Returns:
     --------
@@ -2425,13 +2519,13 @@ def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALI
                 context="Step 3 SampleInfo",
             )
 
-            # SpecNorm_PQN 模式需要 specimen-reference 欄位
+            # SpecNorm / legacy SpecNorm_PQN 需要 specimen-reference 欄位
             correction_col = None
-            if normalization_method == 'SpecNorm_PQN':
+            if normalization_method in {'SpecNorm', 'SpecNorm_PQN'}:
                 correction_col, correction_type = find_correction_column(sample_info_df)
                 if not correction_col:
                     raise ValueError(
-                        "SampleInfo 中找不到 SpecNorm+PQN 所需的 specimen-reference 欄位。\n"
+                        "SampleInfo 中找不到 SpecNorm 所需的 specimen-reference 欄位。\n"
                         "請確認 SampleInfo 工作表包含具 reference 語意的數值型欄位\n"
                         "（例如 Creatinine、DNA、protein、concentration、reference 或 amount）。"
                     )
@@ -2475,6 +2569,14 @@ def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALI
     data_df, sample_type_row = extract_sample_type_row(data_df, feature_col)
     if sample_type_row is not None:
         print(f"✓ 偵測到 Sample_Type 資訊行，已提取保存（不參與計算）")
+
+    # ProcessingResult reports the analysis matrix contract, not the presentation
+    # shape after Sample_Type, statistics, and passthrough metadata are appended.
+    result_candidate_columns, _ = identify_candidate_sample_columns(data_df)
+    result_sample_count = len(
+        build_sample_info_mapping(result_candidate_columns, sample_info_df)
+    )
+    result_metabolite_count = len(data_df)
 
     # Determine session-aware paths
     if session_dir is not None:
@@ -2534,22 +2636,18 @@ def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALI
         raise Exception("儲存結果失敗")
 
     print(f"\n  ✓ Step 3 完成 → {Path(output_path).name}")
+    metric_scope = "study-only 描述" if method_name == 'SpecNorm' else "改善"
     print(f"    CV%: {quality_metrics['median_cv_before']:.1f}% → {quality_metrics['median_cv_after']:.1f}%"
-          f" (改善 {quality_metrics['cv_improvement_pct']:.0f}%, {quality_metrics['cv_improved_ratio']:.0f}% features)")
+          f" ({metric_scope} {quality_metrics['cv_improvement_pct']:.0f}%, {quality_metrics['cv_improved_ratio']:.0f}% features)")
     print(f"    上游基準: {data_sheet_name}")
     print(f"    總強度CV%: {quality_metrics['total_cv_before']:.1f}% → {quality_metrics['total_cv_after']:.1f}%")
-
-    # 🎯 返回統計資訊給 GUI
-    # 從 normalized_df 中提取樣本數量（排除第一列 FeatureID）
-    sample_count = len(normalized_df.columns) - 1
-    metabolite_count = len(normalized_df)
 
     return ProcessingResult(
         file_path=input_file,
         output_path=str(output_path),
         plots_dir=str(figures_dir),
-        metabolites=metabolite_count,
-        samples=sample_count,
+        metabolites=result_metabolite_count,
+        samples=result_sample_count,
         status=WorkflowOutcome.SUCCEEDED,
     )
 

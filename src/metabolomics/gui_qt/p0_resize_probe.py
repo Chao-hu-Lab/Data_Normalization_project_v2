@@ -101,7 +101,10 @@ def _build_step_card(step_number: int, title: str) -> QFrame:
                 object_name="methodOptions",
             )
         )
-        hint = QLabel("Default builds a QC-based reference; plain PQN is reference-free.")
+        hint = QLabel(
+            "PQN is the urine/global-dilution default; SpecNorm uses a trusted "
+            "tissue reference."
+        )
     else:
         hint = QLabel("Output and diagnostics appear here after this step completes.")
     hint.setWordWrap(True)

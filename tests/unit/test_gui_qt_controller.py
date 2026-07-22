@@ -259,7 +259,7 @@ def test_selected_step_three_method_and_manual_step_four_kwargs_reach_processors
         session_factory=lambda _input: "C:/session",
     )
     controller.select_input("C:/input.xlsx")
-    controller.set_normalization_method("PQN")
+    controller.set_normalization_method("SpecNorm")
 
     controller.start_auto_run()
     wait_until(
@@ -271,7 +271,7 @@ def test_selected_step_three_method_and_manual_step_four_kwargs_reach_processors
 
     step3_kwargs = next(kwargs for step, kwargs in calls if step == STEP3_NAME)
     step4_kwargs = next(kwargs for step, kwargs in calls if step == STEP4_NAME)
-    assert step3_kwargs["normalization_method"] == "PQN"
+    assert step3_kwargs["normalization_method"] == "SpecNorm"
     assert step4_kwargs["diagnostics_only"] is True
     assert {kwargs["session_dir"] for _step, kwargs in calls} == {"C:/session"}
     assert controller.shutdown(timeout_ms=1000)
