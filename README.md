@@ -65,7 +65,7 @@ Runtime dependencies are tracked in [requirements.txt](requirements.txt). The co
 - `scikit-learn`
 - `statsmodels`
 - `matplotlib`
-- `Tkinter` from the local Python installation
+- `PySide6` (Qt for Python)
 
 ### Development
 
@@ -73,11 +73,11 @@ Runtime dependencies are tracked in [requirements.txt](requirements.txt). The co
 pip install -r requirements-dev.txt
 ```
 
-CI targets Python 3.11 and 3.12. Local Windows development should use a Python build that includes Tkinter.
+CI targets Python 3.11 and 3.12. Installing `requirements.txt` provides the PySide6 runtime used by the desktop GUI.
 
 ## Quick Start
 
-Launch the GUI from the repository root:
+Launch the PySide6/Qt GUI from the repository root:
 
 ```powershell
 python Data_Normalization_program_v2.py
@@ -194,8 +194,8 @@ The repository currently has GUI launchers and maintenance scripts, but not a fi
 
 Supported entry points:
 
-- `python Data_Normalization_program_v2.py`: launch the GUI from the repository root.
-- `python -m metabolomics`: launch the packaged GUI entry point when `src/` is on `PYTHONPATH` or the package is installed.
+- `python Data_Normalization_program_v2.py`: launch the PySide6/Qt GUI from the repository root.
+- `python -m metabolomics`: launch the PySide6/Qt package entry point when `src/` is on `PYTHONPATH` or the package is installed.
 - Python processor API: call `istd.main(...)`, `qc_lowess.main(...)`, and `normalization.main(...)` from automation code.
 - `scripts/run_cleanup_acceptance_workflow.py` and `scripts/verify_workbook_equivalence.py`: acceptance and regression utilities, not general user-facing workflow commands.
 

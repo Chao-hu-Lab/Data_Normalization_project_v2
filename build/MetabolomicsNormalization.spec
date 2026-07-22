@@ -35,10 +35,10 @@ hiddenimports += [
     'scipy.integrate._quadpack',
     'metabolomics.processors.istd',
     'metabolomics.processors.qc_lowess',
-    'metabolomics.processors.batch_effect',
+    'metabolomics.processors.qc_batch_scaling',
     'metabolomics.processors.normalization',
     'metabolomics.utils',
-    'metabolomics.gui',
+    'metabolomics.gui_qt',
 ]
 
 # Data files to include (paths relative to project root)
@@ -56,7 +56,7 @@ if os.path.exists(assets_path):
 icon_path = os.path.join(assets_path, 'icon.ico') if os.path.exists(os.path.join(assets_path, 'icon.ico')) else None
 
 a = Analysis(
-    [os.path.join(project_root, 'src', 'metabolomics', 'gui', 'app.py')],
+    [os.path.join(project_root, 'src', 'metabolomics', 'gui_qt', 'app.py')],
     pathex=[os.path.join(project_root, 'src')],
     binaries=[],
     datas=datas,
@@ -64,14 +64,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        'tkinter.test',
-        'unittest',
-        'pydoc',
-        'doctest',
-        'test',
-        'tests',
-    ],
+    excludes=['tkinter'],
     noarchive=False,
     optimize=0,
 )

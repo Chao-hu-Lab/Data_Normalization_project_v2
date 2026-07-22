@@ -2,15 +2,29 @@ name: CI
 
 on:
   push:
-    branches: ["master", "main", "feature/*", "fix/*", "refactor/*"]
+    branches: ["main"]
   pull_request:
-    branches: ["master", "main"]
+    branches: ["main"]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
+  fast:
     uses: Chao-hu-Lab/shared-workflows/.github/workflows/python-ci.yml@main
     with:
       python-versions: '["3.11", "3.12"]'
       install-args: "-r requirements.txt pytest"
       pythonpath: "src"
       submodules: false
+      test-args: '-m "not slow and not integration" -v --tb=short -x'
+
+  science-regression:
+    uses: Chao-hu-Lab/shared-workflows/.github/workflows/python-ci.yml@main
+    with:
+      python-versions: '["3.11"]'
+      install-args: "-r requirements.txt pytest"
+      pythonpath: "src"
+      submodules: false
+      test-args: '-m "slow or integration" -v --tb=short -x'

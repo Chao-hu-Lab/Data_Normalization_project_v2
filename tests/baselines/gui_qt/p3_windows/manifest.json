@@ -1,0 +1,63 @@
+{
+  "purpose": "P3 Qt-internal visual review baseline",
+  "warning": "Do not pixel-compare against tkinter or across platform/font/DPI environments.",
+  "commit": "599a8f6420fed1c14f79821faca77af5cdb27eb0",
+  "python": "3.12.13",
+  "pyside6": "6.11.1",
+  "qt": "6.11.1",
+  "platform": "Windows-11-10.0.22631-SP0",
+  "qt_style": "QStyleSheetStyle",
+  "font": "Microsoft JhengHei UI",
+  "logical_dpi": 96.0,
+  "captures": [
+    {
+      "scenario": "fresh",
+      "file": "fresh.png",
+      "width": 1280,
+      "height": 760,
+      "device_pixel_ratio": 1.0
+    },
+    {
+      "scenario": "file_selected",
+      "file": "file_selected.png",
+      "width": 1280,
+      "height": 760,
+      "device_pixel_ratio": 1.0
+    },
+    {
+      "scenario": "running",
+      "file": "running.png",
+      "width": 1280,
+      "height": 760,
+      "device_pixel_ratio": 1.0
+    },
+    {
+      "scenario": "done",
+      "file": "done.png",
+      "width": 1280,
+      "height": 760,
+      "device_pixel_ratio": 1.0
+    },
+    {
+      "scenario": "skipped",
+      "file": "skipped.png",
+      "width": 1280,
+      "height": 760,
+      "device_pixel_ratio": 1.0
+    },
+    {
+      "scenario": "error",
+      "file": "error.png",
+      "width": 1280,
+      "height": 760,
+      "device_pixel_ratio": 1.0
+    },
+    {
+      "scenario": "cancelled",
+      "file": "cancelled.png",
+      "width": 1280,
+      "height": 760,
+      "device_pixel_ratio": 1.0
+    }
+  ]
+}
