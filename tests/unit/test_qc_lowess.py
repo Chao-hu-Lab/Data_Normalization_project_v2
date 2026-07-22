@@ -18,6 +18,34 @@ from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
 from metabolomics.utils.constants import SHEET_NAMES
+from metabolomics.utils.results import WorkflowOutcome
+
+
+@pytest.fixture
+def lowess_ready_input_file(sample_input_file, tmp_path):
+    """Copy the canonical workbook and make pooled QCs shared across all batches."""
+    workbook_path = tmp_path / "lowess_ready_input.xlsx"
+    shutil.copy2(sample_input_file, workbook_path)
+    workbook = load_workbook(workbook_path)
+    try:
+        worksheet = workbook[SHEET_NAMES["sample_info"]]
+        headers = {cell.value: cell.column for cell in worksheet[1]}
+        sample_type_col = headers["Sample_Type"]
+        batch_col = headers["Batch"]
+        batch_names = sorted({
+            str(worksheet.cell(row=row, column=batch_col).value).strip()
+            for row in range(2, worksheet.max_row + 1)
+            if worksheet.cell(row=row, column=batch_col).value not in (None, "")
+        })
+        shared_batches = ";".join(batch_names)
+        for row in range(2, worksheet.max_row + 1):
+            sample_type = str(worksheet.cell(row=row, column=sample_type_col).value).upper()
+            if "QC" in sample_type:
+                worksheet.cell(row=row, column=batch_col).value = shared_batches
+        workbook.save(workbook_path)
+    finally:
+        workbook.close()
+    return str(workbook_path)
 
 
 class TestQCLOWESSInput:
@@ -56,6 +84,229 @@ class TestQCLOWESSInput:
         assert istd_df is not None
         assert sample_info_df is not None
 
+    @pytest.mark.parametrize("batch_value", [pytest.param(None, id="missing-column"), np.nan, "", "   "])
+    def test_load_fails_when_batch_metadata_is_missing(
+        self,
+        qc_lowess_module,
+        tmp_path,
+        batch_value,
+    ):
+        sample_names = ["QC1", "QC2", "QC3", "QC4", "QC5"]
+        sample_info = {
+            "Sample_Name": sample_names,
+            "Sample_Type": ["QC"] * len(sample_names),
+            "Injection_Order": range(1, len(sample_names) + 1),
+        }
+        if batch_value is not None:
+            sample_info["Batch"] = ["A", "A", batch_value, "A", "A"]
+
+        workbook_path = tmp_path / "step2_missing_batch.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            pd.DataFrame(
+                {
+                    "Mz/RT": ["100.1/1.0"],
+                    **{name: [100.0] for name in sample_names},
+                }
+            ).to_excel(writer, sheet_name="RawIntensity", index=False)
+            pd.DataFrame(sample_info).to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        with pytest.raises(ValueError, match="請先補齊 Batch"):
+            qc_lowess_module.load_and_process_data(workbook_path)
+
+    def test_load_fails_when_sample_info_has_no_qc(
+        self,
+        qc_lowess_module,
+        tmp_path,
+    ):
+        workbook_path = tmp_path / "step2_no_qc.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            pd.DataFrame(
+                {
+                    "Mz/RT": ["100.1/1.0"],
+                    "Sample1": [100.0],
+                }
+            ).to_excel(writer, sheet_name="RawIntensity", index=False)
+            pd.DataFrame(
+                {
+                    "Sample_Name": ["Sample1"],
+                    "Sample_Type": ["Exposure"],
+                    "Injection_Order": [1],
+                    "Batch": ["A"],
+                }
+            ).to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        with pytest.raises(ValueError, match="未找到 QC 樣本"):
+            qc_lowess_module.load_and_process_data(workbook_path)
+
+    def test_perform_fails_when_batch_column_is_missing(self, qc_lowess_module):
+        sample_names = ["QC1", "QC2", "QC3", "QC4", "QC5"]
+        source_df = pd.DataFrame(
+            {
+                "FeatureID": ["100.1/1.0"],
+                **{name: [100.0] for name in sample_names},
+            }
+        )
+        source_df.attrs["sample_columns"] = sample_names
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": sample_names,
+                "Sample_Type": ["QC"] * len(sample_names),
+                "Injection_Order": range(1, len(sample_names) + 1),
+            }
+        )
+
+        with pytest.raises(ValueError, match="請先補齊 Batch"):
+            qc_lowess_module.perform_lowess_normalization(source_df, sample_info_df)
+
+    def test_perform_keeps_values_when_all_features_have_four_qc(
+        self,
+        qc_lowess_module,
+    ):
+        sample_names = ["QC1", "QC2", "QC3", "QC4", "Sample1"]
+        source_df = pd.DataFrame(
+            {
+                "FeatureID": ["100.1/1.0"],
+                "QC1": [100.0],
+                "QC2": [110.0],
+                "QC3": [120.0],
+                "QC4": [130.0],
+                "Sample1": [125.0],
+            }
+        )
+        source_df.attrs["sample_columns"] = sample_names
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": sample_names,
+                "Sample_Type": ["QC", "QC", "QC", "QC", "Exposure"],
+                "Injection_Order": range(1, len(sample_names) + 1),
+                "Batch": ["A"] * len(sample_names),
+            }
+        )
+
+        lowess_df, _, _, trend_stats_df, decision_stats, _ = (
+            qc_lowess_module.perform_lowess_normalization(source_df, sample_info_df)
+        )
+
+        assert lowess_df.loc[0, sample_names].tolist() == source_df.loc[0, sample_names].tolist()
+        assert trend_stats_df.loc[0, "Decision_Status"] == "insufficient_qc"
+        assert decision_stats["event_counts"]["insufficient_qc"] == 1
+
+    def test_perform_applies_only_batches_with_enough_valid_qc(
+        self,
+        qc_lowess_module,
+    ):
+        a_qc = [f"A_QC{i}" for i in range(1, 5)]
+        b_qc = [f"B_QC{i}" for i in range(1, 9)]
+        sample_names = [*a_qc, "SampleA", *b_qc, "SampleB"]
+        intensities = {
+            **{name: [1000.0 + 50.0 * index] for index, name in enumerate(a_qc, 1)},
+            "SampleA": [1250.0],
+            **{name: [2000.0 + 100.0 * index] for index, name in enumerate(b_qc, 1)},
+            "SampleB": [2450.0],
+        }
+        source_df = pd.DataFrame({"FeatureID": ["100.1/1.0"], **intensities})
+        source_df.attrs["sample_columns"] = sample_names
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": sample_names,
+                "Sample_Type": [
+                    *(["QC"] * len(a_qc)),
+                    "Exposure",
+                    *(["QC"] * len(b_qc)),
+                    "Control",
+                ],
+                "Injection_Order": [1, 2, 3, 4, 3.5, 6, 7, 8, 9, 10, 11, 12, 13, 7.5],
+                "Batch": [
+                    *(["A"] * (len(a_qc) + 1)),
+                    *(["B"] * (len(b_qc) + 1)),
+                ],
+            }
+        )
+
+        lowess_df, _, _, trend_stats_df, decision_stats, _ = (
+            qc_lowess_module.perform_lowess_normalization(source_df, sample_info_df)
+        )
+
+        assert lowess_df.loc[0, "SampleA"] == pytest.approx(source_df.loc[0, "SampleA"])
+        assert lowess_df.loc[0, "SampleB"] != pytest.approx(source_df.loc[0, "SampleB"])
+        assert trend_stats_df.loc[0, "Decision_Status"] == "partial_success"
+        assert trend_stats_df.loc[0, "Fit_Strategy"] == "batch_local_lowess"
+        batch_detail = trend_stats_df.loc[0, "Batch_Decision_Detail"]
+        assert "A:status=insufficient_qc,fit=unknown,valid_qc=4" in batch_detail
+        assert "B:status=success,fit=batch_local_lowess,valid_qc=8" in batch_detail
+        assert decision_stats["per_batch"]["A"]["insufficient_qc"] == 1
+        assert decision_stats["per_batch"]["B"]["success"] == 1
+
+    def test_main_skips_when_every_feature_batch_has_insufficient_qc(
+        self,
+        qc_lowess_module,
+        tmp_path,
+    ):
+        sample_names = ["QC1", "QC2", "QC3", "QC4", "Sample1"]
+        workbook_path = tmp_path / "step2_all_insufficient_qc.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            pd.DataFrame(
+                {
+                    "Mz/RT": ["100.1/1.0"],
+                    "QC1": [100.0],
+                    "QC2": [110.0],
+                    "QC3": [120.0],
+                    "QC4": [130.0],
+                    "Sample1": [125.0],
+                }
+            ).to_excel(writer, sheet_name="RawIntensity", index=False)
+            pd.DataFrame(
+                {
+                    "Sample_Name": sample_names,
+                    "Sample_Type": ["QC", "QC", "QC", "QC", "Exposure"],
+                    "Injection_Order": range(1, len(sample_names) + 1),
+                    "Batch": ["A"] * len(sample_names),
+                }
+            ).to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        result = qc_lowess_module.main(input_file=workbook_path)
+
+        assert result.status is WorkflowOutcome.SKIPPED
+        assert result.reason == "insufficient_valid_qc_for_correction"
+        assert Path(result.output_path) == workbook_path
+
+    def test_main_skips_when_no_feature_correction_is_applied(
+        self,
+        qc_lowess_module,
+        tmp_path,
+    ):
+        qc_names = [f"QC{index}" for index in range(1, 9)]
+        sample_names = [*qc_names, "Sample1"]
+        workbook_path = tmp_path / "step2_no_applied_correction.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            pd.DataFrame(
+                {
+                    "Mz/RT": ["100.1/1.0"],
+                    **dict(
+                        zip(
+                            qc_names,
+                            [[value] for value in [100, 99, 101, 100, 100, 101, 99, 100]],
+                            strict=True,
+                        )
+                    ),
+                    "Sample1": [100.0],
+                }
+            ).to_excel(writer, sheet_name="RawIntensity", index=False)
+            pd.DataFrame(
+                {
+                    "Sample_Name": sample_names,
+                    "Sample_Type": [*(["QC"] * 8), "Exposure"],
+                    "Injection_Order": range(1, len(sample_names) + 1),
+                    "Batch": ["A"] * len(sample_names),
+                }
+            ).to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        result = qc_lowess_module.main(input_file=workbook_path)
+
+        assert result.status is WorkflowOutcome.SKIPPED
+        assert result.reason == "no_feature_correction_applied"
+        assert Path(result.output_path) == workbook_path
+
     def test_load_validates_sample_info_before_resolving_source(
         self,
         qc_lowess_module,
@@ -81,6 +332,7 @@ class TestQCLOWESSInput:
                     "Sample_Name": sample_names,
                     "Sample_Type": ["QC"] * 5,
                     "Injection_Order": range(1, 6),
+                    "Batch": ["A"] * 5,
                 }
             ).to_excel(writer, sheet_name="SampleInfo", index=False)
 
@@ -105,6 +357,7 @@ class TestQCLOWESSInput:
                 "Sample_Name": sample_names,
                 "Sample_Type": ["QC"] * 5,
                 "Injection_Order": range(1, 6),
+                "Batch": ["A"] * 5,
             }
         )
         with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
@@ -135,6 +388,7 @@ class TestQCLOWESSInput:
                 "Sample_Name": ["Sample_A", "Sample_B"],
                 "Sample_Type": ["QC", "QC"],
                 "Injection_Order": [1, 2],
+                "Batch": ["A", "A"],
             }
         )
         workbook_path = tmp_path / "unmapped_step2.xlsx"
@@ -226,14 +480,31 @@ class TestQCLOWESSOutput:
 
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_main_falls_back_to_raw_intensity_when_istd_sheet_is_missing(
+    def test_canonical_workbook_succeeds_when_any_feature_is_corrected(
         self,
         qc_lowess_module,
         sample_input_file,
+    ):
+        result = qc_lowess_module.main(input_file=sample_input_file)
+
+        assert result.status is WorkflowOutcome.SUCCEEDED
+        assert Path(result.output_path) != Path(sample_input_file)
+        summary = pd.read_excel(result.output_path, sheet_name="LOESS_summary")
+        assert "Decision_Status" in summary.columns
+        assert summary["Decision_Status"].isin(
+            {"success", "partial_success"}
+        ).any()
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_main_falls_back_to_raw_intensity_when_istd_sheet_is_missing(
+        self,
+        qc_lowess_module,
+        lowess_ready_input_file,
         workbook_sheet_names,
     ):
         """Step 2 should accept a workbook that only has RawIntensity and SampleInfo."""
-        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+        step2_result = qc_lowess_module.main(input_file=lowess_ready_input_file)
 
         validation_target = (
             step2_result.output_path
@@ -254,16 +525,16 @@ class TestQCLOWESSOutput:
         self,
         istd_module,
         qc_lowess_module,
-        sample_input_file,
+        lowess_ready_input_file,
     ):
         """When Step 1 is skipped, red-marked ISTDs should not re-enter downstream result sheets."""
         from metabolomics.utils.data_helpers import extract_sample_type_row
 
-        raw_df, _, _, _ = istd_module.load_and_process_data(sample_input_file)
+        raw_df, _, _, _ = istd_module.load_and_process_data(lowess_ready_input_file)
         raw_df, _ = extract_sample_type_row(raw_df, "FeatureID")
         expected_rows = len(raw_df[~raw_df["is_ISTD"]])
 
-        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+        step2_result = qc_lowess_module.main(input_file=lowess_ready_input_file)
         step2_output = (
             step2_result.output_path
             if hasattr(step2_result, "output_path")
@@ -278,10 +549,10 @@ class TestQCLOWESSOutput:
     @pytest.mark.slow
     @pytest.mark.integration
     def test_main_with_step1_output(self, istd_module, qc_lowess_module,
-                                     sample_input_file, validate_processing_result):
+                                     lowess_ready_input_file, validate_processing_result):
         """Test QC-LOWESS with Step 1 output."""
         # First run Step 1
-        step1_result = istd_module.main(input_file=sample_input_file)
+        step1_result = istd_module.main(input_file=lowess_ready_input_file)
         assert step1_result is not None, "Step 1 should succeed"
         step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
         assert step1_output
@@ -299,10 +570,10 @@ class TestQCLOWESSOutput:
     @pytest.mark.slow
     @pytest.mark.integration
     def test_output_file_structure(self, istd_module, qc_lowess_module,
-                                     sample_input_file, validate_excel_output):
+                                     lowess_ready_input_file, validate_excel_output):
         """Test output Excel file structure."""
         # Run Step 1
-        step1_result = istd_module.main(input_file=sample_input_file)
+        step1_result = istd_module.main(input_file=lowess_ready_input_file)
         step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
 
         # Run Step 2
@@ -326,13 +597,13 @@ class TestQCLOWESSOutput:
     def test_qc_lowess_result_preserves_presence_absence_marker(
         self,
         qc_lowess_module,
-        sample_input_file,
+        lowess_ready_input_file,
         output_dir,
     ):
         input_path = os.path.join(output_dir, "qc_lowess_marker_input.xlsx")
         if os.path.exists(input_path):
             os.remove(input_path)
-        shutil.copy2(sample_input_file, input_path)
+        shutil.copy2(lowess_ready_input_file, input_path)
 
         workbook = load_workbook(input_path)
         try:
@@ -368,10 +639,10 @@ class TestQCLOWESSOutput:
 
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_cv_improvement_tracking(self, istd_module, qc_lowess_module, sample_input_file):
+    def test_cv_improvement_tracking(self, istd_module, qc_lowess_module, lowess_ready_input_file):
         """Test that CV improvement is tracked in output."""
         # Run Step 1
-        step1_result = istd_module.main(input_file=sample_input_file)
+        step1_result = istd_module.main(input_file=lowess_ready_input_file)
         step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
 
         # Run Step 2
@@ -395,9 +666,9 @@ class TestQCLOWESSOutput:
 
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_plots_are_generated(self, istd_module, qc_lowess_module, sample_input_file):
+    def test_plots_are_generated(self, istd_module, qc_lowess_module, lowess_ready_input_file):
         """Test that QC-LOWESS produces plot artifacts."""
-        step1_result = istd_module.main(input_file=sample_input_file)
+        step1_result = istd_module.main(input_file=lowess_ready_input_file)
         step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
 
         step2_result = qc_lowess_module.main(input_file=step1_output)
@@ -416,12 +687,12 @@ class TestQCLOWESSOutput:
         self,
         istd_module,
         qc_lowess_module,
-        sample_input_file,
+        lowess_ready_input_file,
         copy_workbook_with_extra_sheet,
         workbook_sheet_names,
     ):
         """Step 2 output should only keep the previous step sheet and required metadata."""
-        step1_result = istd_module.main(input_file=sample_input_file)
+        step1_result = istd_module.main(input_file=lowess_ready_input_file)
         step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
         step1_with_extra_sheet = copy_workbook_with_extra_sheet(step1_output)
 
@@ -444,11 +715,11 @@ class TestQCLOWESSOutput:
     def test_loess_summary_sheet_keeps_feature_table_and_adds_summary_block(
         self,
         qc_lowess_module,
-        sample_input_file,
+        lowess_ready_input_file,
     ):
         from openpyxl import load_workbook
 
-        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+        step2_result = qc_lowess_module.main(input_file=lowess_ready_input_file)
         step2_output = (
             step2_result.output_path
             if hasattr(step2_result, "output_path")
@@ -483,19 +754,46 @@ class TestQCLOWESSOutput:
 
 
     @pytest.mark.slow
-    def test_main_writes_to_session_dir(self, qc_lowess_module, sample_input_file, tmp_path):
+    def test_main_writes_to_session_dir(self, qc_lowess_module, lowess_ready_input_file, tmp_path):
         """When session_dir is provided, output goes into that directory."""
         from pathlib import Path
         from metabolomics.utils.file_io import create_session_dir
 
         session = create_session_dir(output_root=tmp_path)
-        result = qc_lowess_module.main(input_file=sample_input_file, session_dir=session)
+        result = qc_lowess_module.main(input_file=lowess_ready_input_file, session_dir=session)
         assert Path(result.output_path).is_relative_to(session)
         assert "Step2_" in Path(result.output_path).name
 
 
 class TestQCLOWESSHelpers:
     """Tests for helper functions."""
+
+    def test_feature_missing_terminal_qc_never_extrapolates(
+        self,
+        qc_lowess_module,
+    ):
+        qc_orders = np.array([1, 2, 3, 4, 5, 6, 7, 8, 10], dtype=float)
+        qc_values = np.array(
+            [100, 200, 300, 400, 500, 600, 700, 800, np.nan],
+            dtype=float,
+        )
+        all_orders = np.arange(1, 11, dtype=float)
+        all_values = np.array(
+            [100, 200, 300, 400, 500, 600, 700, 800, 900, np.nan],
+            dtype=float,
+        )
+
+        corrected, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders,
+            qc_values,
+            all_orders,
+            all_values,
+        )
+
+        assert info["status"] == "success"
+        assert info["valid_qc_count"] == 8
+        assert info["outside_qc_range_count"] == 1
+        assert corrected[8] == pytest.approx(all_values[8])
 
     def test_perform_lowess_supports_multi_batch_qc_membership(self, qc_lowess_module):
         """QC samples tagged as A;B should contribute to both batches instead of forming a new batch."""
@@ -534,16 +832,16 @@ class TestQCLOWESSHelpers:
                     "Exposure",
                 ],
                 "Batch": [
-                    "A",
-                    "A",
                     "A;B",
-                    "A",
-                    "B",
-                    "B",
-                    "B;C",
-                    "C",
-                    "C",
-                    "C",
+                    "A;B;C",
+                    "A;B;C",
+                    "A;B;C",
+                    "A;B;C",
+                    "A;B;C",
+                    "A;B;C",
+                    "A;B;C",
+                    "A;B;C",
+                    "A;B;C",
                     "A;B;C",
                     "A",
                     "B",
@@ -596,8 +894,8 @@ class TestQCLOWESSHelpers:
 
         assert decision_stats["event_counts"]["insufficient_qc"] == 0
         assert lowess_df.loc[0, "SampleC"] != pytest.approx(95.0)
-        assert decision_stats["event_counts"]["outlier_filtering_left_too_few_points"] == 2
-        assert decision_stats["partial_success"] == 1
+        assert decision_stats["event_counts"]["outlier_filtering_left_too_few_points"] == 0
+        assert decision_stats["success"] == 1
 
     def test_trend_stats_schema_keeps_kendall_tau_only(self, qc_lowess_module):
         sample_info_df = pd.DataFrame(
@@ -648,8 +946,8 @@ class TestFracFloorAndLoocv:
     """Tests for the LOWESS anti-overfitting guards."""
 
     def test_apply_lowess_correction_populates_kendall_tau(self, qc_lowess_module):
-        qc_orders = np.array([1, 2, 3, 4, 5, 6], dtype=float)
-        qc_intensities = np.array([100.0, 104.0, 109.0, 115.0, 122.0, 130.0], dtype=float)
+        qc_orders = np.arange(1, 9, dtype=float)
+        qc_intensities = np.array([100.0, 104.0, 109.0, 115.0, 122.0, 130.0, 139.0, 149.0])
         all_orders = qc_orders.copy()
         all_intensities = qc_intensities.copy()
 
@@ -666,10 +964,7 @@ class TestFracFloorAndLoocv:
 
     def test_frac_floor_values(self, qc_lowess_module):
         floor = qc_lowess_module._frac_floor
-        assert floor(4) == 1.0
-        assert floor(5) == 1.0
-        assert floor(6) == 0.85
-        assert floor(7) == 0.80
+        assert floor(8) == 0.70
         assert floor(10) == 0.70
         assert floor(11) == 0.0
         assert floor(20) == 0.0
@@ -684,32 +979,80 @@ class TestFracFloorAndLoocv:
         assert isinstance(rmse, float)
         assert rmse > 0
 
-    def test_five_qc_points_gets_frac_floor_and_nonzero_cv(self, qc_lowess_module):
-        """With only 5 valid QC points, frac floor forces 1.0 to prevent overfitting."""
-        rng = np.random.default_rng(99)
-        n_qc = 5
-        n_total = 30
-        qc_orders = np.linspace(1, n_total, n_qc)
-        qc_intensities = 10000.0 + np.linspace(0, 3000, n_qc) + rng.normal(0, 200, n_qc)
-        all_orders = np.arange(1, n_total + 1, dtype=float)
-        all_intensities = 10000.0 + rng.normal(0, 500, n_total)
+    @pytest.mark.parametrize("n_qc", [5, 6, 7])
+    def test_five_to_seven_qc_points_are_not_corrected(
+        self,
+        qc_lowess_module,
+        monkeypatch,
+        n_qc,
+    ):
+        def fail_if_lowess_is_called(*_args, **_kwargs):
+            raise AssertionError("LOWESS must not run with fewer than 8 valid QC points")
+
+        monkeypatch.setattr(
+            qc_lowess_module.sm.nonparametric,
+            "lowess",
+            fail_if_lowess_is_called,
+        )
+        qc_orders = np.arange(1, n_qc + 1, dtype=float)
+        qc_intensities = 1000.0 + 100.0 * qc_orders
 
         corrected, info = qc_lowess_module.apply_lowess_correction(
             qc_orders.tolist(),
             qc_intensities.tolist(),
-            all_orders.tolist(),
-            all_intensities.tolist(),
+            qc_orders.tolist(),
+            qc_intensities.tolist(),
         )
 
-        assert info["frac_used"] == 1.0
-        assert "floor_applied" in info["frac_strategy"] or "loocv" in info["frac_strategy"]
+        assert info["status"] == "insufficient_qc"
+        assert info["fit_strategy"] == "unknown"
+        assert info["frac_strategy"] == "insufficient_qc"
+        assert np.isnan(info["frac_used"])
+        assert np.isnan(info["loocv_rmse"])
+        assert corrected == pytest.approx(qc_intensities.tolist())
 
-        qc_indices = [i for i, order in enumerate(all_orders) if order in qc_orders]
-        corrected_qc = np.array([corrected[i] for i in qc_indices], dtype=float)
-        corrected_qc = corrected_qc[np.isfinite(corrected_qc) & (corrected_qc > 0)]
-        if corrected_qc.size >= 2:
-            cv = float(np.std(corrected_qc, ddof=1) / np.mean(corrected_qc) * 100.0)
-            assert cv > 0.5, f"Corrected QC CV% should be > 0.5 but got {cv:.4f}"
+    def test_eight_qc_points_use_lowess(self, qc_lowess_module):
+        qc_orders = np.arange(1, 9, dtype=float)
+        qc_intensities = 1000.0 + 20.0 * qc_orders + 3.0 * qc_orders**2
+
+        _, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders.tolist(),
+            qc_intensities.tolist(),
+            qc_orders.tolist(),
+            qc_intensities.tolist(),
+        )
+
+        assert info["fit_strategy"] == "batch_local_lowess"
+        assert info["frac_strategy"] != "linear_fallback"
+        assert np.isfinite(info["frac_used"])
+
+    def test_eight_raw_qc_are_not_corrected_when_outlier_filter_leaves_seven(
+        self,
+        qc_lowess_module,
+        monkeypatch,
+    ):
+        def fail_if_lowess_is_called(*_args, **_kwargs):
+            raise AssertionError("post-filter count 7 must not run LOWESS")
+
+        monkeypatch.setattr(
+            qc_lowess_module.sm.nonparametric,
+            "lowess",
+            fail_if_lowess_is_called,
+        )
+        qc_orders = np.arange(1, 9, dtype=float)
+        qc_intensities = np.array([100, 105, 110, 115, 120, 125, 130, 1000], dtype=float)
+
+        _, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders.tolist(),
+            qc_intensities.tolist(),
+            qc_orders.tolist(),
+            qc_intensities.tolist(),
+        )
+
+        assert info["removed_outlier_count"] == 1
+        assert info["valid_qc_count"] == 7
+        assert info["status"] == "insufficient_qc"
+        assert info["fit_strategy"] == "unknown"
 
     def test_large_qc_count_skips_loocv(self, qc_lowess_module):
         """With n > 10 QC points, LOOCV should not be triggered."""
@@ -732,21 +1075,23 @@ class TestFracFloorAndLoocv:
         assert "loocv" not in info["frac_strategy"]
         assert "floor" not in info["frac_strategy"]
 
-    def test_insufficient_qc_threshold_raised_to_five(self, qc_lowess_module):
-        """4 valid QC points should now be rejected as insufficient."""
-        qc_orders = [1.0, 5.0, 10.0, 15.0]
-        qc_intensities = [1000.0, 1100.0, 1200.0, 1300.0]
+    @pytest.mark.parametrize("n_qc", [1, 4])
+    def test_one_to_four_valid_qc_points_are_not_corrected(self, qc_lowess_module, n_qc):
+        qc_orders = np.arange(1, n_qc + 1, dtype=float)
+        qc_intensities = 1000.0 + 100.0 * qc_orders
         all_orders = list(range(1, 21))
         all_intensities = [1000.0] * 20
 
-        _, info = qc_lowess_module.apply_lowess_correction(
-            qc_orders,
-            qc_intensities,
+        corrected, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders.tolist(),
+            qc_intensities.tolist(),
             all_orders,
             all_intensities,
         )
 
         assert info["status"] == "insufficient_qc"
+        assert info["valid_qc_count"] == n_qc
+        assert corrected == all_intensities
 
 
 class TestStep2ResponsibilityContract:
@@ -783,10 +1128,10 @@ class TestStep2ResponsibilityContract:
         assert info["status"] == "all_qc_invalid"
 
     def test_apply_lowess_correction_skips_stable_feature_as_no_drift_detected(self, qc_lowess_module):
-        qc_orders = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
-        qc_intensities = [100.0, 100.8, 99.7, 100.5, 99.9, 100.2]
+        qc_orders = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+        qc_intensities = [100.0, 100.1, 99.9, 100.1, 99.9, 100.1, 99.9, 100.0]
         all_orders = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
-        all_intensities = [100.0, 100.8, 99.7, 100.5, 99.9, 100.2, 101.0, 99.8]
+        all_intensities = qc_intensities.copy()
 
         corrected, info = qc_lowess_module.apply_lowess_correction(
             qc_orders,
@@ -799,10 +1144,10 @@ class TestStep2ResponsibilityContract:
         assert corrected == pytest.approx(all_intensities)
 
     def test_apply_lowess_correction_reports_clamp_and_outside_range_metadata(self, qc_lowess_module):
-        qc_orders = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]
-        qc_intensities = [50.0, 100.0, 200.0, 400.0, 800.0, 1600.0]
-        all_orders = [1.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 80.0]
-        all_intensities = [45.0, 50.0, 100.0, 200.0, 400.0, 800.0, 1600.0, 2000.0]
+        qc_orders = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0]
+        qc_intensities = [100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0]
+        all_orders = [1.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 100.0]
+        all_intensities = [90.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0]
 
         corrected, info = qc_lowess_module.apply_lowess_correction(
             qc_orders,
@@ -818,8 +1163,8 @@ class TestStep2ResponsibilityContract:
         assert "clamped_count" in info
         assert "clamped_ratio" in info
         assert "outside_qc_range_count" in info
-        assert info["outside_qc_range_count"] == 3
-        for idx in (0, 6, 7):
+        assert info["outside_qc_range_count"] == 2
+        for idx in (0, 9):
             assert corrected[idx] == pytest.approx(all_intensities[idx])
 
     def test_rejected_correction_retains_raw_matrix_and_qc_values(
@@ -1155,9 +1500,9 @@ class TestStep2HardeningContract:
     def test_advanced_stats_sheet_includes_step3_contract_columns(
         self,
         qc_lowess_module,
-        sample_input_file,
+        lowess_ready_input_file,
     ):
-        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+        step2_result = qc_lowess_module.main(input_file=lowess_ready_input_file)
         step2_output = (
             step2_result.output_path
             if hasattr(step2_result, "output_path")
@@ -1181,6 +1526,8 @@ class TestStep2HardeningContract:
             "LOESS_RMSE",
             "Normalized_RMSE",
             "Target_Strategy",
+            "Fit_Strategy",
+            "Batch_Decision_Detail",
             "Clamped_Factor_Ratio",
             "Outside_QC_Range_Count",
             "Decision_Status",

@@ -2417,7 +2417,11 @@ def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALI
                 context="Step 3 workbook sheets",
             )
             require_valid(
-                validator.validate_sample_info(sample_info_df),
+                validator.validate_sample_info(
+                    sample_info_df,
+                    require_qc=True,
+                    require_batch=True,
+                ),
                 context="Step 3 SampleInfo",
             )
 

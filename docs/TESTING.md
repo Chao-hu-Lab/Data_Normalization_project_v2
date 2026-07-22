@@ -70,7 +70,7 @@ Current scenario coverage in `test_scenario_smoke.py`:
 
 ## Scenario Matrices
 
-Generated scenario workbooks live in [data/scenario_matrices/SCENARIO_MATRIX_GUIDE.md](../data/scenario_matrices/SCENARIO_MATRIX_GUIDE.md).
+Generated scenario workbooks and their manifest are written to `build/scenario_matrices/`; they are disposable test artifacts, not tracked fixtures.
 
 Common validation targets:
 
@@ -101,7 +101,7 @@ Synthetic and test-oriented inputs are intentionally separated from normal analy
 
 If the input file is under:
 
-- `data/scenario_matrices/`
+- `build/scenario_matrices/` (when tests provide an explicit session directory)
 - `data/test_matrices/`
 - `tests/`
 

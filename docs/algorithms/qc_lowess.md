@@ -22,12 +22,12 @@ LOWESS 是一種非參數局部加權回歸方法。對於每個樣本位置，L
 
 每個 feature 的 correction target 來自**當前 batch 的 QC 行為**，而不是跨批次 `global_qc_median`。在此基礎上，再根據 QC 樣本數量與穩定性自動選擇 `frac` 值：
 
-| QC 樣本數 | frac | 策略 |
-|-----------|------|------|
-| < 8 | 1.0 | 使用全部 QC，確保足夠資訊 |
-| 8-11 | 0.8 | 平衡平滑度與局部性 |
-| 12-19 | 0.6 | 中等局部敏感性 |
-| ≥ 20 | 0.4 | 高局部敏感性，捕捉細微變化 |
+| 條件 | frac 策略 |
+|-----------|------|
+| 有效 QC < 8 | 不擬合，該 batch × feature 維持原值 |
+| QC CV 高於 acceptable 門檻 | 0.8 |
+| QC CV 高於 excellent 門檻 | 0.7 |
+| 較穩定 QC | `clip(0.85 - n/50, 0.5, 0.75)`；有效 QC ≤10 時下限為 0.7 |
 
 此動態策略避免樣本數不足時過擬合，或樣本充足時過度平滑，同時維持 Step 2 僅做 batch-local drift correction 的角色。
 
@@ -35,7 +35,7 @@ LOWESS 是一種非參數局部加權回歸方法。對於每個樣本位置，L
 
 在 LOWESS 擬合前，使用四分位距 (IQR) 方法識別異常 QC 樣本：
 - 界限：Q1 - 1.5×IQR 至 Q3 + 1.5×IQR
-- 保護機制：移除後須保留至少 70% 的 QC 或最少 5 個
+- 保護機制：IQR outlier filter 只有在移除後仍保留至少 70% 且不少於 5 個 QC 時才會採用；後續 LOWESS 校正仍要求該 batch × feature 至少 8 個有效 QC，否則維持原值。
 
 這確保 LOWESS 不被極端值誤導，同時保留足夠數據點進行可靠擬合。若離群值移除後剩餘點數不足，feature 會標記為 `outlier_filtering_left_too_few_points` 而直接跳過校正。
 
@@ -97,6 +97,8 @@ RMSE = √[Σ(觀測值 - 擬合值)² / n]
 **安全限制:** 校正因子限制在 [0.5, 2.0] 範圍內，避免極端校正導致數據失真。
 
 只有 `Decision_Status = success` 的 batch 會把校正值寫入主輸出與 QC CV 計算來源；其他狀態（包括 `no_drift_detected` 與各種 rejection）一律保留原始強度。位於有效 QC injection-order span 之外的樣本也保留原始強度，不做 flat extrapolation 校正。
+
+Step 2 只有在至少一個 batch × feature 實際套用校正時回傳 `SUCCEEDED`；若全部 task 都因 QC 不足而未校正，回傳 `SKIPPED / insufficient_valid_qc_for_correction`，若 QC 足夠但沒有任何 task 通過決策，回傳 `SKIPPED / no_feature_correction_applied`。
 
 此外，Step 2 會額外輸出：
 - `Clamped_Factor_Ratio`

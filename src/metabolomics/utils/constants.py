@@ -169,7 +169,8 @@ NON_SAMPLE_COLUMNS = {
     'median_correction_factor', 'correction_factor_cv',
     'correction_factor_std', 'correction_factor_range_low',
     'correction_factor_range_high', 'Frac_Used', 'QC_CV_for_Frac',
-    'Frac_Strategy', 'exposure_ratio', 'normal_ratio', 'control_ratio', 'QC_ratio',
+    'Frac_Strategy', 'Fit_Strategy', 'Batch_Decision_Detail',
+    'exposure_ratio', 'normal_ratio', 'control_ratio', 'QC_ratio',
     # Additional metadata columns
     'mz', 'rt', 'm/z', 'Mass', 'Retention_Time',
     'is_Presence_Absence_Marker', 'Feature_Filter_Keep_Reasons', 'Imputation_Tag_Reasons',

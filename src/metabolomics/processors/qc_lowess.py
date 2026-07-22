@@ -137,12 +137,6 @@ def exclude_fallback_istd_rows(data_df, file_path, source_sheet_name):
 
 def _frac_floor(n_valid_qc: int) -> float:
     """Return minimum frac to prevent LOWESS overfitting for small QC counts."""
-    if n_valid_qc <= 5:
-        return 1.0
-    if n_valid_qc <= 6:
-        return 0.85
-    if n_valid_qc <= 7:
-        return 0.80
     if n_valid_qc <= 10:
         return 0.70
     return 0.0
@@ -250,6 +244,7 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
         'removed_outlier_count': 0,
         'outlier_filter_applied': False,
         'target_strategy': 'unknown',
+        'fit_strategy': 'unknown',
         'normalized_rmse': np.nan,
         'correction_factor_stats': {},
         'trend_validation': {
@@ -296,12 +291,11 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
     valid_x = filtered_x
     valid_y = filtered_y
 
-    if valid_x.size < 5 or np.unique(valid_x).size < 2:
+    if valid_x.size < 8 or np.unique(valid_x).size < 2:
         info['status'] = 'insufficient_qc'
         info['frac_strategy'] = 'insufficient_qc'
         return all_intensities_arr.tolist(), info
 
-    # ===== 動態 frac 策略 =====
     def compute_qc_cv(values):
         values = np.asarray(values, dtype=float)
         values = values[np.isfinite(values) & (values > 0)]
@@ -317,7 +311,9 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
 
     qc_cv_for_frac = compute_qc_cv(valid_y)
     qc_cv_for_frac = 100.0 if not np.isfinite(qc_cv_for_frac) else qc_cv_for_frac
+    info['qc_cv_for_frac'] = float(qc_cv_for_frac)
 
+    # ===== 動態 LOWESS frac 策略 =====
     if qc_cv_for_frac > CV_QUALITY_THRESHOLDS['acceptable']:
         frac = 0.8
         frac_strategy = 'high_variation'
@@ -353,27 +349,35 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
                 frac_strategy += '_loocv_maxed'
 
     info['frac_used'] = float(frac)
-    info['qc_cv_for_frac'] = float(qc_cv_for_frac)
     info['frac_strategy'] = frac_strategy
     if valid_x.size <= 10:
         info['loocv_rmse'] = float(loocv_rmse_val)
 
-    lowess_result = sm.nonparametric.lowess(valid_y, valid_x, frac=frac, it=2, return_sorted=True)
+    lowess_result = sm.nonparametric.lowess(
+        valid_y,
+        valid_x,
+        frac=frac,
+        it=2,
+        return_sorted=True,
+    )
     x_fit, y_fit = lowess_result[:, 0], lowess_result[:, 1]
 
+    def predict(x_new):
+        if not np.isfinite(x_new):
+            return np.nan
+        return float(np.interp(x_new, x_fit, y_fit, left=y_fit[0], right=y_fit[-1]))
+
+    info['fit_strategy'] = 'batch_local_lowess'
+    target_strategy = 'batch_local_lowess_fit_median'
+
     median_qc = np.nanmedian(y_fit)
-    info['target_strategy'] = 'batch_local_fit_median'
+    info['target_strategy'] = target_strategy
     if not np.isfinite(median_qc) or median_qc <= 0:
         median_qc = np.nanmedian(valid_y)
         info['target_strategy'] = 'batch_local_observed_qc_median'
     if not np.isfinite(median_qc) or median_qc <= 0:
         median_qc = 1.0
         info['target_strategy'] = 'unity_fallback'
-
-    def predict(x_new):
-        if not np.isfinite(x_new):
-            return np.nan
-        return float(np.interp(x_new, x_fit, y_fit, left=y_fit[0], right=y_fit[-1]))
 
     min_factor = 0.5
     max_factor = 2.0
@@ -540,6 +544,16 @@ def perform_lowess_normalization(istd_df, sample_info_df):
         if sample_info_df is None or sample_info_df.empty:
             raise ValueError("SampleInfo 數據為空")
 
+        require_valid(
+            DataValidator().validate_sample_info(
+                sample_info_df,
+                required_columns=['Sample_Name', 'Sample_Type', 'Injection_Order'],
+                require_qc=True,
+                require_batch=True,
+            ),
+            context="Step 2 SampleInfo",
+        )
+
         # 支援 'Mz/RT' 或 'FeatureID' 作為特徵ID欄位
         if FEATURE_ID_COLUMN in istd_df.columns and FEATURE_ID_COLUMN != 'FeatureID':
             istd_df = istd_df.rename(columns={FEATURE_ID_COLUMN: 'FeatureID'})
@@ -589,8 +603,8 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             elif 'QC' in sample.upper() or 'POOLED' in sample.upper():
                 qc_samples.append(sample)
 
-        if len(qc_samples) < 5:
-            raise ValueError(f"QC 樣本不足 ({len(qc_samples)} < 5)，無法進行校正")
+        if len(qc_samples) == 0:
+            raise ValueError("未找到可與處理矩陣對齊的 QC 樣本")
 
         batch_groups = {}
         missing_order_samples = []
@@ -602,7 +616,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             if pd.isna(order):
                 missing_order_samples.append(sample)
             sample_type = normalize_sample_type(meta_row.get('Sample_Type', ''))
-            batches = parse_batch_labels(meta_row.get('Batch', 'Batch1')) or ['Batch1']
+            batches = parse_batch_labels(meta_row.get('Batch'))
 
             if sample_type != 'QC' and len(batches) != 1:
                 raise ValueError(f"Non-QC sample '{sample}' must belong to a single batch")
@@ -754,6 +768,18 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             strategy_counter = Counter(valid_strategies)
             return strategy_counter.most_common(1)[0][0]
 
+        def choose_fit_strategy(strategies):
+            valid_strategies = sorted({
+                strategy
+                for strategy in strategies
+                if isinstance(strategy, str) and strategy and strategy != 'unknown'
+            })
+            if not valid_strategies:
+                return 'unknown'
+            if len(valid_strategies) == 1:
+                return valid_strategies[0]
+            return f"mixed:{'|'.join(valid_strategies)}"
+
         status_categories = [
             'success', 'insufficient_qc', 'all_qc_invalid',
             'outlier_filtering_left_too_few_points', 'no_drift_detected',
@@ -792,6 +818,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             corrected_candidates = {}
             batch_metric_buffer = []
             batch_statuses = []
+            batch_detail_buffer = []
             frac_value_buffer = []
             frac_cv_buffer = []
             frac_strategy_buffer = []
@@ -814,6 +841,11 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 step2_metrics = batch_result.get('step2_metrics') or {}
                 if step2_metrics:
                     batch_metric_buffer.append(step2_metrics)
+                batch_detail_buffer.append(
+                    f"{batch_name}:status={status},"
+                    f"fit={step2_metrics.get('fit_strategy', 'unknown')},"
+                    f"valid_qc={int(step2_metrics.get('valid_qc_count', 0))}"
+                )
 
                 frac_info = batch_result.get('frac_info') or {}
                 frac_value_buffer.append(frac_info.get('frac_used'))
@@ -885,6 +917,8 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 'LOESS_RMSE': safe_nanmedian([m.get('trend_validation', {}).get('rmse', np.nan) for m in batch_metric_buffer]),
                 'Normalized_RMSE': safe_nanmedian([m.get('normalized_rmse', np.nan) for m in batch_metric_buffer]),
                 'Target_Strategy': choose_target_strategy([m.get('target_strategy') for m in batch_metric_buffer]),
+                'Fit_Strategy': choose_fit_strategy([m.get('fit_strategy') for m in batch_metric_buffer]),
+                'Batch_Decision_Detail': '; '.join(batch_detail_buffer),
                 'Clamped_Factor_Ratio': safe_nanmedian([m.get('clamped_ratio', np.nan) for m in batch_metric_buffer]),
                 'Outside_QC_Range_Count': int(np.nansum([m.get('outside_qc_range_count', 0) for m in batch_metric_buffer])),
                 'Decision_Status': feature_status,
@@ -1050,6 +1084,7 @@ def load_and_process_data(file_path):
             validator.validate_sample_info(
                 sample_info_df,
                 required_columns=['Sample_Name', 'Sample_Type', 'Injection_Order'],
+                require_batch=True,
             ),
             context="Step 2 SampleInfo",
         )
@@ -1062,17 +1097,6 @@ def load_and_process_data(file_path):
                 f"'{SHEET_NAMES['sample_info']}' 缺少必要欄位: {', '.join(missing_cols)}。"
                 f" 找到的欄位: {', '.join(sample_info_df.columns.tolist())}"
             )
-
-        # ===== 防呆6-1: Batch 欄位處理 =====
-        if 'Batch' not in sample_info_df.columns:
-            sample_info_df['Batch'] = 'Batch1'
-            print(f"⚠️  警告：'{SHEET_NAMES['sample_info']}' 缺少 'Batch' 欄位，已建立預設 Batch1")
-        else:
-            batch_na_mask = sample_info_df['Batch'].isna()
-            if batch_na_mask.any():
-                fill_value = 'Unknown'
-                sample_info_df.loc[batch_na_mask, 'Batch'] = fill_value
-                print(f"⚠️  警告：發現 {batch_na_mask.sum()} 個樣本缺少 Batch，已填入 '{fill_value}'")
 
         batch_summary = sample_info_df['Batch'].astype(str).value_counts().to_dict()
 
@@ -1090,10 +1114,10 @@ def load_and_process_data(file_path):
 
         qc_count = sample_info_df[sample_info_df['Sample_Type'].str.upper().str.contains('QC', na=False)].shape[0]
         if qc_count == 0:
-            raise ValueError("未找到 QC 樣本（Sample_Type 中無 'QC' 字樣）。QC-LOESS 校正需要至少 5 個 QC 樣本")
-        elif qc_count < 5:
-            print(f"⚠️  警告：QC 樣本數量不足 ({qc_count} < 5)")
-            print(f"   提示：建議至少有 5 個 QC 樣本以確保校正準確性")
+            raise ValueError("未找到 QC 樣本（Sample_Type 中無 'QC' 字樣）。QC-LOESS 校正需要每批每 feature 至少 8 個有效 QC")
+        elif qc_count < 8:
+            print(f"⚠️  警告：QC 樣本數量不足 ({qc_count} < 8)")
+            print("   提示：QC-LOWESS 要求每個 batch、每個 feature 至少 8 個有效 QC")
         else:
             print(f"✓ 找到 {qc_count} 個 QC 樣本")
 
@@ -2423,6 +2447,41 @@ def main(input_file=None, session_dir=None):
     lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats, trend_plot_data = (
         perform_lowess_normalization(istd_df, sample_info_df)
     )
+
+    event_counts = decision_stats.get('event_counts', {})
+    insufficient_statuses = {
+        'insufficient_qc',
+        'all_qc_invalid',
+        'outlier_filtering_left_too_few_points',
+    }
+    insufficient_tasks = sum(event_counts.get(status, 0) for status in insufficient_statuses)
+    total_tasks = int(decision_stats.get('total_feature_batch_tasks', 0))
+    applied_tasks = int(event_counts.get('success', 0))
+    if total_tasks > 0 and applied_tasks == 0:
+        all_tasks_insufficient = insufficient_tasks == total_tasks
+        reason = (
+            'insufficient_valid_qc_for_correction'
+            if all_tasks_insufficient
+            else 'no_feature_correction_applied'
+        )
+        if all_tasks_insufficient:
+            print("⚠️ 所有 feature × batch 均無足夠有效 QC；Step 2 跳過並保留上游輸入")
+        else:
+            print("○ 沒有 feature 通過校正決策；Step 2 跳過並保留上游輸入")
+        return ProcessingResult(
+            file_path=file_path,
+            output_path=file_path,
+            metabolites=len(lowess_df),
+            samples=len(sample_columns),
+            status=WorkflowOutcome.SKIPPED,
+            reason=reason,
+            extra={
+                'total_feature_batch_tasks': total_tasks,
+                'insufficient_feature_batch_tasks': insufficient_tasks,
+                'applied_feature_batch_tasks': applied_tasks,
+                'event_counts': dict(event_counts),
+            },
+        )
 
     timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
     if session_dir is not None:

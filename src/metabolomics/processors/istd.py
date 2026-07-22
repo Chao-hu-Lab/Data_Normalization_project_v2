@@ -116,7 +116,11 @@ def load_and_process_data(file_path):
             raise ValueError(f"錯誤：'{SHEET_NAMES['sample_info']}' 工作表為空")
 
         require_valid(
-            validator.validate_sample_info(sample_info_df),
+            validator.validate_sample_info(
+                sample_info_df,
+                require_qc=True,
+                require_batch=True,
+            ),
             context="Step 1 SampleInfo",
         )
 
@@ -321,10 +325,7 @@ def load_and_process_data(file_path):
         print(f"識別到 {len(istd_feature_ids)} 個 ISTD（紅色標記的特徵 ID）")
 
         if len(istd_feature_ids) == 0:
-            raise ValueError(
-                f"錯誤：未找到任何 ISTD（請在 RawIntensity 工作表第一欄的特徵 ID，例如 '{FEATURE_ID_COLUMN}'，"
-                "以紅色字體標記內標物質）"
-            )
+            print("⚠️ 未找到任何 ISTD；Step 1 將跳過，Step 2 直接使用 RawIntensity")
         elif len(istd_feature_ids) < 3:
             print(f"⚠️ 警告：ISTD 數量較少（{len(istd_feature_ids)} 個），建議至少使用 3 個以上的 ISTD")
             print(f"   以確保校正效果的穩定性")
@@ -1835,13 +1836,18 @@ def main(input_file=None, session_dir=None):
     if gate_eval['should_skip']:
         # Skip: no output workbook is produced. Downstream steps should continue
         # from the original input and apply their own fallback filtering.
+        skip_reason = (
+            'no_istd_detected'
+            if gate_eval['total_istd'] == 0
+            else 'insufficient_good_istd'
+        )
         return ProcessingResult(
             file_path=input_file,
             output_path=input_file,
             metabolites=len(original_df),
             samples=len(gate_eval['sample_columns']),
             status=WorkflowOutcome.SKIPPED,
-            reason='insufficient_good_istd',
+            reason=skip_reason,
             extra={
                 'total_istd': gate_eval['total_istd'],
                 'good_istd': gate_eval['good_istd_count'],

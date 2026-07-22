@@ -9,6 +9,7 @@ These tests verify:
 """
 import pytest
 import pandas as pd
+import numpy as np
 from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.styles import Font
@@ -51,6 +52,56 @@ class TestISTDCorrectionInput:
         with pytest.raises(ValueError, match="找不到檔案"):
             istd_module.load_and_process_data("nonexistent_file.xlsx")
 
+    def test_main_fails_when_sample_info_has_no_qc(self, istd_module, tmp_path):
+        workbook_path = tmp_path / "no_qc.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            pd.DataFrame(
+                {
+                    "Mz/RT": ["100.1/1.0"],
+                    "Sample1": [100.0],
+                }
+            ).to_excel(writer, sheet_name="RawIntensity", index=False)
+            pd.DataFrame(
+                {
+                    "Sample_Name": ["Sample1"],
+                    "Sample_Type": ["Exposure"],
+                    "Injection_Order": [1],
+                    "Batch": ["A"],
+                }
+            ).to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        with pytest.raises(ValueError, match="未找到 QC 樣本"):
+            istd_module.main(input_file=workbook_path)
+
+    @pytest.mark.parametrize("batch_value", [pytest.param(None, id="missing-column"), np.nan, "", "   "])
+    def test_main_fails_when_batch_metadata_is_missing(
+        self,
+        istd_module,
+        tmp_path,
+        batch_value,
+    ):
+        sample_names = ["QC1", "QC2", "QC3", "QC4", "QC5"]
+        sample_info = {
+            "Sample_Name": sample_names,
+            "Sample_Type": ["QC"] * len(sample_names),
+            "Injection_Order": range(1, len(sample_names) + 1),
+        }
+        if batch_value is not None:
+            sample_info["Batch"] = ["A", "A", batch_value, "A", "A"]
+
+        workbook_path = tmp_path / "missing_batch.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            pd.DataFrame(
+                {
+                    "Mz/RT": ["100.1/1.0"],
+                    **{name: [100.0] for name in sample_names},
+                }
+            ).to_excel(writer, sheet_name="RawIntensity", index=False)
+            pd.DataFrame(sample_info).to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        with pytest.raises(ValueError, match="請先補齊 Batch"):
+            istd_module.main(input_file=workbook_path)
+
     def test_load_fails_closed_when_no_sample_columns_match_sampleinfo(self, istd_module, tmp_path):
         raw_df = pd.DataFrame(
             {
@@ -63,6 +114,7 @@ class TestISTDCorrectionInput:
             {
                 "Sample_Name": ["Sample_A", "Sample_B"],
                 "Sample_Type": ["QC", "QC"],
+                "Batch": ["A", "A"],
             }
         )
         workbook_path = tmp_path / "unmapped_step1.xlsx"
@@ -97,6 +149,7 @@ class TestISTDCorrectionInput:
             {
                 "Sample_Name": ["QC_1", "QC_2", "QC_3"],
                 "Sample_Type": ["QC", "QC", "QC"],
+                "Batch": ["A", "A", "A"],
             }
         )
         workbook_path = tmp_path / "argb_red_istd.xlsx"
@@ -122,6 +175,37 @@ class TestISTDCorrectionInput:
 
 class TestISTDCorrectionOutput:
     """Tests for output validation."""
+
+    def test_skips_when_no_istd_is_marked(self, istd_module, tmp_path):
+        sample_names = ["QC1", "QC2", "QC3", "QC4", "QC5", "Sample1"]
+        raw_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0", "200.2/2.0"],
+                **{
+                    name: [100.0 + index, 200.0 + index]
+                    for index, name in enumerate(sample_names)
+                },
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": sample_names,
+                "Sample_Type": ["QC", "QC", "QC", "QC", "QC", "Exposure"],
+                "Injection_Order": range(1, len(sample_names) + 1),
+                "Batch": ["A"] * len(sample_names),
+            }
+        )
+        workbook_path = tmp_path / "no_istd.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            raw_df.to_excel(writer, sheet_name="RawIntensity", index=False)
+            sample_info_df.to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        result = istd_module.main(input_file=workbook_path)
+
+        assert result.status is WorkflowOutcome.SKIPPED
+        assert result.reason == "no_istd_detected"
+        assert Path(result.output_path) == workbook_path
+        assert result.extra == {"total_istd": 0, "good_istd": 0}
 
     @pytest.mark.slow
     def test_skips_when_fewer_than_five_istds_have_qc_cv_below_20(

@@ -351,6 +351,27 @@ def test_invalid_processor_result_becomes_a_retryable_failure():
     assert controller.shutdown(timeout_ms=1000)
 
 
+def test_missing_batch_failure_tells_user_to_fill_batch():
+    def processor(**_kwargs):
+        raise ValueError("2 個樣本缺少 Batch 資訊；請先補齊 Batch 後再執行")
+
+    controller = WorkflowController(
+        processors={STEP1_NAME: processor},
+        session_factory=lambda _input: "C:/session",
+    )
+    notices = []
+    controller.notice.connect(lambda *args: notices.append(args))
+    controller.select_input("C:/input.xlsx")
+
+    controller.start_step(STEP1_NAME)
+    wait_until(lambda: not controller.is_running)
+
+    assert controller.workflow.status_of(STEP1_NAME) is StepState.FAILED
+    assert notices[-1][0] == "retry"
+    assert "補齊 Batch" in notices[-1][2]
+    assert controller.shutdown(timeout_ms=1000)
+
+
 def test_auto_run_skip_continues_without_an_intermediate_blocking_notice():
     calls = []
 

@@ -24,11 +24,11 @@ The current active scientific workflow ends at **Step 3**. Step 4 remains visibl
 
 GUI preview: pending verified capture.
 
-The first screenshot will show the main workflow screen with `data/feature_matrix_with_qc_AfterVBA.xlsx` loaded, `SpecNorm+PQN` selected, and Auto Run ready. Screenshot capture rules live in [docs/assets](docs/assets/README.md).
+The first screenshot will show the main workflow screen with `data/synthetic_correction_input.xlsx` loaded, `SpecNorm+PQN` selected, and Auto Run ready. Screenshot capture rules live in [docs/assets](docs/assets/README.md).
 
 | Asset | Intended capture |
 | --- | --- |
-| `docs/assets/dnp-gui-overview.png` | Main GUI after selecting `data/feature_matrix_with_qc_AfterVBA.xlsx`, with `SpecNorm+PQN` selected and Auto Run ready. |
+| `docs/assets/dnp-gui-overview.png` | Main GUI after selecting `data/synthetic_correction_input.xlsx`, with `SpecNorm+PQN` selected and Auto Run ready. |
 | `docs/assets/dnp-step3-session.png` | Optional output/session view showing the Step 3 workbook and generated plots. |
 
 ## Workflow Contract
@@ -85,31 +85,28 @@ python Data_Normalization_program_v2.py
 
 Typical GUI flow:
 
-1. Click **Browse** and select a VBA-preprocessed Excel workbook.
+1. Click **Browse** and select a current-format Excel workbook.
 2. Keep the default Step 3 method `SpecNorm+PQN`, or choose `PQN` when no specimen-reference column should be used.
 3. Click **Auto Run** to execute the active workflow through Step 3.
 4. Open the Step 3 workbook or plots from the GUI.
 5. Run Step 4 only when you explicitly need diagnostics-only batch reports.
 
-For a first local smoke run, use the bundled workbook `data/feature_matrix_with_qc_AfterVBA.xlsx`; its `SampleInfo` sheet includes `Creatinine_mg_dL` for the default `SpecNorm+PQN` path.
+For a first local smoke run, use `data/synthetic_correction_input.xlsx`; it is deterministic synthetic data with endpoint QCs, unfilled missing values, ISTD markers, and `Creatinine_mg_dL` for the default `SpecNorm+PQN` path.
 
 ## Example Workbooks
 
-The `data/` directory contains small workbooks for local exploration and regression checks. Prefer the `AfterVBA` variants when trying the GUI, because they represent the expected post-macro workbook layout.
+The tracked smoke-test workbook is generated from a reviewed simulation contract. It is not real experimental data and does not contain pre-correction imputation.
 
 | Path | Use for | Notes |
 | --- | --- | --- |
-| `data/feature_matrix_with_qc_AfterVBA.xlsx` | First GUI smoke run | Includes QC samples and the expected post-VBA sheet layout. |
-| `data/feature_matrix_with_qc_non_group_AfterVBA.xlsx` | Broader QC workflow checks | Useful when validating sample classification and non-group metadata paths. |
-| `data/feature_matrix_control_exposed_AfterVBA.xlsx` | Fail-closed contract checks | No QC happy path; useful for confirming Step 3 refuses unsupported QC-reference conditions. |
-| `data/scenario_matrices/SCENARIO_MATRIX_GUIDE.md` | Synthetic scenario index | Explains generated scenario matrices and the behavior each case exercises. |
-| `data/scenario_matrices/scenario_manifest.csv` | Machine-readable scenario inventory | Lists generated scenario files and expected smoke-test metadata. |
+| `data/synthetic_correction_input.xlsx` | First GUI and regression smoke run | Rebuild with `python scripts/synthetic_matrix_vnext.py`; same seed must preserve the semantic workbook digest. |
+| `build/scenario_matrices/` | Generated stress scenarios | Untracked outputs from `python scripts/generate_batcheffect_data.py --all`. |
 
 Future larger examples should go under [data/examples](data/examples/README.md) or be linked from this section with file size and provenance. Do not add private research workbooks to the repository.
 
 ## Input Workbook Contract
 
-DNP expects an Excel workbook (`.xlsx` or `.xls`) that has already been preprocessed by the project VBA macro.
+DNP expects a current-format Excel workbook (`.xlsx` or `.xls`). Missing intensities must remain blank at the correction stages; imputation belongs after correction and before statistical methods that require a complete matrix.
 
 Required sheets:
 
@@ -221,7 +218,7 @@ For output-affecting processor changes, run the real-workbook acceptance workflo
 - [Workflow Responsibility Spec](docs/plans/2026-04-23-dnp-workflow-responsibility-spec.md): active responsibility boundary for Steps 1-4.
 - [PQN Reference Rules](docs/plans/2026-04-23-pqn-reference-selection-rules.md): active adductomics QC-reference policy.
 - [ComBat Archive](docs/algorithms/combat.md): why ComBat is outside DNP's active boundary.
-- [Scenario Matrix Guide](data/scenario_matrices/SCENARIO_MATRIX_GUIDE.md): generated synthetic scenario matrix index.
+- `python scripts/generate_batcheffect_data.py --all`: generate the disposable scenario matrix set and manifest under `build/scenario_matrices/`.
 
 Most dated planning notes under `docs/plans/` and `docs/superpowers/plans/` are archived records. The two active 2026-04-23 contract references listed above are exceptions until they are migrated into a dedicated contract directory.
 
@@ -229,7 +226,7 @@ Most dated planning notes under `docs/plans/` and `docs/superpowers/plans/` are 
 
 | Symptom | Check |
 | --- | --- |
-| Missing `RawIntensity` or `SampleInfo` | Confirm the workbook was VBA-preprocessed and contains the required sheets. |
+| Missing `RawIntensity` or `SampleInfo` | Confirm the workbook follows the current input contract and contains both required sheets. |
 | No ISTD found | Confirm ISTD feature IDs are marked with red font in the first column of `RawIntensity`. |
 | Sample name mismatch | Align `SampleInfo.Sample_Name` with data-sheet sample columns; DNP fails closed instead of silently guessing. |
 | Step 2 cannot start | Confirm `SampleInfo` has `Sample_Name`, `Sample_Type`, and `Injection_Order`, and contains QC samples. |

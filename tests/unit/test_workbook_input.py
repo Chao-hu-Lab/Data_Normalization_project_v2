@@ -216,12 +216,50 @@ def test_normalization_main_preserves_missing_source_error(tmp_path):
         workbook_path,
         {
             "SampleInfo": pd.DataFrame(
-                {"Sample_Name": ["S1"], "Sample_Type": ["Sample"]}
+                {"Sample_Name": ["S1"], "Sample_Type": ["QC"], "Batch": ["A"]}
             ),
         },
     )
 
     with pytest.raises(Exception, match="找不到資料工作表"):
+        normalization.main(workbook_path, normalization_method="PQN")
+
+
+def test_normalization_main_fails_when_batch_metadata_is_missing(tmp_path):
+    from metabolomics.processors import normalization
+
+    workbook_path = tmp_path / "normalization_missing_batch.xlsx"
+    _write_workbook(
+        workbook_path,
+        {
+            "SampleInfo": pd.DataFrame(
+                {"Sample_Name": ["QC1"], "Sample_Type": ["QC"]}
+            ),
+        },
+    )
+
+    with pytest.raises(ValueError, match="請先補齊 Batch"):
+        normalization.main(workbook_path, normalization_method="PQN")
+
+
+def test_normalization_main_fails_when_sample_info_has_no_qc(tmp_path):
+    from metabolomics.processors import normalization
+
+    workbook_path = tmp_path / "normalization_no_qc.xlsx"
+    _write_workbook(
+        workbook_path,
+        {
+            "SampleInfo": pd.DataFrame(
+                {
+                    "Sample_Name": ["Sample1"],
+                    "Sample_Type": ["Exposure"],
+                    "Batch": ["A"],
+                }
+            ),
+        },
+    )
+
+    with pytest.raises(ValueError, match="未找到 QC 樣本"):
         normalization.main(workbook_path, normalization_method="PQN")
 
 
@@ -263,7 +301,7 @@ def test_normalization_validates_specnorm_reference_before_missing_source(tmp_pa
         workbook_path,
         {
             "SampleInfo": pd.DataFrame(
-                {"Sample_Name": ["S1"], "Sample_Type": ["Sample"]}
+                {"Sample_Name": ["S1"], "Sample_Type": ["QC"], "Batch": ["A"]}
             ),
         },
     )

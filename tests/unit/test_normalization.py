@@ -9,6 +9,7 @@ These tests verify:
 """
 import pytest
 import os
+import shutil
 import warnings
 from importlib import import_module
 from pathlib import Path
@@ -18,6 +19,33 @@ import pandas as pd
 
 from metabolomics.utils.constants import SHEET_NAMES
 from metabolomics.utils.sample_classification import identify_sample_columns
+
+
+@pytest.fixture
+def lowess_ready_input_file(sample_input_file, tmp_path):
+    """Copy the canonical workbook and share pooled QCs across every batch."""
+    workbook_path = tmp_path / "lowess_ready_step3_input.xlsx"
+    shutil.copy2(sample_input_file, workbook_path)
+    workbook = load_workbook(workbook_path)
+    try:
+        worksheet = workbook[SHEET_NAMES["sample_info"]]
+        headers = {cell.value: cell.column for cell in worksheet[1]}
+        sample_type_col = headers["Sample_Type"]
+        batch_col = headers["Batch"]
+        batch_names = sorted({
+            str(worksheet.cell(row=row, column=batch_col).value).strip()
+            for row in range(2, worksheet.max_row + 1)
+            if worksheet.cell(row=row, column=batch_col).value not in (None, "")
+        })
+        shared_batches = ";".join(batch_names)
+        for row in range(2, worksheet.max_row + 1):
+            sample_type = str(worksheet.cell(row=row, column=sample_type_col).value).upper()
+            if "QC" in sample_type:
+                worksheet.cell(row=row, column=batch_col).value = shared_batches
+        workbook.save(workbook_path)
+    finally:
+        workbook.close()
+    return str(workbook_path)
 
 
 class TestConcentrationNormInput:
@@ -1113,6 +1141,7 @@ class TestConcentrationNormOutput:
             {
                 "Sample_Name": ["Sample_A", "Sample_B"],
                 "Sample_Type": ["QC", "QC"],
+                "Batch": ["A", "A"],
             }
         )
         input_path = tmp_path / "unmapped_step3.xlsx"
@@ -1290,12 +1319,12 @@ class TestConcentrationNormOutput:
         istd_module,
         qc_lowess_module,
         conc_norm_module,
-        sample_input_file,
+        lowess_ready_input_file,
         copy_workbook_with_extra_sheet,
         workbook_sheet_names,
     ):
         """Step 3 should keep the selected Step 2 data sheet."""
-        step1_result = istd_module.main(input_file=sample_input_file)
+        step1_result = istd_module.main(input_file=lowess_ready_input_file)
         step1_output = step1_result.output_path if hasattr(step1_result, "output_path") else step1_result.get('output_path')
         step2_result = qc_lowess_module.main(input_file=step1_output)
         step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
@@ -1317,14 +1346,14 @@ class TestConcentrationNormOutput:
         self,
         qc_lowess_module,
         conc_norm_module,
-        sample_input_file,
+        lowess_ready_input_file,
         copy_workbook_with_extra_sheet,
         workbook_sheet_names,
     ):
         """Step 3 should prefer Step 2 data over stale QC batch scaling sheets."""
         qc_batch_scaling_module = import_module("metabolomics.processors.qc_batch_scaling")
 
-        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+        step2_result = qc_lowess_module.main(input_file=lowess_ready_input_file)
         step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
         step3_result = qc_batch_scaling_module.main(input_file=step2_output)
         step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
@@ -1346,9 +1375,9 @@ class TestConcentrationNormOutput:
         self,
         qc_lowess_module,
         conc_norm_module,
-        sample_input_file,
+        lowess_ready_input_file,
     ):
-        step2_result = qc_lowess_module.main(input_file=sample_input_file)
+        step2_result = qc_lowess_module.main(input_file=lowess_ready_input_file)
         step2_output = step2_result.output_path if hasattr(step2_result, "output_path") else step2_result.get('output_path')
         step3_result = conc_norm_module.main(input_file=step2_output, normalization_method="PQN")
         step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')

@@ -405,3 +405,21 @@ def test_on_step_error_invalidates_failed_step_and_downstream(monkeypatch):
     prompt_text = prompt_calls[0][0][1]
     assert "See the Log panel" in prompt_text
     assert "SampleInfo 中找不到" not in prompt_text
+
+
+def test_on_step_error_tells_user_to_fill_missing_batch(monkeypatch):
+    app = _make_app()
+    step = app.steps[0]
+    app.workflow.select_input("C:/tmp/input.xlsx")
+    app.workflow.begin(step["name"])
+    app.update_button_states = lambda: None
+    prompt_calls = []
+    monkeypatch.setattr(
+        "metabolomics.gui.app.messagebox.askyesno",
+        lambda *args, **kwargs: prompt_calls.append((args, kwargs)) or False,
+    )
+
+    app.on_step_error(step, "2 個樣本缺少 Batch 資訊；請先補齊 Batch 後再執行")
+
+    assert prompt_calls
+    assert "補齊 Batch" in prompt_calls[0][0][1]
