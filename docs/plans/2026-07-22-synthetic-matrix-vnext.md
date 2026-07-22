@@ -30,11 +30,15 @@ error `0.025 log2`. These are diagnostic observations, not release claims.
 
 Because false correction remains material even with eight scheduled and valid
 QC anchors, this evidence does not justify running LOWESS on six or seven
-points. The separate conservative processor boundary therefore remains:
-LOWESS requires at least eight effective QC values per batch × feature, while
-six-to-seven-point log-linear correction remains explicitly undecided and
-unimplemented. Eight points are an eligibility floor, not a guarantee that a
-feature will be corrected; all other decision gates still apply.
+points. LOWESS therefore still requires at least eight effective QC values per
+batch × feature. On 2026-07-22 the operator separately approved a conservative
+six-to-seven-point log-linear fallback. The implementation uses project-policy
+defaults of endpoint coverage, at least 10% leave-one-QC-out improvement over
+an intercept-only model, `|Kendall tau| >= 0.5` with `p < 0.05`, and drift
+amplitude above residual noise. These numerical gates are conservative local
+defaults, not universal literature thresholds. Failure of any gate preserves
+the original value. Eight points remain the LOWESS eligibility floor, not a
+guarantee that a feature will be corrected.
 
 Slice C also confirms that endpoint-feature loss or post-filter insufficiency
 leaves the affected cells unchanged and emits an observable reason. Slice D

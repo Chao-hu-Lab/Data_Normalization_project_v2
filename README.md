@@ -36,7 +36,7 @@ The first screenshot will show the main workflow screen with `data/synthetic_cor
 | Step | Module | Status | Responsibility |
 | --- | --- | --- | --- |
 | 1 | ISTD Correction | Active | Correct sample-level internal-standard behavior and mark skipped ISTD paths explicitly. |
-| 2 | QC-LOESS | Active | Correct within-batch run-order drift using batch-local QC anchors. |
+| 2 | QC-LOESS | Active | Correct within-batch run-order drift using batch-local QC anchors; 6–7 effective QC may use the gated log-linear fallback, while ≥8 may use LOWESS. |
 | 3 | Concentration Normalization | Active | Run `SpecNorm+PQN` by default, or `PQN` when no specimen-reference column should be used; this is the final normalized output. |
 | 4 | QC Batch Scaling | Manual diagnostics only | Emit batch diagnostics when explicitly requested with `diagnostics_only=True`; not part of Auto Run. |
 
@@ -127,7 +127,7 @@ Required sheets:
 | --- | --- |
 | `Sample_Name` | Must match data-sheet sample columns exactly or through the shared sample-name normalization rules. |
 | `Sample_Type` | Common values include `QC`, `Control`, `Exposure`, `Normal`, and `Blank`. |
-| `Injection_Order` | Required by Step 2 QC-LOESS. |
+| `Injection_Order` | Required by Step 2; values must be complete and unique within each batch. |
 | `Batch` | Used for Step 2 batch-local correction and Step 4 diagnostics. |
 | named numeric specimen-reference | Required for `SpecNorm+PQN`; common names include `Creatinine_mg_dL`, `DNA_ug/20uL`, protein amount, concentration, reference, or amount columns. Operational metadata such as `Injection_Volume` is ignored. |
 

@@ -170,6 +170,10 @@ NON_SAMPLE_COLUMNS = {
     'correction_factor_std', 'correction_factor_range_low',
     'correction_factor_range_high', 'Frac_Used', 'QC_CV_for_Frac',
     'Frac_Strategy', 'Fit_Strategy', 'Batch_Decision_Detail',
+    'LOOCV_RMSE',
+    'Linear_LOOCV_Baseline_RMSE_Log2', 'Linear_LOOCV_RMSE_Log2',
+    'Linear_LOOCV_Gain', 'Linear_Drift_Amplitude_Log2',
+    'Linear_Residual_RMSE_Log2', 'Linear_R2',
     'exposure_ratio', 'normal_ratio', 'control_ratio', 'QC_ratio',
     # Additional metadata columns
     'mz', 'rt', 'm/z', 'Mass', 'Retention_Time',

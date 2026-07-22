@@ -71,6 +71,10 @@ setup_matplotlib()
 QC_LOWESS_ADVANCED_SHEET = SHEET_NAMES.get('qc_lowess_advanced', "LOESS_summary")
 # For backward compatibility, alias the old constant names
 DEFAULT_NON_SAMPLE_COLUMNS = NON_SAMPLE_COLUMNS
+LINEAR_FALLBACK_MIN_QC = 6
+LOWESS_MIN_QC = 8
+# Conservative project policy; this is not a universal literature threshold.
+LINEAR_FALLBACK_MIN_LOOCV_GAIN = 0.10
 
 
 def parse_batch_labels(value):
@@ -166,6 +170,153 @@ def _loocv_rmse(x: np.ndarray, y: np.ndarray, frac: float, it: int = 2) -> float
     return float(np.sqrt(np.mean(errors)))
 
 
+def _log_linear_loocv(x: np.ndarray, log_y: np.ndarray) -> tuple[float, float]:
+    """Return intercept-only and linear leave-one-QC-out RMSE on log2 scale."""
+    baseline_errors = np.empty(len(x), dtype=float)
+    linear_errors = np.empty(len(x), dtype=float)
+    for index in range(len(x)):
+        keep = np.ones(len(x), dtype=bool)
+        keep[index] = False
+        train_x = x[keep]
+        train_y = log_y[keep]
+        baseline_prediction = float(np.mean(train_y))
+        slope, intercept = np.polyfit(train_x, train_y, 1)
+        linear_prediction = float(slope * x[index] + intercept)
+        baseline_errors[index] = (log_y[index] - baseline_prediction) ** 2
+        linear_errors[index] = (log_y[index] - linear_prediction) ** 2
+    return (
+        float(np.sqrt(np.mean(baseline_errors))),
+        float(np.sqrt(np.mean(linear_errors))),
+    )
+
+
+def _positive_cv_percent(values: np.ndarray) -> float:
+    valid = np.asarray(values, dtype=float)
+    valid = valid[np.isfinite(valid) & (valid > 0)]
+    if valid.size < 2:
+        return np.nan
+    mean_value = float(np.mean(valid))
+    if mean_value <= 0:
+        return np.nan
+    return float(np.std(valid, ddof=1) / mean_value * 100.0)
+
+
+def _apply_log_linear_fallback(
+    valid_x: np.ndarray,
+    valid_y: np.ndarray,
+    all_orders: np.ndarray,
+    all_intensities: np.ndarray,
+    info: dict,
+) -> tuple[list[float], dict]:
+    """Apply the reviewed sparse-QC log-linear fallback for six or seven QCs."""
+    finite_orders = all_orders[np.isfinite(all_orders)]
+    if (
+        finite_orders.size == 0
+        or float(np.min(valid_x)) > float(np.min(finite_orders))
+        or float(np.max(valid_x)) < float(np.max(finite_orders))
+    ):
+        info['status'] = 'linear_fallback_endpoint_uncovered'
+        info['frac_strategy'] = 'linear_fallback_endpoint_uncovered'
+        return all_intensities.tolist(), info
+
+    log_y = np.log2(valid_y)
+    baseline_rmse, linear_rmse = _log_linear_loocv(valid_x, log_y)
+    loocv_gain = (
+        1.0 - linear_rmse / baseline_rmse
+        if baseline_rmse > np.finfo(float).eps
+        else 0.0
+    )
+    info['linear_loocv_baseline_rmse_log2'] = baseline_rmse
+    info['linear_loocv_rmse_log2'] = linear_rmse
+    info['linear_loocv_gain'] = float(loocv_gain)
+    if loocv_gain < LINEAR_FALLBACK_MIN_LOOCV_GAIN:
+        info['status'] = 'linear_fallback_no_predictive_gain'
+        info['frac_strategy'] = 'linear_fallback_no_predictive_gain'
+        return all_intensities.tolist(), info
+
+    trend_tau, trend_pvalue = kendalltau(valid_x, valid_y)
+    info['trend_validation'] = {
+        'trend_pvalue': float(trend_pvalue),
+        'trend_tau': float(trend_tau),
+        'r_squared': np.nan,
+        'rmse': np.nan,
+    }
+    if (
+        not np.isfinite(trend_tau)
+        or not np.isfinite(trend_pvalue)
+        or abs(float(trend_tau)) < 0.5
+        or float(trend_pvalue) >= 0.05
+    ):
+        info['status'] = 'linear_fallback_no_monotonic_trend'
+        info['frac_strategy'] = 'linear_fallback_no_monotonic_trend'
+        return all_intensities.tolist(), info
+
+    slope, intercept = np.polyfit(valid_x, log_y, 1)
+    fitted_qc = slope * valid_x + intercept
+    residual_rmse = float(np.sqrt(np.mean((log_y - fitted_qc) ** 2)))
+    drift_amplitude = float(abs(slope) * (np.max(valid_x) - np.min(valid_x)))
+    info['linear_residual_rmse_log2'] = residual_rmse
+    info['linear_drift_amplitude_log2'] = drift_amplitude
+    if drift_amplitude <= residual_rmse:
+        info['status'] = 'linear_fallback_drift_below_noise'
+        info['frac_strategy'] = 'linear_fallback_drift_below_noise'
+        return all_intensities.tolist(), info
+
+    target_log = float(np.median(fitted_qc))
+    predicted_log = slope * all_orders + intercept
+    raw_factors = np.exp2(target_log - predicted_log)
+    factors = np.clip(raw_factors, 0.5, 2.0)
+    clamped_mask = ~np.isclose(raw_factors, factors, rtol=1e-9, atol=1e-12)
+    info.update({
+        'raw_factor_min': float(np.min(raw_factors)),
+        'raw_factor_max': float(np.max(raw_factors)),
+        'clamped_factor_min': float(np.min(factors)),
+        'clamped_factor_max': float(np.max(factors)),
+        'clamped_count': int(np.sum(clamped_mask)),
+        'clamped_ratio': float(np.mean(clamped_mask)),
+    })
+    if np.any(clamped_mask):
+        info['status'] = 'unstable_correction_factors'
+        info['frac_strategy'] = 'linear_fallback_factor_clamping_required'
+        return all_intensities.tolist(), info
+
+    corrected = all_intensities.copy()
+    correctable = np.isfinite(corrected) & (corrected > 0) & np.isfinite(all_orders)
+    corrected[correctable] *= factors[correctable]
+
+    qc_factors = np.clip(np.exp2(target_log - fitted_qc), 0.5, 2.0)
+    qc_corrected = valid_y * qc_factors
+    ss_res = float(np.sum((log_y - fitted_qc) ** 2))
+    ss_tot = float(np.sum((log_y - np.mean(log_y)) ** 2))
+    linear_r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+    cv_before = _positive_cv_percent(valid_y)
+    cv_after = _positive_cv_percent(qc_corrected)
+
+    info.update({
+        'status': 'success',
+        'cv_before': cv_before,
+        'cv_after': cv_after,
+        'cv_improvement': cv_before - cv_after,
+        'target_strategy': 'log_linear_fit_median',
+        'fit_strategy': 'log_linear_fallback',
+        'frac_strategy': 'log_linear_fallback',
+        'linear_r_squared': linear_r_squared,
+        'correction_factor_stats': {
+            'median': float(np.median(factors)),
+            'cv_percent': _positive_cv_percent(factors),
+            'min': float(np.min(factors)),
+            'max': float(np.max(factors)),
+        },
+        'trend_validation': {
+            'trend_pvalue': float(trend_pvalue),
+            'trend_tau': float(trend_tau),
+            'r_squared': np.nan,
+            'rmse': np.nan,
+        },
+    })
+    return corrected.tolist(), info
+
+
 def filter_qc_outliers_iqr(qc_orders, qc_intensities, *, min_keep=5, min_keep_ratio=0.7):
     """Filter QC outliers by IQR when enough points remain for a defensible fit."""
     qc_orders_arr = np.asarray(qc_orders, dtype=float)
@@ -218,7 +369,15 @@ def filter_qc_outliers_iqr(qc_orders, qc_intensities, *, min_keep=5, min_keep_ra
 
 
 
-def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensities, debug_flag=None):
+def apply_lowess_correction(
+    qc_orders,
+    qc_intensities,
+    all_orders,
+    all_intensities,
+    debug_flag=None,
+    *,
+    order_is_observed=True,
+):
     """對單一批次特徵執行 QC-LOWESS 校正並回傳詳細統計。
 
     Args:
@@ -257,6 +416,12 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
         'qc_cv_for_frac': np.nan,
         'frac_strategy': 'unknown',
         'loocv_rmse': np.nan,
+        'linear_loocv_baseline_rmse_log2': np.nan,
+        'linear_loocv_rmse_log2': np.nan,
+        'linear_loocv_gain': np.nan,
+        'linear_residual_rmse_log2': np.nan,
+        'linear_drift_amplitude_log2': np.nan,
+        'linear_r_squared': np.nan,
     }
 
     if all_orders is None or all_intensities is None:
@@ -269,6 +434,17 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
 
     qc_orders_arr = np.asarray(qc_orders, dtype=float)
     qc_intensities_arr = np.asarray(qc_intensities, dtype=float)
+    if (
+        not order_is_observed
+        or not np.all(np.isfinite(all_orders_arr))
+        or np.unique(all_orders_arr).size != all_orders_arr.size
+        or not np.all(np.isfinite(qc_orders_arr))
+        or np.unique(qc_orders_arr).size != qc_orders_arr.size
+    ):
+        info['status'] = 'invalid_injection_order'
+        info['frac_strategy'] = 'invalid_injection_order'
+        return all_intensities_arr.tolist(), info
+
     valid_mask = np.isfinite(qc_orders_arr) & np.isfinite(qc_intensities_arr) & (qc_intensities_arr > 0)
     valid_x = qc_orders_arr[valid_mask]
     valid_y = qc_intensities_arr[valid_mask]
@@ -291,10 +467,23 @@ def apply_lowess_correction(qc_orders, qc_intensities, all_orders, all_intensiti
     valid_x = filtered_x
     valid_y = filtered_y
 
-    if valid_x.size < 8 or np.unique(valid_x).size < 2:
+    if valid_x.size < LINEAR_FALLBACK_MIN_QC or np.unique(valid_x).size < 2:
         info['status'] = 'insufficient_qc'
         info['frac_strategy'] = 'insufficient_qc'
         return all_intensities_arr.tolist(), info
+
+    if valid_x.size < LOWESS_MIN_QC:
+        if outlier_meta['outlier_filter_applied']:
+            info['status'] = 'linear_fallback_outlier_filtering_not_allowed'
+            info['frac_strategy'] = 'linear_fallback_outlier_filtering_not_allowed'
+            return all_intensities_arr.tolist(), info
+        return _apply_log_linear_fallback(
+            valid_x,
+            valid_y,
+            all_orders_arr,
+            all_intensities_arr,
+            info,
+        )
 
     def compute_qc_cv(values):
         values = np.asarray(values, dtype=float)
@@ -624,7 +813,12 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             for batch_name in batches:
                 batch_entry = batch_groups.setdefault(
                     batch_name,
-                    {'samples': [], 'qc_samples': [], 'injection_orders': {}}
+                    {
+                        'samples': [],
+                        'qc_samples': [],
+                        'injection_orders': {},
+                        'has_missing_injection_order': False,
+                    }
                 )
                 if sample not in batch_entry['samples']:
                     batch_entry['samples'].append(sample)
@@ -634,6 +828,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
 
                 batch_order = order
                 if pd.isna(batch_order):
+                    batch_entry['has_missing_injection_order'] = True
                     batch_order = len(batch_entry['injection_orders']) + 1
                 batch_entry['injection_orders'][sample] = batch_order
 
@@ -714,8 +909,16 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             qc_orders = [all_orders[i] for i in qc_indices]
             qc_intensities = [all_intensities[i] for i in qc_indices]
 
+            correction_kwargs = {}
+            if batch_info['has_missing_injection_order']:
+                correction_kwargs['order_is_observed'] = False
             corrected_intensities, info = apply_lowess_correction(
-                qc_orders, qc_intensities, all_orders, all_intensities, debug_flag
+                qc_orders,
+                qc_intensities,
+                all_orders,
+                all_intensities,
+                debug_flag,
+                **correction_kwargs,
             )
 
             corrected_map = dict(zip(all_sample_names, corrected_intensities))
@@ -781,8 +984,13 @@ def perform_lowess_normalization(istd_df, sample_info_df):
             return f"mixed:{'|'.join(valid_strategies)}"
 
         status_categories = [
-            'success', 'insufficient_qc', 'all_qc_invalid',
+            'success', 'insufficient_qc', 'all_qc_invalid', 'invalid_injection_order',
             'outlier_filtering_left_too_few_points', 'no_drift_detected',
+            'linear_fallback_endpoint_uncovered',
+            'linear_fallback_outlier_filtering_not_allowed',
+            'linear_fallback_no_predictive_gain',
+            'linear_fallback_no_monotonic_trend',
+            'linear_fallback_drift_below_noise',
             'insufficient_improvement',
             'unstable_correction_factors', 'overcorrection_detected',
             'failed', 'unknown'
@@ -916,6 +1124,13 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 'LOESS_R2': safe_nanmedian([m.get('trend_validation', {}).get('r_squared', np.nan) for m in batch_metric_buffer]),
                 'LOESS_RMSE': safe_nanmedian([m.get('trend_validation', {}).get('rmse', np.nan) for m in batch_metric_buffer]),
                 'Normalized_RMSE': safe_nanmedian([m.get('normalized_rmse', np.nan) for m in batch_metric_buffer]),
+                'LOOCV_RMSE': safe_nanmedian([m.get('loocv_rmse', np.nan) for m in batch_metric_buffer]),
+                'Linear_LOOCV_Baseline_RMSE_Log2': safe_nanmedian([m.get('linear_loocv_baseline_rmse_log2', np.nan) for m in batch_metric_buffer]),
+                'Linear_LOOCV_RMSE_Log2': safe_nanmedian([m.get('linear_loocv_rmse_log2', np.nan) for m in batch_metric_buffer]),
+                'Linear_LOOCV_Gain': safe_nanmedian([m.get('linear_loocv_gain', np.nan) for m in batch_metric_buffer]),
+                'Linear_Drift_Amplitude_Log2': safe_nanmedian([m.get('linear_drift_amplitude_log2', np.nan) for m in batch_metric_buffer]),
+                'Linear_Residual_RMSE_Log2': safe_nanmedian([m.get('linear_residual_rmse_log2', np.nan) for m in batch_metric_buffer]),
+                'Linear_R2': safe_nanmedian([m.get('linear_r_squared', np.nan) for m in batch_metric_buffer]),
                 'Target_Strategy': choose_target_strategy([m.get('target_strategy') for m in batch_metric_buffer]),
                 'Fit_Strategy': choose_fit_strategy([m.get('fit_strategy') for m in batch_metric_buffer]),
                 'Batch_Decision_Detail': '; '.join(batch_detail_buffer),
@@ -1139,16 +1354,6 @@ def load_and_process_data(file_path):
                     print(f"⚠️  警告：{invalid_count} 個樣本的 Injection_Order 無法轉換為數值")
             except Exception as e:
                 print(f"⚠️  警告：Injection_Order 數據類型檢查失敗: {e}")
-
-            # 針對缺失的注射順序提供連續的替補值，避免後續流程中止
-            order_na_mask = sample_info_df['Injection_Order'].isna()
-            if order_na_mask.any():
-                existing_max = sample_info_df['Injection_Order'].max()
-                if pd.isna(existing_max):
-                    existing_max = 0
-                filler = np.arange(1, order_na_mask.sum() + 1) + existing_max
-                sample_info_df.loc[order_na_mask, 'Injection_Order'] = filler
-                print(f"⚠️  警告：已為缺少 Injection_Order 的樣本指派遞增序號，請於 SampleInfo 中確認")
 
         # ===== 防呆10: ISTD_Correction 基本檢查 =====
         try:
@@ -1941,6 +2146,11 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             suffix = "%" if pct else ""
             return f"{value:.{digits}f}{suffix}"
 
+        def _safe_median(values):
+            numeric = np.asarray(values, dtype=float)
+            finite = numeric[np.isfinite(numeric)]
+            return float(np.median(finite)) if finite.size else np.nan
+
         total_count = len(cv_results_df)
         cv_before = pd.to_numeric(cv_results_df['Original_QC_CV%'], errors='coerce')
         cv_after = pd.to_numeric(cv_results_df['Corrected_QC_CV%'], errors='coerce')
@@ -2025,8 +2235,8 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             ("Features processed", total_count),
             ("Overall readout", overall_readout),
             ("QC reproducibility", ""),
-            ("Median QC CV before", _fmt(np.nanmedian(cv_before), pct=True)),
-            ("Median QC CV after", _fmt(np.nanmedian(cv_after), pct=True)),
+            ("Median QC CV before", _fmt(_safe_median(cv_before), pct=True)),
+            ("Median QC CV after", _fmt(_safe_median(cv_after), pct=True)),
             ("Median QC CV improvement", _fmt(median_cv_improvement, pct=True)),
             ("Wilcoxon p-value", _fmt(wilcoxon_pvalue, digits=4)),
             (
@@ -2064,20 +2274,20 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
                 "Variance test p<0.05",
                 _fmt((variance_p < 0.05).mean() * 100 if total_count else np.nan, digits=1, pct=True),
             ),
-            ("Trend p-value median", _fmt(np.nanmedian(trend_pvalues), digits=4)),
-            ("Kendall tau median", _fmt(np.nanmedian(tau_values), digits=4)),
-            ("LOESS R2 median", _fmt(np.nanmedian(r2_values), digits=4)),
-            ("LOESS RMSE median", _fmt(np.nanmedian(rmse_values), digits=2)),
-            ("Normalized RMSE median", _fmt(np.nanmedian(normalized_rmse_values), digits=4)),
-            ("Valid QC count median", _fmt(np.nanmedian(valid_qc_counts), digits=1)),
-            ("Median removed QC outliers", _fmt(np.nanmedian(removed_outliers), digits=1)),
-            ("Median clamp ratio", _fmt(np.nanmedian(clamped_ratios), digits=4)),
+            ("Trend p-value median", _fmt(_safe_median(trend_pvalues), digits=4)),
+            ("Kendall tau median", _fmt(_safe_median(tau_values), digits=4)),
+            ("LOESS R2 median", _fmt(_safe_median(r2_values), digits=4)),
+            ("LOESS RMSE median", _fmt(_safe_median(rmse_values), digits=2)),
+            ("Normalized RMSE median", _fmt(_safe_median(normalized_rmse_values), digits=4)),
+            ("Valid QC count median", _fmt(_safe_median(valid_qc_counts), digits=1)),
+            ("Median removed QC outliers", _fmt(_safe_median(removed_outliers), digits=1)),
+            ("Median clamp ratio", _fmt(_safe_median(clamped_ratios), digits=4)),
             (
                 "Features using edge extrapolation",
                 _fmt((outside_range_counts > 0).mean() * 100 if total_count else np.nan, digits=1, pct=True),
             ),
             ("Frac diagnostics", ""),
-            ("Frac median", _fmt(np.nanmedian(frac_values), digits=2)),
+            ("Frac median", _fmt(_safe_median(frac_values), digits=2)),
             ("Frac range", frac_range_value),
         ]
         for strategy, count in frac_strategy_counts.items():
@@ -2322,6 +2532,12 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
         print(f"\n  無成功批次的主要原因:")
         for key, label in [
             ('insufficient_qc', 'QC 樣本不足'),
+            ('invalid_injection_order', 'Injection_Order 缺失或重複'),
+            ('linear_fallback_endpoint_uncovered', '線性 fallback 缺少 feature 端點 QC'),
+            ('linear_fallback_outlier_filtering_not_allowed', '稀疏 QC 不允許先篩離群值再擬合'),
+            ('linear_fallback_no_predictive_gain', '線性 fallback 的 LOOCV 未改善'),
+            ('linear_fallback_no_monotonic_trend', '線性 fallback 未偵測到顯著單調趨勢'),
+            ('linear_fallback_drift_below_noise', '線性 drift 未高於殘差雜訊'),
             ('insufficient_improvement', 'CV% 改善不足 (<2%)'),
             ('unstable_correction_factors', '校正因子不穩定'),
             ('overcorrection_detected', '檢測到過度校正'),
@@ -2453,6 +2669,9 @@ def main(input_file=None, session_dir=None):
         'insufficient_qc',
         'all_qc_invalid',
         'outlier_filtering_left_too_few_points',
+        'invalid_injection_order',
+        'linear_fallback_endpoint_uncovered',
+        'linear_fallback_outlier_filtering_not_allowed',
     }
     insufficient_tasks = sum(event_counts.get(status, 0) for status in insufficient_statuses)
     total_tasks = int(decision_stats.get('total_feature_batch_tasks', 0))

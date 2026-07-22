@@ -237,6 +237,88 @@ class TestQCLOWESSInput:
         assert decision_stats["per_batch"]["A"]["insufficient_qc"] == 1
         assert decision_stats["per_batch"]["B"]["success"] == 1
 
+    def test_perform_reports_log_linear_fallback_per_feature(
+        self,
+        qc_lowess_module,
+    ):
+        sample_names = [f"Run{order}" for order in range(1, 14)]
+        qc_orders = {1, 3, 5, 7, 9, 11, 13}
+        orders = np.arange(1, 14, dtype=float)
+        values = 1000.0 * 2.0 ** (0.08 * (orders - 7.0))
+        source_df = pd.DataFrame(
+            {"FeatureID": ["100.1/1.0"], **{
+                name: [value]
+                for name, value in zip(sample_names, values, strict=True)
+            }}
+        )
+        source_df.attrs["sample_columns"] = sample_names
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": sample_names,
+                "Sample_Type": [
+                    "QC" if order in qc_orders else "Exposure"
+                    for order in range(1, 14)
+                ],
+                "Injection_Order": orders,
+                "Batch": ["A"] * len(sample_names),
+            }
+        )
+
+        corrected, _, _, summary, decision_stats, _ = (
+            qc_lowess_module.perform_lowess_normalization(
+                source_df,
+                sample_info_df,
+            )
+        )
+
+        assert corrected.loc[0, "Run2"] != pytest.approx(source_df.loc[0, "Run2"])
+        assert summary.loc[0, "Decision_Status"] == "success"
+        assert summary.loc[0, "Fit_Strategy"] == "log_linear_fallback"
+        assert summary.loc[0, "Linear_LOOCV_Gain"] >= 0.10
+        assert np.isfinite(summary.loc[0, "Linear_R2"])
+        assert np.isfinite(summary.loc[0, "Linear_Residual_RMSE_Log2"])
+        assert np.isfinite(summary.loc[0, "Linear_LOOCV_RMSE_Log2"])
+        assert np.isnan(summary.loc[0, "LOOCV_RMSE"])
+        assert np.isnan(summary.loc[0, "LOESS_RMSE"])
+        assert decision_stats["event_counts"]["success"] == 1
+
+    def test_perform_does_not_fit_against_temporary_injection_orders(
+        self,
+        qc_lowess_module,
+    ):
+        sample_names = [f"Run{order}" for order in range(1, 14)]
+        qc_orders = {1, 3, 5, 7, 9, 11, 13}
+        orders = np.arange(1, 14, dtype=float)
+        values = 1000.0 * 2.0 ** (0.08 * (orders - 7.0))
+        source_df = pd.DataFrame(
+            {"FeatureID": ["100.1/1.0"], **{
+                name: [value]
+                for name, value in zip(sample_names, values, strict=True)
+            }}
+        )
+        source_df.attrs["sample_columns"] = sample_names
+        observed_orders = orders.copy()
+        observed_orders[5] = np.nan
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": sample_names,
+                "Sample_Type": [
+                    "QC" if order in qc_orders else "Exposure"
+                    for order in range(1, 14)
+                ],
+                "Injection_Order": observed_orders,
+                "Batch": ["A"] * len(sample_names),
+            }
+        )
+
+        corrected, _, _, summary, decision_stats, _ = (
+            qc_lowess_module.perform_lowess_normalization(source_df, sample_info_df)
+        )
+
+        assert corrected.loc[0, sample_names].tolist() == pytest.approx(values)
+        assert summary.loc[0, "Decision_Status"] == "invalid_injection_order"
+        assert decision_stats["event_counts"]["invalid_injection_order"] == 1
+
     def test_main_skips_when_every_feature_batch_has_insufficient_qc(
         self,
         qc_lowess_module,
@@ -269,6 +351,42 @@ class TestQCLOWESSInput:
         assert result.status is WorkflowOutcome.SKIPPED
         assert result.reason == "insufficient_valid_qc_for_correction"
         assert Path(result.output_path) == workbook_path
+
+    def test_main_succeeds_with_gated_seven_qc_log_linear_fallback(
+        self,
+        qc_lowess_module,
+        tmp_path,
+    ):
+        sample_names = [f"Run{order}" for order in range(1, 14)]
+        qc_orders = {1, 3, 5, 7, 9, 11, 13}
+        orders = np.arange(1, 14, dtype=float)
+        values = 1000.0 * 2.0 ** (0.08 * (orders - 7.0))
+        workbook_path = tmp_path / "seven_qc_log_linear.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            pd.DataFrame(
+                {"Mz/RT": ["100.1/1.0"], **{
+                    name: [value]
+                    for name, value in zip(sample_names, values, strict=True)
+                }}
+            ).to_excel(writer, sheet_name="RawIntensity", index=False)
+            pd.DataFrame(
+                {
+                    "Sample_Name": sample_names,
+                    "Sample_Type": [
+                        "QC" if order in qc_orders else "Exposure"
+                        for order in range(1, 14)
+                    ],
+                    "Injection_Order": orders,
+                    "Batch": ["A"] * len(sample_names),
+                }
+            ).to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        result = qc_lowess_module.main(input_file=workbook_path)
+
+        assert result.status is WorkflowOutcome.SUCCEEDED
+        summary = pd.read_excel(result.output_path, sheet_name="LOESS_summary")
+        assert summary.loc[0, "Decision_Status"] == "success"
+        assert summary.loc[0, "Fit_Strategy"] == "log_linear_fallback"
 
     def test_main_skips_when_no_feature_correction_is_applied(
         self,
@@ -945,6 +1063,31 @@ class TestQCLOWESSHelpers:
 class TestFracFloorAndLoocv:
     """Tests for the LOWESS anti-overfitting guards."""
 
+    @pytest.mark.parametrize("n_qc", [6, 7])
+    def test_six_or_seven_qc_use_log_linear_fallback_when_predictive(
+        self,
+        qc_lowess_module,
+        n_qc,
+    ):
+        all_orders = np.arange(1, 14, dtype=float)
+        qc_orders = np.linspace(1, 13, n_qc)
+        all_intensities = 1000.0 * 2.0 ** (0.08 * (all_orders - 7.0))
+        qc_intensities = 1000.0 * 2.0 ** (0.08 * (qc_orders - 7.0))
+
+        corrected, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders,
+            qc_intensities,
+            all_orders,
+            all_intensities,
+        )
+
+        assert info["status"] == "success"
+        assert info["fit_strategy"] == "log_linear_fallback"
+        assert info["linear_loocv_gain"] >= 0.10
+        assert np.isfinite(info["linear_loocv_rmse_log2"])
+        assert np.isnan(info["loocv_rmse"])
+        assert corrected == pytest.approx([1000.0] * len(all_orders))
+
     def test_apply_lowess_correction_populates_kendall_tau(self, qc_lowess_module):
         qc_orders = np.arange(1, 9, dtype=float)
         qc_intensities = np.array([100.0, 104.0, 109.0, 115.0, 122.0, 130.0, 139.0, 149.0])
@@ -979,12 +1122,10 @@ class TestFracFloorAndLoocv:
         assert isinstance(rmse, float)
         assert rmse > 0
 
-    @pytest.mark.parametrize("n_qc", [5, 6, 7])
-    def test_five_to_seven_qc_points_are_not_corrected(
+    def test_five_qc_points_are_not_corrected(
         self,
         qc_lowess_module,
         monkeypatch,
-        n_qc,
     ):
         def fail_if_lowess_is_called(*_args, **_kwargs):
             raise AssertionError("LOWESS must not run with fewer than 8 valid QC points")
@@ -994,6 +1135,7 @@ class TestFracFloorAndLoocv:
             "lowess",
             fail_if_lowess_is_called,
         )
+        n_qc = 5
         qc_orders = np.arange(1, n_qc + 1, dtype=float)
         qc_intensities = 1000.0 + 100.0 * qc_orders
 
@@ -1010,6 +1152,148 @@ class TestFracFloorAndLoocv:
         assert np.isnan(info["frac_used"])
         assert np.isnan(info["loocv_rmse"])
         assert corrected == pytest.approx(qc_intensities.tolist())
+
+    def test_log_linear_fallback_keeps_original_when_loocv_does_not_improve(
+        self,
+        qc_lowess_module,
+    ):
+        qc_orders = np.array([1, 3, 5, 7, 9, 11, 13], dtype=float)
+        qc_intensities = np.array([100, 101, 99, 100, 101, 99, 100], dtype=float)
+        all_orders = np.arange(1, 14, dtype=float)
+        all_intensities = np.full(13, 100.0)
+
+        corrected, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders,
+            qc_intensities,
+            all_orders,
+            all_intensities,
+        )
+
+        assert info["status"] == "linear_fallback_no_predictive_gain"
+        assert corrected == pytest.approx(all_intensities)
+
+    def test_log_linear_fallback_requires_significant_monotonic_trend(
+        self,
+        qc_lowess_module,
+    ):
+        qc_orders = np.array([1, 3, 5, 7, 9, 11, 13], dtype=float)
+        qc_intensities = np.array(
+            [1043.81, 1094.25, 1087.23, 1013.93, 1170.11, 1164.67, 1126.04],
+            dtype=float,
+        )
+        all_orders = np.arange(1, 14, dtype=float)
+        all_intensities = np.full(13, 1100.0)
+
+        corrected, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders,
+            qc_intensities,
+            all_orders,
+            all_intensities,
+        )
+
+        assert info["linear_loocv_gain"] >= 0.10
+        assert info["status"] == "linear_fallback_no_monotonic_trend"
+        assert corrected == pytest.approx(all_intensities)
+
+    def test_log_linear_fallback_requires_feature_level_endpoint_qc(
+        self,
+        qc_lowess_module,
+    ):
+        qc_orders = np.array([1, 3, 5, 7, 9, 11, 12], dtype=float)
+        qc_intensities = 1000.0 * 2.0 ** (0.08 * (qc_orders - 7.0))
+        all_orders = np.arange(1, 14, dtype=float)
+        all_intensities = 1000.0 * 2.0 ** (0.08 * (all_orders - 7.0))
+
+        corrected, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders,
+            qc_intensities,
+            all_orders,
+            all_intensities,
+        )
+
+        assert info["status"] == "linear_fallback_endpoint_uncovered"
+        assert corrected == pytest.approx(all_intensities)
+
+    def test_log_linear_fallback_rejects_duplicate_qc_injection_orders(
+        self,
+        qc_lowess_module,
+    ):
+        qc_orders = np.array([1, 3, 5, 7, 9, 13, 13], dtype=float)
+        qc_intensities = 1000.0 * 2.0 ** (0.08 * (qc_orders - 7.0))
+        all_orders = np.arange(1, 14, dtype=float)
+        all_intensities = 1000.0 * 2.0 ** (0.08 * (all_orders - 7.0))
+
+        corrected, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders,
+            qc_intensities,
+            all_orders,
+            all_intensities,
+        )
+
+        assert info["status"] == "invalid_injection_order"
+        assert corrected == pytest.approx(all_intensities)
+
+    def test_log_linear_fallback_rejects_missing_observed_injection_order(
+        self,
+        qc_lowess_module,
+    ):
+        qc_orders = np.array([1, 3, 5, 7, 9, 11, 13], dtype=float)
+        qc_intensities = 1000.0 * 2.0 ** (0.08 * (qc_orders - 7.0))
+        all_orders = np.arange(1, 14, dtype=float)
+        all_intensities = 1000.0 * 2.0 ** (0.08 * (all_orders - 7.0))
+
+        corrected, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders,
+            qc_intensities,
+            all_orders,
+            all_intensities,
+            order_is_observed=False,
+        )
+
+        assert info["status"] == "invalid_injection_order"
+        assert corrected == pytest.approx(all_intensities)
+
+    def test_log_linear_fallback_rejects_drift_not_larger_than_noise(
+        self,
+        qc_lowess_module,
+        monkeypatch,
+    ):
+        qc_orders = np.array([1, 3, 5, 7, 9, 11, 13], dtype=float)
+        qc_intensities = np.array([1000, 1300, 900, 1200, 900, 1300, 1000], dtype=float)
+        all_orders = np.arange(1, 14, dtype=float)
+        all_intensities = np.full(13, 1000.0)
+        monkeypatch.setattr(qc_lowess_module, "_log_linear_loocv", lambda *_: (1.0, 0.5))
+        monkeypatch.setattr(qc_lowess_module, "kendalltau", lambda *_: (0.8, 0.01))
+
+        corrected, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders,
+            qc_intensities,
+            all_orders,
+            all_intensities,
+        )
+
+        assert info["status"] == "linear_fallback_drift_below_noise"
+        assert corrected == pytest.approx(all_intensities)
+
+    def test_log_linear_fallback_rejects_model_requiring_factor_clamping(
+        self,
+        qc_lowess_module,
+    ):
+        qc_orders = np.array([1, 3, 5, 7, 9, 11, 13], dtype=float)
+        qc_intensities = 1000.0 * 2.0 ** (0.30 * (qc_orders - 7.0))
+        all_orders = np.arange(1, 14, dtype=float)
+        all_intensities = 1000.0 * 2.0 ** (0.30 * (all_orders - 7.0))
+
+        corrected, info = qc_lowess_module.apply_lowess_correction(
+            qc_orders,
+            qc_intensities,
+            all_orders,
+            all_intensities,
+        )
+
+        assert info["status"] == "unstable_correction_factors"
+        assert info["clamped_count"] > 0
+        assert corrected == pytest.approx(all_intensities)
 
     def test_eight_qc_points_use_lowess(self, qc_lowess_module):
         qc_orders = np.arange(1, 9, dtype=float)
@@ -1051,7 +1335,7 @@ class TestFracFloorAndLoocv:
 
         assert info["removed_outlier_count"] == 1
         assert info["valid_qc_count"] == 7
-        assert info["status"] == "insufficient_qc"
+        assert info["status"] == "linear_fallback_outlier_filtering_not_allowed"
         assert info["fit_strategy"] == "unknown"
 
     def test_large_qc_count_skips_loocv(self, qc_lowess_module):
