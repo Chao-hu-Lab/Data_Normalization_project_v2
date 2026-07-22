@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -23,6 +24,39 @@ STREAM_NAMES = (
     "carryover",
     "feature_assignments",
 )
+QC_LIMITED_ROUTING_RECIPE_VERSION = 1
+QC_LIMITED_ROUTING_EFFECTIVE_QC_COUNTS = (4, 5, 6, 7, 8)
+QC_LIMITED_ROUTING_DRIFT_SCALES = {
+    "baseline": 1.0,
+    "drift_low": 0.45,
+    "drift_high": 1.8,
+}
+QC_LIMITED_ROUTING_INVARIANT_CLASSES = (
+    "sample_and_feature_identity",
+    "biology_and_rng_stream_assignment",
+    "qc_routing_observed_mask",
+    "missing_reason_except_detection_threshold_crossings",
+)
+
+
+def qc_limited_routing_semantic_config_digest() -> str:
+    """Fingerprint the configuration that defines sparse-QC scenario meaning."""
+    semantic_config = {
+        "recipe_version": QC_LIMITED_ROUTING_RECIPE_VERSION,
+        "batches": ["A", "B", "C"],
+        "injections_per_batch": 24,
+        "qc_positions": list(QC_POSITIONS),
+        "effective_qc_counts": list(QC_LIMITED_ROUTING_EFFECTIVE_QC_COUNTS),
+        "drift_scales": QC_LIMITED_ROUTING_DRIFT_SCALES,
+        "invariant_classes": list(QC_LIMITED_ROUTING_INVARIANT_CLASSES),
+        "endpoint_rule": "first_and_last_scheduled_qc_must_be_observed",
+    }
+    canonical = json.dumps(
+        semantic_config,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(canonical).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -153,7 +187,9 @@ def _apply_qc_limited_routing(result: SimulationResult) -> SimulationResult:
         ].to_numpy()
         for feature_index, feature in result.feature_info.iterrows():
             task_index = feature_index * 3 + batch_index
-            effective_count = 4 + task_index % 5
+            effective_count = QC_LIMITED_ROUTING_EFFECTIVE_QC_COUNTS[
+                task_index % len(QC_LIMITED_ROUTING_EFFECTIVE_QC_COUNTS)
+            ]
             if effective_count == len(qc_rows):
                 retained_rows = qc_rows
             elif task_index % 2 == 0:
@@ -246,16 +282,16 @@ def generate_simulation(
     """Generate one reviewed synthetic scenario and its reconstructable truth."""
     if recipe not in ("routine_recoverable", "qc_limited_routing"):
         raise ValueError(f"Unknown vNext recipe: {recipe}")
-    if recipe == "qc_limited_routing" and variant not in (None, "baseline"):
+    if recipe == "qc_limited_routing" and variant not in (
+        None,
+        "baseline",
+        "drift_low",
+        "drift_high",
+    ):
         raise ValueError(f"Unsupported qc_limited_routing variant: {variant}")
     if variant not in (None, "baseline", "drift_low", "drift_high"):
         raise ValueError(f"Unsupported routine_recoverable variant: {variant}")
-    drift_scale = {
-        None: 1.0,
-        "baseline": 1.0,
-        "drift_low": 0.45,
-        "drift_high": 1.8,
-    }[variant]
+    drift_scale = QC_LIMITED_ROUTING_DRIFT_SCALES.get(variant or "baseline")
 
     rngs = _named_rngs(seed)
     sample_info = _build_sample_info()

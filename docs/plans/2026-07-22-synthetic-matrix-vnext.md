@@ -45,6 +45,32 @@ leaves the affected cells unchanged and emits an observable reason. Slice D
 archetypes remain future work; they are not required to promote any processor
 threshold in this change.
 
+### Frozen six-QC holdout decision
+
+After the five-QC boundary was rejected, the operator precommitted the
+six-QC promotion contract before opening the holdout: accepted corrections may
+have at most 5% mild harm (`-0.10 <= recovery_gain < 0`), no accepted task may
+have `recovery_gain < -0.10`, biology sign flips must remain zero, and at least
+50 accepted six-QC tasks are required. Development and holdout are evaluated
+separately.
+
+The frozen v1 holdout uses 20 SHA256-derived seeds crossed with `baseline`,
+`drift_low`, and `drift_high`. The current six-QC candidate accepted 96 eligible
+tasks. Primary recovery is scored only on study samples, never on the QC points
+used to fit the correction. Two tasks had mild harm (2.08%), biology sign flips
+remained zero, and three tasks crossed the severe-harm boundary. The worst was
+a `drift_low` linear task with `recovery_gain = -0.3371`. The precommitted
+severe-tail kill gate therefore failed. This stops promotion of the six-QC
+floor; it does not silently relax the contract or automatically mutate
+production.
+
+The reproducible runner is `scripts/sparse_qc_holdout.py`, the frozen selection
+is `tests/baselines/sparse_qc_holdout_v1.json`, and generated evidence is written
+under `build/sparse_qc_holdout/`. The manifest locks the deterministic seed
+derivation, recipe version, semantic configuration digest, invariant classes,
+and promotion contract. Generated evidence records manifest, generator, runner,
+and Git provenance.
+
 ## Problem
 
 The current generator can create complex-looking workbooks, but it cannot prove
@@ -353,7 +379,10 @@ Verification gate:
 - Remove the obsolete sparse-QC prototype after its useful decision fields are
   represented by truth-ledger tests.
 - Run development seeds and emit compact characterization CSVs under `build/`.
-- Freeze and run the multi-seed holdout through a fresh-context reviewer.
+  The sparse-QC runner now does this; the three composite archetypes remain.
+- Freeze and run the multi-seed holdout through a fresh-context reviewer. The
+  v1 sparse-QC holdout is frozen, has failed its kill gate, and a fresh-context
+  reviewer independently reproduced the task counts and worst-case result.
 
 Verification gate:
 

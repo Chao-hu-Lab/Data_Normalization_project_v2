@@ -113,6 +113,24 @@ output/test_data_runs/<input_file_stem>/
 
 This prevents regression runs from mixing with real project outputs.
 
+## Sparse-QC Promotion Evidence
+
+The six-QC fallback has a frozen truth-backed promotion contract and holdout.
+Run it without changing production thresholds:
+
+```powershell
+uv run python .\scripts\sparse_qc_holdout.py
+```
+
+The command compares no correction, strict-eight, and the current six-QC floor
+across development and frozen holdout scenarios. It writes candidate metrics,
+task-level outcomes, decisions, and a Markdown summary under
+`build/sparse_qc_holdout/`. A failed holdout is a valid scientific result and
+does not make the command itself fail. The promotion gate scores recovery on
+study samples only; QC points used for fitting remain diagnostic rather than
+part of the primary RMSE. Every evidence file includes or references manifest,
+semantic-config, source, and Git fingerprints.
+
 ## Recommended Testing Order
 
 For normal development, prefer **simple to complex**, not the other way around.

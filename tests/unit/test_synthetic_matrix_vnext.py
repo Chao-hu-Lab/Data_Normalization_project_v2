@@ -190,6 +190,25 @@ def test_qc_limited_routing_has_exact_observable_counts_and_endpoint_truth():
         assert int(observed_count) == record.effective_qc_count
 
 
+@pytest.mark.parametrize("variant", ["drift_low", "drift_high"])
+def test_qc_limited_routing_supports_holdout_drift_variants(variant):
+    baseline = generate_simulation("qc_limited_routing", seed=51, variant="baseline")
+    candidate = generate_simulation("qc_limited_routing", seed=51, variant=variant)
+
+    pd.testing.assert_frame_equal(
+        candidate.truth.routing_truth,
+        baseline.truth.routing_truth,
+    )
+    np.testing.assert_array_equal(
+        candidate.truth.component_matrices["qc_routing_observed_mask"],
+        baseline.truth.component_matrices["qc_routing_observed_mask"],
+    )
+    assert not np.array_equal(
+        candidate.truth.component_matrices["drift_factor"],
+        baseline.truth.component_matrices["drift_factor"],
+    )
+
+
 def test_qc_limited_observable_insufficiency_is_not_corrected(
     qc_lowess_module,
 ):
