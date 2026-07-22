@@ -296,15 +296,15 @@ def validate_excel_output():
 
 
 @pytest.fixture
-def validate_result_dict():
-    """Return a function to validate module return dictionaries."""
+def validate_processing_result():
+    """Return a function that validates the processor result contract."""
 
     def _validate(result, required_keys=None):
         """
         Validate a result from module main().
 
         Args:
-            result: The result dictionary
+            result: The ProcessingResult returned by a processor
             required_keys: List of required keys
 
         Returns:
@@ -312,24 +312,17 @@ def validate_result_dict():
         """
         from metabolomics.utils.results import ProcessingResult
 
-        data = None
         is_processing_result = isinstance(result, ProcessingResult)
-        is_dict = isinstance(result, dict)
-
-        if is_processing_result:
-            data = result.to_dict()
-        elif is_dict:
-            data = result
+        data = result.to_dict() if is_processing_result else None
 
         validation = {
             'is_processing_result': is_processing_result,
-            'is_dict': is_dict,
             'keys': list(data.keys()) if isinstance(data, dict) else [],
             'errors': []
         }
 
         if data is None:
-            validation['errors'].append(f"Result is not a ProcessingResult or dict: {type(result)}")
+            validation['errors'].append(f"Result is not a ProcessingResult: {type(result)}")
             return validation
 
         if required_keys:

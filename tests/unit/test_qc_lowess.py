@@ -34,6 +34,9 @@ class TestQCLOWESSInput:
         for func_name in expected_functions:
             assert hasattr(qc_lowess_module, func_name), f"Missing function: {func_name}"
 
+    def test_step2_batch_parser_keeps_slash_as_one_label(self, qc_lowess_module):
+        assert qc_lowess_module.parse_batch_labels("A/B") == ["A/B"]
+
     def test_load_and_process_data_reports_actual_source_sheet(
         self,
         qc_lowess_module,
@@ -52,6 +55,72 @@ class TestQCLOWESSInput:
 
         assert istd_df is not None
         assert sample_info_df is not None
+
+    def test_load_validates_sample_info_before_resolving_source(
+        self,
+        qc_lowess_module,
+        tmp_path,
+    ):
+        workbook_path = tmp_path / "invalid_sample_info_and_missing_source.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            pd.DataFrame({"Unrelated": ["value"]}).to_excel(
+                writer,
+                sheet_name="SampleInfo",
+                index=False,
+            )
+
+        with pytest.raises(ValueError, match="Step 2 SampleInfo validation failed"):
+            qc_lowess_module.load_and_process_data(workbook_path)
+
+    def test_load_preserves_missing_source_error(self, qc_lowess_module, tmp_path):
+        workbook_path = tmp_path / "missing_source.xlsx"
+        sample_names = [f"QC_{index}" for index in range(1, 6)]
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            pd.DataFrame(
+                {
+                    "Sample_Name": sample_names,
+                    "Sample_Type": ["QC"] * 5,
+                    "Injection_Order": range(1, 6),
+                }
+            ).to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        with pytest.raises(ValueError, match="Worksheet named 'RawIntensity' not found"):
+            qc_lowess_module.load_and_process_data(workbook_path)
+
+    def test_raw_fallback_returns_independent_original_snapshot(
+        self,
+        qc_lowess_module,
+        tmp_path,
+    ):
+        workbook_path = tmp_path / "raw_fallback_snapshot.xlsx"
+        sample_names = [f"QC_{index}" for index in range(1, 6)]
+        raw_df = pd.DataFrame(
+            {
+                "Mz/RT": ["Sample_Type", "100.1/1.0"],
+                **{name: ["QC", float(index)] for index, name in enumerate(sample_names, 1)},
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": sample_names,
+                "Sample_Type": ["QC"] * 5,
+                "Injection_Order": range(1, 6),
+            }
+        )
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            raw_df.to_excel(writer, sheet_name="RawIntensity", index=False)
+            sample_info_df.to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        loaded_raw, source_df, _, sample_type_row = (
+            qc_lowess_module.load_and_process_data(workbook_path)
+        )
+
+        pd.testing.assert_frame_equal(loaded_raw, raw_df)
+        assert loaded_raw is not source_df
+        assert "Mz/RT" in loaded_raw.columns
+        assert "FeatureID" in source_df.columns
+        assert source_df["FeatureID"].tolist() == ["100.1/1.0"]
+        assert sample_type_row is not None
 
     def test_load_fails_closed_when_no_sample_columns_match_sampleinfo(self, qc_lowess_module, tmp_path):
         raw_df = pd.DataFrame(
@@ -112,6 +181,45 @@ class TestQCLOWESSInput:
 
         assert detected == {"100.1/1.0"}
 
+    def test_main_raises_when_results_cannot_be_saved(
+        self,
+        qc_lowess_module,
+        tmp_path,
+        monkeypatch,
+    ):
+        input_path = tmp_path / "input.xlsx"
+        output_path = tmp_path / "output.xlsx"
+        plots_path = tmp_path / "plots"
+        raw_df = pd.DataFrame({"FeatureID": ["F1"], "QC_1": [1.0]})
+        sample_info_df = pd.DataFrame({"Sample_Name": ["QC_1"]})
+
+        monkeypatch.setattr(qc_lowess_module, "resolve_session_dir", lambda **_kwargs: None)
+        monkeypatch.setattr(qc_lowess_module, "get_output_root", lambda **_kwargs: str(tmp_path))
+        monkeypatch.setattr(
+            qc_lowess_module,
+            "load_and_process_data",
+            lambda _path: (raw_df, raw_df, sample_info_df, None),
+        )
+        monkeypatch.setattr(
+            qc_lowess_module,
+            "perform_lowess_normalization",
+            lambda *_args: (raw_df, ["QC_1"], {}, pd.DataFrame(), {}, {}),
+        )
+        monkeypatch.setattr(
+            qc_lowess_module,
+            "build_output_path",
+            lambda *_args, **_kwargs: output_path,
+        )
+        monkeypatch.setattr(
+            qc_lowess_module,
+            "build_plots_dir",
+            lambda *_args, **_kwargs: plots_path,
+        )
+        monkeypatch.setattr(qc_lowess_module, "save_results_to_excel", lambda *_args, **_kwargs: False)
+
+        with pytest.raises(RuntimeError, match="Failed to save QC-LOESS results"):
+            qc_lowess_module.main(input_file=str(input_path))
+
 
 class TestQCLOWESSOutput:
     """Tests for output validation."""
@@ -170,7 +278,7 @@ class TestQCLOWESSOutput:
     @pytest.mark.slow
     @pytest.mark.integration
     def test_main_with_step1_output(self, istd_module, qc_lowess_module,
-                                     sample_input_file, validate_result_dict):
+                                     sample_input_file, validate_processing_result):
         """Test QC-LOWESS with Step 1 output."""
         # First run Step 1
         step1_result = istd_module.main(input_file=sample_input_file)
@@ -181,7 +289,7 @@ class TestQCLOWESSOutput:
         # Then run Step 2
         step2_result = qc_lowess_module.main(input_file=step1_output)
 
-        validation = validate_result_dict(
+        validation = validate_processing_result(
             step2_result,
             required_keys=['output_path', 'metabolites', 'samples']
         )
@@ -696,7 +804,7 @@ class TestStep2ResponsibilityContract:
         all_orders = [1.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 80.0]
         all_intensities = [45.0, 50.0, 100.0, 200.0, 400.0, 800.0, 1600.0, 2000.0]
 
-        _, info = qc_lowess_module.apply_lowess_correction(
+        corrected, info = qc_lowess_module.apply_lowess_correction(
             qc_orders,
             qc_intensities,
             all_orders,
@@ -711,6 +819,144 @@ class TestStep2ResponsibilityContract:
         assert "clamped_ratio" in info
         assert "outside_qc_range_count" in info
         assert info["outside_qc_range_count"] == 3
+        for idx in (0, 6, 7):
+            assert corrected[idx] == pytest.approx(all_intensities[idx])
+
+    def test_rejected_correction_retains_raw_matrix_and_qc_values(
+        self,
+        qc_lowess_module,
+        monkeypatch,
+    ):
+        sample_names = ["QC1", "QC2", "QC3", "QC4", "QC5", "SampleB"]
+        raw_values = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": sample_names,
+                "Sample_Type": ["QC", "QC", "QC", "QC", "QC", "Control"],
+                "Batch": ["B"] * len(sample_names),
+                "Injection_Order": list(range(1, len(sample_names) + 1)),
+            }
+        )
+        istd_df = pd.DataFrame(
+            [{"FeatureID": "290.1772/8.32", **dict(zip(sample_names, raw_values))}]
+        )
+        istd_df.attrs["sample_columns"] = sample_names
+
+        def fake_rejected_correction(
+            qc_orders,
+            qc_intensities,
+            all_orders,
+            all_intensities,
+            debug_flag=None,
+        ):
+            return [value * 2 for value in all_intensities], {
+                "status": "unstable_correction_factors",
+                "trend_validation": {},
+                "valid_qc_count": len(qc_orders),
+                "removed_outlier_count": 0,
+                "outlier_filter_applied": False,
+                "outside_qc_range_count": 0,
+            }
+
+        monkeypatch.setattr(
+            qc_lowess_module,
+            "apply_lowess_correction",
+            fake_rejected_correction,
+        )
+
+        lowess_df, _, qc_corrected_values, trend_stats_df, _, _ = (
+            qc_lowess_module.perform_lowess_normalization(istd_df, sample_info_df)
+        )
+
+        assert lowess_df.loc[0, sample_names].to_numpy(dtype=float) == pytest.approx(raw_values)
+        assert list(qc_corrected_values["290.1772/8.32"].values()) == pytest.approx(raw_values[:5])
+        assert trend_stats_df.loc[0, "Decision_Status"] == "unstable_correction_factors"
+
+    def test_qc_cv_uses_jointly_valid_named_qc_samples(self, qc_lowess_module):
+        qc_columns = ["QC1", "QC2", "QC3", "QC4", "QC5"]
+        istd_df = pd.DataFrame(
+            [{
+                "FeatureID": "100.1/5.0",
+                "QC1": 10.0,
+                "QC2": np.nan,
+                "QC3": 30.0,
+                "QC4": 40.0,
+                "QC5": 50.0,
+            }]
+        )
+        lowess_df = pd.DataFrame(
+            [{"FeatureID": "100.1/5.0", **{qc: 999.0 for qc in qc_columns}}]
+        )
+        sample_info_df = pd.DataFrame(
+            {"Sample_Name": qc_columns, "Sample_Type": ["QC"] * len(qc_columns)}
+        )
+        qc_corrected_values = {
+            "100.1/5.0": {
+                "QC1": 11.0,
+                "QC2": 22.0,
+                "QC3": 33.0,
+                "QC4": np.nan,
+                "QC5": 55.0,
+            }
+        }
+
+        result = qc_lowess_module.calculate_qc_cv_with_statistical_test(
+            istd_df,
+            lowess_df,
+            qc_columns,
+            sample_info_df,
+            qc_corrected_values,
+        )
+
+        expected_cv = np.std([10.0, 30.0, 50.0], ddof=1) / np.mean([10.0, 30.0, 50.0]) * 100
+        assert result.loc[0, "Original_QC_CV%"] == pytest.approx(expected_cv)
+        assert result.loc[0, "Corrected_QC_CV%"] == pytest.approx(expected_cv)
+        assert result.loc[0, "CV_Improvement%"] == pytest.approx(0.0)
+
+    def test_qc_cv_overview_includes_partial_success_as_applied(
+        self,
+        qc_lowess_module,
+        monkeypatch,
+        tmp_path,
+    ):
+        from matplotlib.axes import Axes
+
+        scatter_calls = []
+        original_scatter = Axes.scatter
+
+        def capture_scatter(axis, x, y, *args, **kwargs):
+            scatter_calls.append((np.asarray(x), np.asarray(y)))
+            return original_scatter(axis, x, y, *args, **kwargs)
+
+        monkeypatch.setattr(Axes, "scatter", capture_scatter)
+        cv_results_df = pd.DataFrame(
+            {
+                "FeatureID": ["all_success", "partial", "rejected"],
+                "Original_QC_CV%": [10.0, 20.0, 30.0],
+                "Corrected_QC_CV%": [8.0, 18.0, 5.0],
+                "CV_Improvement%": [2.0, 2.0, 25.0],
+                "Decision_Status": [
+                    "success",
+                    "partial_success",
+                    "unstable_correction_factors",
+                ],
+            }
+        )
+        decision_stats = {
+            "event_counts": {"success": 2, "unstable_correction_factors": 1},
+            "total_feature_batch_tasks": 3,
+        }
+
+        qc_lowess_module.plot_qc_cv_overview(
+            cv_results_df,
+            decision_stats,
+            tmp_path,
+            "test",
+        )
+
+        assert len(scatter_calls) == 1
+        assert scatter_calls[0][0] == pytest.approx([10.0, 20.0])
+        assert scatter_calls[0][1] == pytest.approx([8.0, 18.0])
 
 
 class TestStep2HardeningContract:

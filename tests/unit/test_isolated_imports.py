@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 
-def test_imports_succeed_without_ms_core_checkout(tmp_path):
+def test_imports_succeed_from_isolated_checkout(tmp_path):
     project_root = Path(__file__).resolve().parents[2]
     source_pkg = project_root / "src" / "metabolomics"
 

@@ -16,6 +16,10 @@ from .constants import (
 )
 
 
+DEFAULT_BATCH_SEPARATORS = (";",)
+LEGACY_STEP3_BATCH_SEPARATORS = (";", ",", "|", "/", "+")
+
+
 def _normalized_stat_keywords() -> List[str]:
     """Normalize statistical keywords for robust substring matching."""
     return [normalize_sample_name(keyword) for keyword in STAT_COLUMN_KEYWORDS]
@@ -67,11 +71,72 @@ def normalize_sample_name(name) -> str:
     return ''.join(filtered_parts)
 
 
-def parse_batch_labels(value) -> List[str]:
-    """Parse semicolon-separated batch labels and trim whitespace."""
+def parse_batch_labels(
+    value,
+    *,
+    separators: Collection[str] = DEFAULT_BATCH_SEPARATORS,
+) -> List[str]:
+    """Parse batch labels with one caller-selected delimiter policy."""
     if pd.isna(value):
         return []
-    return [part.strip() for part in str(value).split(';') if part.strip()]
+
+    text = str(value).strip()
+    if not text:
+        return []
+
+    delimiter_pattern = "|".join(
+        re.escape(separator)
+        for separator in sorted(
+            (separator for separator in separators if separator),
+            key=len,
+            reverse=True,
+        )
+    )
+    parts = re.split(delimiter_pattern, text) if delimiter_pattern else [text]
+    return [part.strip() for part in parts if part.strip()]
+
+
+class SampleInfoIndex:
+    """Resolve data-column identities to first matching SampleInfo rows."""
+
+    def __init__(
+        self,
+        sample_info_df: pd.DataFrame,
+        *,
+        name_column: str | None = None,
+    ) -> None:
+        self.sample_info_df = sample_info_df
+        self.name_column = name_column or sample_info_df.columns[0]
+        self._exact_lookup: Dict[str, pd.Series] = {}
+        self._normalized_lookup: Dict[str, pd.Series] = {}
+
+        for _, row in sample_info_df.iterrows():
+            raw_name = row.get(self.name_column, '')
+            self._exact_lookup.setdefault(str(raw_name), row)
+
+            normalized_name = normalize_sample_name(raw_name)
+            if normalized_name:
+                self._normalized_lookup.setdefault(normalized_name, row)
+
+    def row_for(self, sample_name) -> Optional[pd.Series]:
+        """Return the first exact or normalized-name match for one sample."""
+        exact_row = self._exact_lookup.get(str(sample_name))
+        if exact_row is not None:
+            return exact_row
+
+        normalized_name = normalize_sample_name(sample_name)
+        if not normalized_name:
+            return None
+        return self._normalized_lookup.get(normalized_name)
+
+    def map_rows(self, sample_columns: Collection[str]) -> Dict[str, pd.Series]:
+        """Map matching data columns to SampleInfo rows without fuzzy guessing."""
+        mapping: Dict[str, pd.Series] = {}
+        for sample in sample_columns:
+            row = self.row_for(sample)
+            if row is not None:
+                mapping[sample] = row
+        return mapping
 
 
 def normalize_sample_type(sample_type: str) -> str:
@@ -301,27 +366,10 @@ def build_sample_info_mapping(
     info_name_col = sample_info_df.columns[0]
     info_names = sample_info_df[info_name_col].astype(str).tolist()
 
-    mapping: Dict[str, pd.Series] = {}
-    exact_lookup: Dict[str, pd.Series] = {}
-    normalized_lookup: Dict[str, pd.Series] = {}
-
-    for _, row in sample_info_df.iterrows():
-        exact_lookup.setdefault(str(row.get(info_name_col, '')), row)
-
-        norm_name = normalize_sample_name(row.get(info_name_col, ''))
-        if norm_name and norm_name not in normalized_lookup:
-            normalized_lookup[norm_name] = row
-
-    for sample in sample_columns:
-        if sample in exact_lookup:
-            mapping[sample] = exact_lookup[sample]
-
-    for sample in sample_columns:
-        if sample in mapping:
-            continue
-        norm_sample = normalize_sample_name(sample)
-        if norm_sample in normalized_lookup:
-            mapping[sample] = normalized_lookup[norm_sample]
+    mapping = SampleInfoIndex(
+        sample_info_df,
+        name_column=info_name_col,
+    ).map_rows(sample_columns)
 
     unmatched_samples = [sample for sample in sample_columns if sample not in mapping]
     if not unmatched_samples:

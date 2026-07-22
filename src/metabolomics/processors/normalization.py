@@ -21,9 +21,12 @@ from metabolomics.utils.constants import (
     resolve_sheet_name,
 )
 from metabolomics.utils.sample_classification import (
+    LEGACY_STEP3_BATCH_SEPARATORS,
+    SampleInfoIndex,
     build_sample_info_mapping as shared_build_sample_info_mapping,
     identify_candidate_sample_columns,
     normalize_sample_name,
+    parse_batch_labels as shared_parse_batch_labels,
 )
 from metabolomics.utils.file_io import (
     build_plots_dir,
@@ -33,12 +36,20 @@ from metabolomics.utils.file_io import (
 )
 from metabolomics.utils.data_helpers import apply_feature_metadata_passthrough
 from metabolomics.utils.data_validation import DataValidator, require_valid
-from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
 from metabolomics.utils.console import safe_print as print
 from metabolomics.utils.normalization_contract import (
     DEFAULT_NORMALIZATION_METHOD,
     canonicalize_normalization_method,
     get_summary_sheet_name,
+)
+from metabolomics.utils.workbook_input import (
+    MissingSampleInfoSheetError,
+    MissingSourceSheetError,
+    ProcessorWorkbookInput,
+    WorkbookReadError,
+    WorkbookPurpose,
+    select_processor_source_sheet,
 )
 
 warnings.filterwarnings('ignore')
@@ -59,20 +70,9 @@ SAMPLE_TYPE_COLORS = {
 
 def _lookup_sample_type(sample, sample_info_df, col_to_info_row=None, default='UNKNOWN'):
     """Helper: look up sample type using col_to_info_row mapping or fallback."""
-    if col_to_info_row and sample in col_to_info_row:
-        return str(col_to_info_row[sample].get('Sample_Type', default)).upper()
-    # Direct lookup fallback
-    rows = sample_info_df[sample_info_df.iloc[:, 0] == sample]
-    if not rows.empty:
-        return str(rows.iloc[0].get('Sample_Type', default)).upper()
-    # Normalized-name fallback for common cross-tool naming differences
-    norm_sample = normalize_sample_name(sample)
-    if norm_sample:
-        norm_rows = sample_info_df[
-            sample_info_df.iloc[:, 0].map(normalize_sample_name) == norm_sample
-        ]
-        if not norm_rows.empty:
-            return str(norm_rows.iloc[0].get('Sample_Type', default)).upper()
+    info_row = _lookup_sample_info_row(sample, sample_info_df, col_to_info_row)
+    if info_row is not None:
+        return str(info_row.get('Sample_Type', default)).upper()
     # Column-name keyword fallback
     s_upper = str(sample).upper()
     if any(kw in s_upper for kw in ['QC', 'POOLED']):
@@ -90,37 +90,14 @@ def _lookup_sample_info_row(sample, sample_info_df, col_to_info_row=None):
     """Look up a SampleInfo row using mapping, exact name, then normalized name."""
     if col_to_info_row and sample in col_to_info_row:
         return col_to_info_row[sample]
-
-    sample_name_col = sample_info_df.columns[0]
-    exact_rows = sample_info_df[sample_info_df[sample_name_col] == sample]
-    if not exact_rows.empty:
-        return exact_rows.iloc[0]
-
-    norm_sample = normalize_sample_name(sample)
-    if not norm_sample:
-        return None
-
-    normalized_rows = sample_info_df[
-        sample_info_df[sample_name_col].map(normalize_sample_name) == norm_sample
-    ]
-    if normalized_rows.empty:
-        return None
-    return normalized_rows.iloc[0]
+    return SampleInfoIndex(sample_info_df).row_for(sample)
 
 def _parse_batch_labels(value):
     """Parse batch labels from SampleInfo while tolerating simple delimiters."""
-    if pd.isna(value):
-        return []
-    text = str(value).strip()
-    if not text:
-        return []
-    normalized = (
-        text.replace("|", ",")
-        .replace("/", ",")
-        .replace(";", ",")
-        .replace("+", ",")
+    return shared_parse_batch_labels(
+        value,
+        separators=LEGACY_STEP3_BATCH_SEPARATORS,
     )
-    return [part.strip() for part in normalized.split(",") if part.strip()]
 
 
 def _find_batch_column(sample_info_df):
@@ -1123,8 +1100,11 @@ def plot_rle(original_data, normalized_data, sample_names, output_path, method_n
     # ===== Panel 1: Original RLE =====
     bp1 = ax1.boxplot(
         [original_rle[:, i][~np.isnan(original_rle[:, i])] for i in range(original_rle.shape[1])],
-        labels=sample_names, patch_artist=True, widths=0.6, showfliers=False,
+        patch_artist=True, widths=0.6, showfliers=False,
     )
+    box_positions = np.arange(1, len(sample_names) + 1)
+    ax1.set_xticks(box_positions)
+    ax1.set_xticklabels(sample_names)
     for patch, group in zip(bp1['boxes'], sample_groups):
         patch.set_facecolor(SAMPLE_TYPE_COLORS.get(group, SAMPLE_TYPE_COLORS['UNKNOWN']))
         patch.set_alpha(0.7)
@@ -1149,8 +1129,10 @@ def plot_rle(original_data, normalized_data, sample_names, output_path, method_n
     # ===== Panel 2: Normalized RLE =====
     bp2 = ax2.boxplot(
         [normalized_rle[:, i][~np.isnan(normalized_rle[:, i])] for i in range(normalized_rle.shape[1])],
-        labels=sample_names, patch_artist=True, widths=0.6, showfliers=False,
+        patch_artist=True, widths=0.6, showfliers=False,
     )
+    ax2.set_xticks(box_positions)
+    ax2.set_xticklabels(sample_names)
     for patch, group in zip(bp2['boxes'], sample_groups):
         patch.set_facecolor(SAMPLE_TYPE_COLORS.get(group, SAMPLE_TYPE_COLORS['UNKNOWN']))
         patch.set_alpha(0.7)
@@ -1780,18 +1762,17 @@ def load_excel_sheets(file_path):
 
 def determine_correction_sheet(sheets):
     """按指定順序確定要標準化的資料工作表"""
-    for sheet_key in [
-        'qc_lowess',
-        'istd_correction',
-        'raw_intensity',
-    ]:
-        sheet_name = resolve_sheet_name(sheets.keys(), sheet_key)
-        if sheet_name is not None:
-            print(f"✓ 依優先順序選擇工作表: {sheet_name}")
-            return sheets[sheet_name], sheet_name
+    try:
+        sheet_name = select_processor_source_sheet(
+            tuple(sheets),
+            WorkbookPurpose.NORMALIZATION,
+        )
+    except MissingSourceSheetError:
+        print("警告：未找到指定的資料工作表")
+        return None, None
 
-    print("警告：未找到指定的資料工作表")
-    return None, None
+    print(f"✓ 依優先順序選擇工作表: {sheet_name}")
+    return sheets[sheet_name], sheet_name
 
 
 def find_sample_info_sheet(sheets):
@@ -1825,7 +1806,7 @@ def find_correction_column(df):
     }
     preferred_keywords = (
         'creatinine',
-        'dna_mg',
+        'dna_ug',
         'dna',
         'protein',
         'concentration',
@@ -2413,51 +2394,61 @@ def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALI
 
     print(f"\n✓ 選擇的檔案: {Path(input_file).name}")
 
-    # 載入Excel工作表
-    sheets, sheet_names = load_excel_sheets(input_file)
-    if not sheets:
-        raise Exception("無法載入 Excel 工作表")
+    # 先載入並驗證 SampleInfo，再解析處理所需的來源工作表。
+    try:
+        with ProcessorWorkbookInput(
+            input_file,
+            WorkbookPurpose.NORMALIZATION,
+        ) as workbook_input:
+            sheet_names = list(workbook_input.sheet_names)
 
-    print(f"✓ 找到 {len(sheet_names)} 個工作表")
+            print(f"✓ 找到 {len(sheet_names)} 個工作表")
 
-    # 尋找樣本資訊工作表
-    sample_info_df, sample_info_sheet_name = find_sample_info_sheet(sheets)
-    if sample_info_df is None:
-        print("❌ 錯誤：找不到包含樣本資訊的工作表")
-        raise Exception("找不到樣本資訊工作表")
+            sample_info_df = workbook_input.sample_info_df
+            sample_info_sheet_name = workbook_input.sample_info_sheet
 
-    print(f"✓ 使用樣本資訊工作表: {sample_info_sheet_name}")
-    require_valid(
-        validator.validate_required_sheets(
-            sheet_names,
-            required_sheets=[sample_info_sheet_name],
-            context="Step 3 input workbook",
-        ),
-        context="Step 3 workbook sheets",
-    )
-    require_valid(
-        validator.validate_sample_info(sample_info_df),
-        context="Step 3 SampleInfo",
-    )
-
-    # SpecNorm_PQN 模式需要 specimen-reference 欄位
-    correction_col = None
-    if normalization_method == 'SpecNorm_PQN':
-        correction_col, correction_type = find_correction_column(sample_info_df)
-        if not correction_col:
-            raise ValueError(
-                "SampleInfo 中找不到 SpecNorm+PQN 所需的 specimen-reference 欄位。\n"
-                "請確認 SampleInfo 工作表包含具 reference 語意的數值型欄位\n"
-                "（例如 Creatinine、DNA、protein、concentration、reference 或 amount）。"
+            print(f"✓ 使用樣本資訊工作表: {sample_info_sheet_name}")
+            require_valid(
+                validator.validate_required_sheets(
+                    sheet_names,
+                    required_sheets=[sample_info_sheet_name],
+                    context="Step 3 input workbook",
+                ),
+                context="Step 3 workbook sheets",
             )
-        print(f"✓ 校正欄位: {correction_col} (類型: {correction_type})")
+            require_valid(
+                validator.validate_sample_info(sample_info_df),
+                context="Step 3 SampleInfo",
+            )
 
-    # 確定要標準化的資料工作表
-    data_df, data_sheet_name = determine_correction_sheet(sheets)
-    if data_df is None:
-        print("❌ 錯誤：找不到要標準化的資料工作表")
-        raise Exception("找不到資料工作表")
+            # SpecNorm_PQN 模式需要 specimen-reference 欄位
+            correction_col = None
+            if normalization_method == 'SpecNorm_PQN':
+                correction_col, correction_type = find_correction_column(sample_info_df)
+                if not correction_col:
+                    raise ValueError(
+                        "SampleInfo 中找不到 SpecNorm+PQN 所需的 specimen-reference 欄位。\n"
+                        "請確認 SampleInfo 工作表包含具 reference 語意的數值型欄位\n"
+                        "（例如 Creatinine、DNA、protein、concentration、reference 或 amount）。"
+                    )
+                print(f"✓ 校正欄位: {correction_col} (類型: {correction_type})")
 
+            try:
+                loaded_workbook = workbook_input.load()
+            except MissingSourceSheetError:
+                print("❌ 錯誤：找不到要標準化的資料工作表")
+                raise Exception("找不到資料工作表") from None
+    except MissingSampleInfoSheetError:
+        print("❌ 錯誤：找不到包含樣本資訊的工作表")
+        raise Exception("找不到樣本資訊工作表") from None
+    except WorkbookReadError as error:
+        print(f"讀取Excel檔案時發生錯誤: {error}")
+        raise Exception("無法載入 Excel 工作表") from None
+
+    data_df = loaded_workbook.source_df
+    data_sheet_name = loaded_workbook.source_sheet
+
+    print(f"✓ 依優先順序選擇工作表: {data_sheet_name}")
     print(f"✓ 使用資料工作表: {data_sheet_name}")
     require_valid(
         validator.validate_raw_intensity(
@@ -2471,7 +2462,7 @@ def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALI
     step2_advanced_stats_df = None
     step2_advanced_sheet_name = resolve_sheet_name(sheet_names, "qc_lowess_advanced")
     if step2_advanced_sheet_name is not None:
-        step2_advanced_stats_df = sheets[step2_advanced_sheet_name]
+        step2_advanced_stats_df = loaded_workbook.optional_sheets[step2_advanced_sheet_name]
         print(f"✓ 使用 Step 2 advanced stats: {step2_advanced_sheet_name}")
 
     # 提取 Sample_Type 資訊行（不參與數值計算，保存時回插）
@@ -2554,7 +2545,8 @@ def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALI
         output_path=str(output_path),
         plots_dir=str(figures_dir),
         metabolites=metabolite_count,
-        samples=sample_count
+        samples=sample_count,
+        status=WorkflowOutcome.SUCCEEDED,
     )
 
 

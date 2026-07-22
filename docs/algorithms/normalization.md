@@ -37,7 +37,7 @@
 
 您可能會問：既然標準化這麼重要，那麼是不是有一種「萬能」的標準化方法可以解決所有問題呢？很遺憾，答案是否定的。代謝組學數據的複雜性決定了我們需要結合多種策略。讓我解釋為什麼。
 
-**SpecNorm 的強項與弱點。** `SpecNorm+PQN` 會先用 `SampleInfo` 中具 reference 語意的數值欄位做 specimen-reference division。這個欄位可以是 `Creatinine_mg_dL`、`DNA_mg/20uL`、蛋白質含量，或其他實驗設計定義的 normalization adduct / reference；`Injection_Volume` 這類操作 metadata 會被排除。這一步能處理每個真實樣本自己的濃度、載量或萃取量差異，但不應被解讀成 batch correction。
+**SpecNorm 的強項與弱點。** `SpecNorm+PQN` 會先用 `SampleInfo` 中具 reference 語意的數值欄位做 specimen-reference division。這個欄位可以是 `Creatinine_mg_dL`、`DNA_ug/20uL`、蛋白質含量，或其他實驗設計定義的 normalization adduct / reference；`Injection_Volume` 這類操作 metadata 會被排除。這一步能處理每個真實樣本自己的濃度、載量或萃取量差異，但不應被解讀成 batch correction。
 
 舉個例子：如果兩個 DNA adductomics 樣本的 DNA input 不同，直接比較原始強度會把樣本載量差異混入分析。`SpecNorm+PQN` 會先除以 DNA 或其他 reference 值，再用 PQN 處理整體 spectrum 的尺度差異。
 
@@ -78,8 +78,8 @@ SpecNorm 強度 = 原始強度 / 該 specimen reference 值
 ```
 
 **實例：**
-- 樣本 A `DNA_mg/20uL` = 1.5
-- 樣本 B `DNA_mg/20uL` = 3.0
+- 樣本 A `DNA_ug/20uL` = 1.5
+- 樣本 B `DNA_ug/20uL` = 3.0
 校正後，樣本 A 的特徵強度會除以 1.5，樣本 B 會除以 3.0。舊版曾在這一步再乘回參考值中位數，也曾在 PQN 完成後進行 feature-specific scale-back；新版兩者都不做，避免把已經合理的 SpecNorm+PQN 強度再次放大。
 
 **注意：** QC 樣本不進行 specimen-reference division，因為 QC 通常是混合或技術樣本，沒有對應的個體 reference。
@@ -115,7 +115,7 @@ PQN 假設大部分代謝物在樣本間應該維持穩定比例，只有少數�
 final_ij = pqn_after_specnorm_ij
 ```
 
-這等同於在 rescaling 步驟選擇 `None` 或常數 `1`。在 `DNA_mg`、蛋白質含量等 reference 中位數很小但原始訊號很大的資料中，這能避免把「已除以 reference 後仍是健康大數值」的結果再乘回原始強度中位數，造成尺度災難。
+這等同於在 rescaling 步驟選擇 `None` 或常數 `1`。在 `DNA_ug`、蛋白質含量等 reference 中位數很小但原始訊號很大的資料中，這能避免把「已除以 reference 後仍是健康大數值」的結果再乘回原始強度中位數，造成尺度災難。
 
 ### 3. 多維度品質評估
 

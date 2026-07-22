@@ -15,7 +15,6 @@ from metabolomics.utils.constants import (
     FEATURE_ID_COLUMN,
     SHEET_NAMES,
     is_non_sample_column,
-    resolve_sheet_name,
 )
 from metabolomics.utils.data_helpers import extract_sample_type_row, insert_sample_type_row
 from metabolomics.utils.excel_format import (
@@ -25,14 +24,22 @@ from metabolomics.utils.excel_format import (
 )
 from metabolomics.utils.file_io import build_output_path, build_plots_dir, resolve_session_dir
 from metabolomics.utils.plotting import build_batch_group_indices, setup_matplotlib
-from metabolomics.utils.results import ProcessingResult
+from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
 from metabolomics.utils.sample_classification import (
+    SampleInfoIndex,
     identify_sample_columns,
-    normalize_sample_name,
     normalize_sample_type,
     parse_batch_labels as shared_parse_batch_labels,
 )
 from metabolomics.utils.console import safe_print as print
+from metabolomics.utils.workbook_input import (
+    MissingSampleInfoSheetError,
+    MissingSourceSheetError,
+    ProcessorWorkbookInput,
+    WorkbookReadError,
+    WorkbookPurpose,
+    select_processor_source_sheet,
+)
 
 
 RESULT_SHEET_NAME = SHEET_NAMES.get("qc_batch_scaling", "QC_Batch_Scaling_result")
@@ -56,20 +63,19 @@ def build_batch_membership(sample_info_df, sample_columns=None):
     """Build batch-to-QC and batch-to-sample mappings from SampleInfo."""
     batch_to_qc = {}
     batch_to_samples = {}
-    column_lookup = {}
 
     if sample_columns:
-        column_lookup = {
-            normalize_sample_name(column): column
-            for column in sample_columns
-        }
+        sample_rows = SampleInfoIndex(
+            sample_info_df,
+            name_column="Sample_Name",
+        ).map_rows(sample_columns).items()
+    else:
+        sample_rows = (
+            (str(row["Sample_Name"]).strip(), row)
+            for _, row in sample_info_df.iterrows()
+        )
 
-    for _, row in sample_info_df.iterrows():
-        sample_name = str(row["Sample_Name"]).strip()
-        if column_lookup:
-            sample_name = column_lookup.get(normalize_sample_name(sample_name))
-            if not sample_name:
-                continue
+    for sample_name, row in sample_rows:
         sample_type = normalize_sample_type(row.get("Sample_Type", ""))
         batches = parse_batch_labels(row.get("Batch", ""))
 
@@ -116,14 +122,15 @@ def scale_feature_by_batch_qc_median(feature_row, batch_to_qc, batch_to_samples)
 
 def select_source_sheet(sheet_names):
     """Pick the best upstream normalization sheet for Step 4."""
-    for sheet_name in ("SpecNorm_PQN_Result", SHEET_NAMES.get("pqn_result", "PQN_Result")):
-        if sheet_name in sheet_names:
-            return sheet_name
-    for sheet_key in ("qc_lowess", "istd_correction", "raw_intensity"):
-        sheet_name = resolve_sheet_name(sheet_names, sheet_key)
-        if sheet_name is not None:
-            return sheet_name
-    raise ValueError("No supported upstream data sheet found for QC batch scaling")
+    try:
+        return select_processor_source_sheet(
+            tuple(sheet_names),
+            WorkbookPurpose.BATCH_DIAGNOSTICS,
+        )
+    except MissingSourceSheetError:
+        raise ValueError(
+            "No supported upstream data sheet found for QC batch scaling"
+        ) from None
 
 
 def load_and_process_data(input_file):
@@ -131,13 +138,26 @@ def load_and_process_data(input_file):
     if not os.path.exists(input_file):
         raise FileNotFoundError(input_file)
 
-    excel_file = pd.ExcelFile(input_file)
-    if SHEET_NAMES["sample_info"] not in excel_file.sheet_names:
-        raise ValueError(f"Missing required sheet: {SHEET_NAMES['sample_info']}")
+    try:
+        with ProcessorWorkbookInput(
+            input_file,
+            WorkbookPurpose.BATCH_DIAGNOSTICS,
+        ) as workbook_input:
+            loaded_workbook = workbook_input.load()
+    except MissingSampleInfoSheetError:
+        raise ValueError(f"Missing required sheet: {SHEET_NAMES['sample_info']}") from None
+    except MissingSourceSheetError:
+        raise ValueError(
+            "No supported upstream data sheet found for QC batch scaling"
+        ) from None
+    except WorkbookReadError as error:
+        if error.__cause__ is not None:
+            raise error.__cause__ from None
+        raise
 
-    source_sheet_name = select_source_sheet(excel_file.sheet_names)
-    sample_info_df = pd.read_excel(excel_file, sheet_name=SHEET_NAMES["sample_info"])
-    data_df = pd.read_excel(excel_file, sheet_name=source_sheet_name)
+    source_sheet_name = loaded_workbook.source_sheet
+    sample_info_df = loaded_workbook.sample_info_df
+    data_df = loaded_workbook.source_df
 
     feature_col = data_df.columns[0]
     data_df, sample_type_row = extract_sample_type_row(data_df, feature_col)
@@ -223,20 +243,20 @@ def build_summary_df(
 
 def build_plot_metadata(sample_columns, sample_info_df):
     """Build sample type and batch metadata aligned with sample columns."""
-    sample_info_norm = sample_info_df.copy()
-    sample_info_norm["_norm_name"] = sample_info_norm["Sample_Name"].map(normalize_sample_name)
-    sample_info_norm = sample_info_norm[sample_info_norm["_norm_name"].astype(bool)]
-    sample_meta = sample_info_norm.drop_duplicates("_norm_name").set_index("_norm_name")
+    sample_rows = SampleInfoIndex(
+        sample_info_df,
+        name_column="Sample_Name",
+    ).map_rows(sample_columns)
 
     sample_types = []
     batch_memberships = []
     qc_indices = []
 
     for index, sample in enumerate(sample_columns):
-        meta_key = normalize_sample_name(sample)
-        if meta_key in sample_meta.index:
-            raw_type = str(sample_meta.loc[meta_key].get("Sample_Type", "Unknown"))
-            raw_batch = sample_meta.loc[meta_key].get("Batch", "Unknown")
+        meta_row = sample_rows.get(sample)
+        if meta_row is not None:
+            raw_type = str(meta_row.get("Sample_Type", "Unknown"))
+            raw_batch = meta_row.get("Batch", "Unknown")
         else:
             raw_type = "Unknown"
             raw_batch = "Unknown"
@@ -800,10 +820,10 @@ def main(input_file=None, session_dir=None, diagnostics_only=False):
             output_path=input_file,
             metabolites=len(data_df),
             samples=len(sample_columns),
+            status=WorkflowOutcome.SKIPPED,
+            reason="single_batch",
             extra={
                 "batches": len(batch_to_samples),
-                "skipped": True,
-                "skip_reason": "single_batch",
                 "diagnostics_only": diagnostics_only,
             },
         )
@@ -817,10 +837,10 @@ def main(input_file=None, session_dir=None, diagnostics_only=False):
             output_path=input_file,
             metabolites=len(data_df),
             samples=len(sample_columns),
+            status=WorkflowOutcome.SKIPPED,
+            reason="paused_nonshared_qc_design",
             extra={
                 "batches": len(batch_to_samples),
-                "skipped": True,
-                "skip_reason": "paused_nonshared_qc_design",
                 "diagnostics_only": False,
                 "paused_reason": paused_reason,
             },
@@ -884,6 +904,7 @@ def main(input_file=None, session_dir=None, diagnostics_only=False):
         metabolites=len(data_df),
         samples=len(sample_columns),
         plots_dir=plots_dir,
+        status=WorkflowOutcome.SUCCEEDED,
         extra={
             "batches": len(batch_to_qc),
             "diagnostics_only": True,

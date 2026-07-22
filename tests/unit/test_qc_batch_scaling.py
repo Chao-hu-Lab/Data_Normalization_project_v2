@@ -16,6 +16,7 @@ import pytest
 from pathlib import Path
 
 from metabolomics.utils.constants import SHEET_NAMES
+from metabolomics.utils.results import WorkflowOutcome
 
 
 def load_qc_batch_scaling_module():
@@ -83,6 +84,7 @@ class TestQCBatchScalingHelpers:
         assert module.parse_batch_labels("A;B") == ["A", "B"]
         assert module.parse_batch_labels("A; B") == ["A", "B"]
         assert module.parse_batch_labels(" A ; B ") == ["A", "B"]
+        assert module.parse_batch_labels("A/B") == ["A/B"]
 
     def test_multi_batch_qc_is_added_to_both_batch_qc_pools(self):
         module = load_qc_batch_scaling_module()
@@ -375,8 +377,8 @@ class TestQCBatchScalingOutput:
 
         assert result.output_path == str(input_path)
         assert result.plots_dir is None
-        assert result.extra["skipped"] is True
-        assert result.extra["skip_reason"] == "paused_nonshared_qc_design"
+        assert result.status is WorkflowOutcome.SKIPPED
+        assert result.reason == "paused_nonshared_qc_design"
         assert result.extra["diagnostics_only"] is False
 
     def test_generate_step3_plots_skips_batch_diagnostics_when_only_one_batch(self, tmp_path):

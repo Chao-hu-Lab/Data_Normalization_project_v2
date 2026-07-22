@@ -34,6 +34,16 @@ class TestConcentrationNormInput:
 
 
 class TestConcentrationNormHelpers:
+    def test_step3_batch_parser_preserves_legacy_delimiters(self, conc_norm_module):
+        assert conc_norm_module._parse_batch_labels("A/B,C|D+E;F") == [
+            "A",
+            "B",
+            "C",
+            "D",
+            "E",
+            "F",
+        ]
+
     def test_get_summary_sheet_name_uses_method_specific_labels(
         self,
         conc_norm_module,
@@ -437,13 +447,13 @@ class TestConcentrationNormHelpers:
                 "Injection_Order": [1, 2, 3],
                 "Batch": ["A", "A", "A"],
                 "Injection_Volume": [20, 20, 20],
-                "DNA_mg/20uL": [None, 8.57, 14.92],
+                "DNA_ug/20uL": [None, 8.57, 14.92],
             }
         )
 
         correction_col, correction_type = conc_norm_module.find_correction_column(sample_info_df)
 
-        assert correction_col == "DNA_mg/20uL"
+        assert correction_col == "DNA_ug/20uL"
         assert correction_type == "Normalization_adduct"
 
     def test_find_correction_column_rejects_injection_volume_when_no_reference_exists(
@@ -1195,7 +1205,7 @@ class TestConcentrationNormOutput:
     @pytest.mark.integration
     def test_main_with_step2_output(self, istd_module, qc_lowess_module,
                                      qc_batch_scaling_module, conc_norm_module,
-                                     sample_input_file, validate_result_dict):
+                                     sample_input_file, validate_processing_result):
         """Test Concentration Normalization with Step 2 output."""
         # Run Steps 1-2
         step1_result = istd_module.main(input_file=sample_input_file)
@@ -1205,7 +1215,7 @@ class TestConcentrationNormOutput:
 
         step3_result = conc_norm_module.main(input_file=step2_output, normalization_method="PQN")
 
-        validation = validate_result_dict(
+        validation = validate_processing_result(
             step3_result,
             required_keys=['output_path']
         )
