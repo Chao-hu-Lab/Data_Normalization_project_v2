@@ -278,6 +278,7 @@ class TestQCLOWESSInput:
         assert np.isfinite(summary.loc[0, "Linear_R2"])
         assert np.isfinite(summary.loc[0, "Linear_Residual_RMSE_Log2"])
         assert np.isfinite(summary.loc[0, "Linear_LOOCV_RMSE_Log2"])
+        assert summary.loc[0, "Linear_Shrinkage_Factor"] == pytest.approx(0.5)
         assert np.isnan(summary.loc[0, "LOOCV_RMSE"])
         assert np.isnan(summary.loc[0, "LOESS_RMSE"])
         assert decision_stats["event_counts"]["success"] == 1
@@ -1086,7 +1087,14 @@ class TestFracFloorAndLoocv:
         assert info["linear_loocv_gain"] >= 0.10
         assert np.isfinite(info["linear_loocv_rmse_log2"])
         assert np.isnan(info["loocv_rmse"])
-        assert corrected == pytest.approx([1000.0] * len(all_orders))
+        assert info["linear_shrinkage_factor"] == pytest.approx(0.5)
+        expected = 1000.0 * 2.0 ** (0.04 * (all_orders - 7.0))
+        assert corrected == pytest.approx(expected)
+        expected_qc = 1000.0 * 2.0 ** (0.04 * (qc_orders - 7.0))
+        expected_qc_cv = (
+            np.std(expected_qc, ddof=1) / np.mean(expected_qc) * 100.0
+        )
+        assert info["cv_after"] == pytest.approx(expected_qc_cv)
 
     def test_apply_lowess_correction_populates_kendall_tau(self, qc_lowess_module):
         qc_orders = np.arange(1, 9, dtype=float)

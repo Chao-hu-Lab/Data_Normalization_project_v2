@@ -75,6 +75,8 @@ LINEAR_FALLBACK_MIN_QC = 6
 LOWESS_MIN_QC = 8
 # Conservative project policy; this is not a universal literature threshold.
 LINEAR_FALLBACK_MIN_LOOCV_GAIN = 0.10
+# Sparse-QC slopes are deliberately shrunk on log scale to limit tail harm.
+LINEAR_FALLBACK_SHRINKAGE = 0.50
 
 
 def parse_batch_labels(value):
@@ -264,14 +266,23 @@ def _apply_log_linear_fallback(
 
     target_log = float(np.median(fitted_qc))
     predicted_log = slope * all_orders + intercept
-    raw_factors = np.exp2(target_log - predicted_log)
+    unshrunk_factors = np.exp2(target_log - predicted_log)
+    raw_factors = np.exp2(
+        (target_log - predicted_log) * LINEAR_FALLBACK_SHRINKAGE
+    )
     factors = np.clip(raw_factors, 0.5, 2.0)
-    clamped_mask = ~np.isclose(raw_factors, factors, rtol=1e-9, atol=1e-12)
+    model_factors = np.clip(unshrunk_factors, 0.5, 2.0)
+    clamped_mask = ~np.isclose(
+        unshrunk_factors,
+        model_factors,
+        rtol=1e-9,
+        atol=1e-12,
+    )
     info.update({
-        'raw_factor_min': float(np.min(raw_factors)),
-        'raw_factor_max': float(np.max(raw_factors)),
-        'clamped_factor_min': float(np.min(factors)),
-        'clamped_factor_max': float(np.max(factors)),
+        'raw_factor_min': float(np.min(unshrunk_factors)),
+        'raw_factor_max': float(np.max(unshrunk_factors)),
+        'clamped_factor_min': float(np.min(model_factors)),
+        'clamped_factor_max': float(np.max(model_factors)),
         'clamped_count': int(np.sum(clamped_mask)),
         'clamped_ratio': float(np.mean(clamped_mask)),
     })
@@ -284,7 +295,13 @@ def _apply_log_linear_fallback(
     correctable = np.isfinite(corrected) & (corrected > 0) & np.isfinite(all_orders)
     corrected[correctable] *= factors[correctable]
 
-    qc_factors = np.clip(np.exp2(target_log - fitted_qc), 0.5, 2.0)
+    qc_factors = np.clip(
+        np.exp2(
+            (target_log - fitted_qc) * LINEAR_FALLBACK_SHRINKAGE
+        ),
+        0.5,
+        2.0,
+    )
     qc_corrected = valid_y * qc_factors
     ss_res = float(np.sum((log_y - fitted_qc) ** 2))
     ss_tot = float(np.sum((log_y - np.mean(log_y)) ** 2))
@@ -301,6 +318,7 @@ def _apply_log_linear_fallback(
         'fit_strategy': 'log_linear_fallback',
         'frac_strategy': 'log_linear_fallback',
         'linear_r_squared': linear_r_squared,
+        'linear_shrinkage_factor': LINEAR_FALLBACK_SHRINKAGE,
         'correction_factor_stats': {
             'median': float(np.median(factors)),
             'cv_percent': _positive_cv_percent(factors),
@@ -422,6 +440,7 @@ def apply_lowess_correction(
         'linear_residual_rmse_log2': np.nan,
         'linear_drift_amplitude_log2': np.nan,
         'linear_r_squared': np.nan,
+        'linear_shrinkage_factor': np.nan,
     }
 
     if all_orders is None or all_intensities is None:
@@ -1131,6 +1150,7 @@ def perform_lowess_normalization(istd_df, sample_info_df):
                 'Linear_Drift_Amplitude_Log2': safe_nanmedian([m.get('linear_drift_amplitude_log2', np.nan) for m in batch_metric_buffer]),
                 'Linear_Residual_RMSE_Log2': safe_nanmedian([m.get('linear_residual_rmse_log2', np.nan) for m in batch_metric_buffer]),
                 'Linear_R2': safe_nanmedian([m.get('linear_r_squared', np.nan) for m in batch_metric_buffer]),
+                'Linear_Shrinkage_Factor': safe_nanmedian([m.get('linear_shrinkage_factor', np.nan) for m in batch_metric_buffer]),
                 'Target_Strategy': choose_target_strategy([m.get('target_strategy') for m in batch_metric_buffer]),
                 'Fit_Strategy': choose_fit_strategy([m.get('fit_strategy') for m in batch_metric_buffer]),
                 'Batch_Decision_Detail': '; '.join(batch_detail_buffer),

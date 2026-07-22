@@ -115,17 +115,19 @@ This prevents regression runs from mixing with real project outputs.
 
 ## Sparse-QC Promotion Evidence
 
-The six-QC fallback has a frozen truth-backed promotion contract and holdout.
-Run it without changing production thresholds:
+The shrunken six-to-seven-QC fallback has separate frozen truth-backed
+promotion contracts and a v2 holdout. Run the default v2 evidence bundle with:
 
 ```powershell
 uv run python .\scripts\sparse_qc_holdout.py
 ```
 
-The command compares no correction, strict-eight, and the current six-QC floor
-across development and frozen holdout scenarios. It writes candidate metrics,
-task-level outcomes, decisions, and a Markdown summary under
-`build/sparse_qc_holdout/`. A failed holdout is a valid scientific result and
+The command compares no correction, strict-eight, and the current shrunken
+six-to-seven-QC fallback across development and frozen holdout scenarios. It
+writes candidate metrics, task-level outcomes, decisions, and a Markdown
+summary under `build/sparse_qc_shrinkage_holdout_v2/`. The exposed v1 manifest
+is retained for characterization only and cannot emit a promotion decision.
+A failed holdout is a valid scientific result and
 does not make the command itself fail. The promotion gate scores recovery on
 study samples only; QC points used for fitting remain diagnostic rather than
 part of the primary RMSE. Every evidence file includes or references manifest,

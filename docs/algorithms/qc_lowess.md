@@ -55,8 +55,19 @@ fallback 在 `log2(area)` 上比較 intercept-only 模型與
 操作門檻，不是文獻中的通用硬標準。若模型需要把任何 correction factor
 截斷到 `[0.5, 2.0]`，該 feature 會判為不穩定並維持原值。
 
-校正式為
-`log2(corrected) = log2(area) - fitted(order) + median(fitted_QC)`。
+令 `delta = median(fitted_QC) - fitted(order)`。6–7 QC fallback 不會把
+稀疏 QC 估計出的完整斜率直接套到 study samples；本專案採用 0.5
+log-scale shrinkage：
+
+`log2(corrected) = log2(area) + 0.5 × delta`。
+
+因此實際 area-scale correction factor 是 `2^(0.5 × delta)`，也就是完整
+線性 factor `2^delta` 的平方根。0.5 是本專案針對稀疏 QC 尾端風險採用的
+保守操作值，不是通用文獻常數。穩定性 gate 仍先檢查未 shrink 的完整模型
+factor；只要 `2^delta` 需要截斷到 `[0.5, 2.0]`，就拒絕整個 correction，
+不能用 shrinkage 規避原本的 clamp 防線。`cv_after` 與
+`cv_improvement` 則依實際套用 0.5 shrinkage 後的 QC 值計算。
+
 任一 gate 未通過便維持原值，並分別記錄 endpoint、LOOCV、monotonic
 trend 或 drift/noise reason。這是稀疏 QC 的保守 fallback，不是把
 LOWESS 門檻降低到六點。

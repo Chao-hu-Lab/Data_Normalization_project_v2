@@ -34,10 +34,16 @@ from scripts.synthetic_matrix_vnext import (  # noqa: E402
 )
 
 
-DEFAULT_MANIFEST_PATH = (
+V1_MANIFEST_PATH = (
     PROJECT_ROOT / "tests" / "baselines" / "sparse_qc_holdout_v1.json"
 )
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "build" / "sparse_qc_holdout"
+DEFAULT_MANIFEST_PATH = (
+    PROJECT_ROOT
+    / "tests"
+    / "baselines"
+    / "sparse_qc_shrinkage_holdout_v2.json"
+)
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "build" / "sparse_qc_shrinkage_holdout_v2"
 DEFAULT_CONTRACT = {
     "effective_qc_count": 6,
     "mild_harm_floor": -0.10,
@@ -60,14 +66,15 @@ HOLDOUT_SEED_NAMESPACE = "dnp-sparse-qc-holdout-v1"
 def derive_holdout_seeds(
     *,
     count: int,
+    namespace: str = HOLDOUT_SEED_NAMESPACE,
     excluded_seeds: set[int] | None = None,
 ) -> list[int]:
-    """Derive the frozen v1 seeds from the documented SHA256 namespace."""
+    """Derive frozen seeds from a documented SHA256 namespace."""
     excluded = excluded_seeds or set()
     seeds: list[int] = []
     index = 0
     while len(seeds) < count:
-        payload = f"{HOLDOUT_SEED_NAMESPACE}:{index}".encode("utf-8")
+        payload = f"{namespace}:{index}".encode("utf-8")
         candidate = (
             int.from_bytes(hashlib.sha256(payload).digest()[:4], "big")
             % 2_147_483_647
@@ -80,10 +87,34 @@ def derive_holdout_seeds(
 
 def _validate_holdout_manifest(manifest: dict) -> None:
     development_seeds = set(manifest["development"]["seeds"])
+    namespace = manifest["holdout"].get("namespace", HOLDOUT_SEED_NAMESPACE)
     expected_seeds = derive_holdout_seeds(
         count=len(manifest["holdout"]["seeds"]),
+        namespace=namespace,
         excluded_seeds=development_seeds,
     )
+    version = manifest.get("version")
+    if version == 1:
+        promotion_contract_valid = (
+            manifest.get("promotion_target") == DEFAULT_CONTRACT
+        )
+        candidate_valid = True
+    elif version == 2:
+        promotion_contract_valid = all(
+            {**target, "effective_qc_count": 6} == DEFAULT_CONTRACT
+            for target in manifest.get("promotion_targets", [])
+        ) and [
+            target["effective_qc_count"]
+            for target in manifest.get("promotion_targets", [])
+        ] == [6, 7]
+        candidate_valid = manifest.get("candidate") == {
+            "linear_fallback_min_qc": qc_lowess.LINEAR_FALLBACK_MIN_QC,
+            "linear_fallback_shrinkage": qc_lowess.LINEAR_FALLBACK_SHRINKAGE,
+            "lowess_min_qc": qc_lowess.LOWESS_MIN_QC,
+        }
+    else:
+        promotion_contract_valid = False
+        candidate_valid = False
     checks = {
         "recipe_version": manifest.get("recipe_version")
         == QC_LIMITED_ROUTING_RECIPE_VERSION,
@@ -92,7 +123,8 @@ def _validate_holdout_manifest(manifest: dict) -> None:
         "expected_invariant_classes": manifest.get("expected_invariant_classes")
         == list(QC_LIMITED_ROUTING_INVARIANT_CLASSES),
         "holdout_seeds": manifest["holdout"]["seeds"] == expected_seeds,
-        "promotion_target": manifest.get("promotion_target") == DEFAULT_CONTRACT,
+        "promotion_contract": promotion_contract_valid,
+        "candidate": candidate_valid,
     }
     failed = [name for name, passed in checks.items() if not passed]
     if failed:
@@ -115,10 +147,8 @@ def evaluate_promotion_contract(
 ) -> dict:
     """Apply the precommitted six-QC promotion contract to accepted tasks."""
     rules = {**DEFAULT_CONTRACT, **(contract or {})}
-    accepted = task_results.loc[
-        task_results["status"].eq("success")
-        & task_results["drift_kind"].ne("none")
-    ].copy()
+    eligible = task_results.loc[task_results["drift_kind"].ne("none")].copy()
+    accepted = eligible.loc[eligible["status"].eq("success")].copy()
     gains = pd.to_numeric(accepted["recovery_gain"], errors="coerce")
     invalid_gain_count = int(gains.isna().sum())
     valid_gains = gains.dropna()
@@ -128,6 +158,12 @@ def evaluate_promotion_contract(
         & (valid_gains < 0)
     )
     accepted_count = int(len(accepted))
+    eligible_count = int(len(eligible))
+    acceptance_rate = accepted_count / eligible_count if eligible_count else np.nan
+    status_counts = {
+        str(status): int(count)
+        for status, count in eligible["status"].value_counts().sort_index().items()
+    }
     severe_count = int(severe_mask.sum())
     mild_count = int(mild_mask.sum())
     mild_rate = mild_count / accepted_count if accepted_count else np.nan
@@ -155,7 +191,12 @@ def evaluate_promotion_contract(
 
     return {
         "decision": decision,
+        "eligible_task_count": eligible_count,
         "accepted_task_count": accepted_count,
+        "acceptance_rate": (
+            float(acceptance_rate) if np.isfinite(acceptance_rate) else None
+        ),
+        "status_counts": status_counts,
         "mild_harm_count": mild_count,
         "mild_harm_rate": float(mild_rate) if np.isfinite(mild_rate) else None,
         "severe_harm_count": severe_count,
@@ -329,7 +370,23 @@ def run_characterization(
     return pd.DataFrame(metric_records), pd.DataFrame(task_records)
 
 
-def _contract_for_manifest(manifest: dict) -> dict:
+def _contract_for_manifest(
+    manifest: dict,
+    effective_qc_count: int | None = None,
+) -> dict:
+    if "promotion_targets" in manifest:
+        if effective_qc_count is None:
+            raise ValueError("effective_qc_count is required for multi-target manifests")
+        matches = [
+            target
+            for target in manifest["promotion_targets"]
+            if target["effective_qc_count"] == effective_qc_count
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"Expected one promotion target for {effective_qc_count} QC"
+            )
+        return {**DEFAULT_CONTRACT, **matches[0]}
     return {**DEFAULT_CONTRACT, **manifest.get("promotion_target", {})}
 
 
@@ -339,8 +396,9 @@ def summarize_promotion(
     manifest: dict,
     *,
     evidence_set: str,
+    effective_qc_count: int | None = None,
 ) -> dict:
-    contract = _contract_for_manifest(manifest)
+    contract = _contract_for_manifest(manifest, effective_qc_count)
     target_tasks = tasks.loc[
         tasks["evidence_set"].eq(evidence_set)
         & tasks["policy"].eq("current_6")
@@ -367,6 +425,51 @@ def summarize_promotion(
     return result
 
 
+def summarize_manifest_promotions(
+    metrics: pd.DataFrame,
+    tasks: pd.DataFrame,
+    manifest: dict,
+    *,
+    evidence_sets: tuple[str, ...],
+) -> dict[str, dict]:
+    """Evaluate every precommitted QC-count target in a manifest."""
+    targets = manifest.get("promotion_targets")
+    if not targets:
+        decisions = {
+            evidence_set: summarize_promotion(
+                metrics,
+                tasks,
+                manifest,
+                evidence_set=evidence_set,
+            )
+            for evidence_set in evidence_sets
+        }
+        if manifest.get("version") == 1:
+            for decision in decisions.values():
+                decision["characterization_decision"] = decision["decision"]
+                decision["decision"] = "characterization_only"
+                decision["promotion_eligible"] = False
+                decision["failure_reasons"].append(
+                    "holdout_previously_exposed"
+                )
+        return decisions
+    decisions = {}
+    for evidence_set in evidence_sets:
+        for target in targets:
+            qc_count = int(target["effective_qc_count"])
+            decisions[f"{evidence_set}_qc{qc_count}"] = summarize_promotion(
+                metrics,
+                tasks,
+                manifest,
+                evidence_set=evidence_set,
+                effective_qc_count=qc_count,
+            )
+            decisions[f"{evidence_set}_qc{qc_count}"][
+                "promotion_eligible"
+            ] = True
+    return decisions
+
+
 def _format_number(value, digits: int = 4) -> str:
     if value is None or not np.isfinite(value):
         return "N/A"
@@ -379,38 +482,53 @@ def build_markdown_report(
     decisions: dict[str, dict],
     provenance: dict[str, object] | None = None,
 ) -> str:
-    evidence_sets = [
-        name for name in ("development", "holdout") if name in decisions
-    ]
+    decision_keys = list(decisions)
     lines = [
         "# Sparse-QC Holdout Characterization",
         "",
         "## Decision",
         "",
     ]
-    for evidence_set in evidence_sets:
-        lines.append(f"- {evidence_set.title()}: `{decisions[evidence_set]['decision']}`")
-    if "holdout" in decisions:
-        lines.append("- Promotion requires the holdout decision to be `pass`.")
+    for decision_key in decision_keys:
+        label = decision_key.replace("_", " ").title()
+        lines.append(f"- {label}: `{decisions[decision_key]['decision']}`")
+    if any(
+        key.startswith("holdout")
+        and decisions[key].get("promotion_eligible", False)
+        for key in decision_keys
+    ):
+        lines.append("- Promotion requires every holdout target to be `pass`.")
     lines.extend(
         [
             "",
-            "## Six-QC promotion contract",
+            "## Sparse-QC promotion contracts",
             "",
-            "| Evidence set | Accepted | Mild harm | Severe harm | Minimum gain | Sign-flip rate | Decision |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
+            "| Evidence set | QC count | Eligible | Accepted | Acceptance | Mild harm | Severe harm | Minimum gain | Sign-flip rate | Decision |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
         ]
     )
-    for evidence_set in evidence_sets:
-        decision = decisions[evidence_set]
+    for decision_key in decision_keys:
+        decision = decisions[decision_key]
         lines.append(
             "| "
-            f"{evidence_set} | {decision['accepted_task_count']} | "
+            f"{decision['evidence_set']} | "
+            f"{decision['contract']['effective_qc_count']} | "
+            f"{decision['eligible_task_count']} | "
+            f"{decision['accepted_task_count']} | "
+            f"{_format_number(decision['acceptance_rate'])} | "
             f"{decision['mild_harm_count']} | {decision['severe_harm_count']} | "
             f"{_format_number(decision['minimum_recovery_gain'])} | "
             f"{_format_number(decision['biology_sign_flip_rate'])} | "
             f"{decision['decision']} |"
         )
+
+    lines.extend(["", "## Eligibility status counts", ""])
+    for decision_key in decision_keys:
+        counts = ", ".join(
+            f"{status}={count}"
+            for status, count in decisions[decision_key]["status_counts"].items()
+        )
+        lines.append(f"- {decision_key}: {counts or 'none'}")
 
     lines.extend(
         [
@@ -434,29 +552,35 @@ def build_markdown_report(
             f"{_format_number(row['median_abs_log2_fold_change_error'])} |"
         )
 
-    detail_set = "holdout" if "holdout" in decisions else evidence_sets[0]
-    detail_six = tasks.loc[
-        tasks["evidence_set"].eq(detail_set)
-        & tasks["policy"].eq("current_6")
-        & tasks["effective_qc_count"].eq(6)
-        & tasks["endpoint_valid"]
-        & tasks["status"].eq("success")
-        & tasks["drift_kind"].ne("none")
-    ].sort_values("recovery_gain")
-    lines.extend(
-        [
-            "",
-            "## Worst accepted six-QC tasks",
-            "",
-            "| Seed | Variant | FeatureID | Batch | Truth | Recovery gain |",
-            "| ---: | --- | --- | --- | --- | ---: |",
-        ]
-    )
-    for row in detail_six.head(10).itertuples(index=False):
-        lines.append(
-            f"| {row.seed} | {row.variant} | {row.FeatureID} | {row.Batch} | "
-            f"{row.drift_kind} | {_format_number(row.recovery_gain)} |"
+    detail_keys = [key for key in decision_keys if key.startswith("holdout")]
+    if not detail_keys:
+        detail_keys = decision_keys
+    for decision_key in detail_keys:
+        decision = decisions[decision_key]
+        qc_count = decision["contract"]["effective_qc_count"]
+        detail_tasks = tasks.loc[
+            tasks["evidence_set"].eq(decision["evidence_set"])
+            & tasks["policy"].eq("current_6")
+            & tasks["effective_qc_count"].eq(qc_count)
+            & tasks["endpoint_valid"]
+            & tasks["status"].eq("success")
+            & tasks["drift_kind"].ne("none")
+        ].sort_values("recovery_gain")
+        lines.extend(
+            [
+                "",
+                f"## Worst accepted {qc_count}-QC tasks",
+                "",
+                "| Seed | Variant | FeatureID | Batch | Truth | Recovery gain |",
+                "| ---: | --- | --- | --- | --- | ---: |",
+            ]
         )
+        for row in detail_tasks.head(10).itertuples(index=False):
+            lines.append(
+                f"| {row.seed} | {row.variant} | {row.FeatureID} | "
+                f"{row.Batch} | {row.drift_kind} | "
+                f"{_format_number(row.recovery_gain)} |"
+            )
     lines.extend(
         [
             "",
@@ -475,6 +599,7 @@ def build_markdown_report(
                 f"- Manifest SHA256: `{provenance['manifest_sha256']}`",
                 f"- Semantic config SHA256: `{provenance['semantic_config_sha256']}`",
                 f"- Generator source SHA256: `{provenance['generator_source_sha256']}`",
+                f"- Processor source SHA256: `{provenance['processor_source_sha256']}`",
                 f"- Runner source SHA256: `{provenance['runner_source_sha256']}`",
                 f"- Git revision: `{provenance['git_revision']}`",
                 f"- Working tree dirty: `{str(provenance['git_worktree_dirty']).lower()}`",
@@ -515,6 +640,9 @@ def collect_provenance(manifest_path: str | Path) -> dict[str, object]:
         "semantic_config_sha256": qc_limited_routing_semantic_config_digest(),
         "generator_source_sha256": _file_sha256(
             PROJECT_ROOT / "scripts" / "synthetic_matrix_vnext.py"
+        ),
+        "processor_source_sha256": _file_sha256(
+            PROJECT_ROOT / "src" / "metabolomics" / "processors" / "qc_lowess.py"
         ),
         "runner_source_sha256": _file_sha256(Path(__file__)),
         "git_revision": revision,
@@ -582,15 +710,12 @@ def main(argv: list[str] | None = None) -> int:
         manifest,
         evidence_sets=evidence_sets,
     )
-    decisions = {
-        evidence_set: summarize_promotion(
-            metrics,
-            tasks,
-            manifest,
-            evidence_set=evidence_set,
-        )
-        for evidence_set in evidence_sets
-    }
+    decisions = summarize_manifest_promotions(
+        metrics,
+        tasks,
+        manifest,
+        evidence_sets=evidence_sets,
+    )
     provenance = collect_provenance(args.manifest)
     paths = write_outputs(
         args.output_dir,
