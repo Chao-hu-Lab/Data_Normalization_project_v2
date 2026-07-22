@@ -593,11 +593,13 @@ class DNPMainWindow(QMainWindow):
             self._append_log("info", f"Session: {session_dir}")
 
     def _plots_path_for(self, result) -> Path | None:
+        if result is None or not result.plots_dir:
+            return None
         if self.controller.session_dir:
-            return Path(self.controller.session_dir) / "plots"
-        if result is not None and result.plots_dir:
-            return Path(result.plots_dir)
-        return None
+            session_plots = Path(self.controller.session_dir) / "plots"
+            if session_plots.is_dir():
+                return session_plots
+        return Path(result.plots_dir)
 
     def _open_step_excel(self, step_name: str) -> None:
         result = self.controller.workflow.result_for(step_name)

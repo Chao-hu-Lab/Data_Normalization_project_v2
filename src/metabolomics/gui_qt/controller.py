@@ -180,8 +180,9 @@ class WorkflowController(QObject):
     def start_auto_run(self) -> str:
         if self.is_running:
             raise RuntimeError("A workflow step is already running")
+        run_id = self.start_step(STEP1_NAME)
         self.workflow.start_auto_run()
-        return self.start_step(STEP1_NAME)
+        return run_id
 
     def retry_step(self, step_name: str) -> str:
         if self._last_failed_step != step_name:

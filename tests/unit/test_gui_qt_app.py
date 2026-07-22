@@ -216,6 +216,33 @@ def test_p3_skipped_result_updates_custody_without_enabling_artifacts(tmp_path):
     window.close()
 
 
+def test_p3_shared_session_plots_do_not_enable_unowned_step_artifact(tmp_path):
+    output = tmp_path / "step1.xlsx"
+    output.write_bytes(b"workbook")
+    (tmp_path / "plots").mkdir()
+
+    controller = WorkflowController(
+        processors={
+            STEP1_NAME: lambda **kwargs: ProcessingResult(
+                file_path=kwargs["input_file"],
+                output_path=str(output),
+                metabolites=10,
+                samples=5,
+            )
+        },
+        session_factory=lambda _input: str(tmp_path),
+    )
+    window = DNPMainWindow(controller=controller)
+    controller.select_input(str(tmp_path / "input.xlsx"))
+    controller.start_step(STEP1_NAME)
+    wait_until(lambda: not controller.is_running)
+
+    first = window.step_cards[STEP1_NAME]
+    assert first.excel_button.isEnabled()
+    assert not first.plots_button.isEnabled()
+    window.close()
+
+
 def test_p3_import_preprocessing_is_functional(tmp_path, monkeypatch):
     source = tmp_path / "preprocessed.xlsx"
     converted = tmp_path / "DNP_import_preprocessed.xlsx"

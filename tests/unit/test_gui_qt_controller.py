@@ -2,6 +2,8 @@ import os
 import sys
 import threading
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QThread, Qt
@@ -98,6 +100,32 @@ def test_auto_run_chains_immediate_outputs_through_step_three_only():
             STEP3_NAME,
         )
     ]
+    assert controller.shutdown(timeout_ms=1000)
+
+
+def test_auto_run_start_failure_does_not_leak_auto_run_state():
+    calls = []
+
+    def processor(**kwargs):
+        calls.append(kwargs)
+        return _result(kwargs["input_file"], "C:/session/step1.xlsx")
+
+    controller = WorkflowController(
+        processors={STEP1_NAME: processor},
+        session_factory=lambda _input: "C:/session",
+    )
+
+    with pytest.raises(ValueError, match="select an input file"):
+        controller.start_auto_run()
+
+    assert not controller.workflow.auto_run
+    controller.select_input("C:/input.xlsx")
+    controller.start_step(STEP1_NAME)
+    wait_until(lambda: not controller.is_running)
+
+    assert len(calls) == 1
+    assert controller.workflow.status_of(STEP1_NAME) is StepState.SUCCEEDED
+    assert controller.workflow.status_of(STEP2_NAME) is StepState.PENDING
     assert controller.shutdown(timeout_ms=1000)
 
 
