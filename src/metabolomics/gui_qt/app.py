@@ -196,9 +196,10 @@ class StepCard(QFrame):
         input_source: str,
         has_excel: bool,
         has_plots: bool,
+        status_text: str | None = None,
     ) -> None:
         label, token = VISIBLE_STATES[state]
-        self.status_label.setText(label)
+        self.status_label.setText(status_text or label)
         self.status_label.setProperty("state", token)
         _repolish(self.status_label)
 
@@ -534,6 +535,18 @@ class DNPMainWindow(QMainWindow):
             state = workflow.status_of(step_name)
             result = workflow.result_for(step_name)
             plots_path = self._plots_path_for(result)
+            status_text = None
+            if (
+                step_name == STEP1_NAME
+                and state is StepState.SUCCEEDED
+                and result is not None
+            ):
+                istd_mode = result.extra.get("istd_mode")
+                if istd_mode == "monitoring_only":
+                    status_text = "Monitoring only"
+                elif istd_mode == "selective_correction":
+                    corrected = int(result.extra.get("corrected_features", 0))
+                    status_text = f"Corrected: {corrected} features"
             self.step_cards[step_name].render(
                 state,
                 can_run=not busy and predecessor_ready,
@@ -545,6 +558,7 @@ class DNPMainWindow(QMainWindow):
                     and plots_path is not None
                     and plots_path.is_dir()
                 ),
+                status_text=status_text,
             )
             self.step_cards[step_name].set_method_enabled(not busy)
 
