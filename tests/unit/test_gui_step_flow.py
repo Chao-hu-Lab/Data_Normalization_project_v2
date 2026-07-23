@@ -104,6 +104,9 @@ def test_build_workflow_steps_exposes_four_ordered_steps():
 
 
 def test_get_step_card_label_marks_step4_as_paused_diagnostics_only():
+    assert DataNormalizationApp._get_step_card_label(
+        "Step 1: ISTD Correction"
+    ) == "ISTD Monitoring / Selective Correction"
     assert DataNormalizationApp._get_step_card_label("Step 4: QC Batch Scaling") == "QC Batch Scaling (paused / diagnostics-only)"
     assert DataNormalizationApp._get_step_card_label("Step 3: Concentration Normalization") == "Concentration Normalization"
 

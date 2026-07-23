@@ -35,14 +35,14 @@ The first screenshot will show the main workflow screen with `data/synthetic_cor
 
 | Step | Module | Status | Responsibility |
 | --- | --- | --- | --- |
-| 1 | ISTD Correction | Conditional / legacy auto-match | Monitor ISTDs and preserve explicit skip outcomes. Broad untargeted/adductomics runs should skip the current universal auto-matcher unless an analyte-to-ISTD mapping has independent validation. |
+| 1 | ISTD Monitoring / Selective Correction | Active, mapping-gated | Monitor all marked ISTDs. Preserve raw analyte values by default; correct only features with an explicit matched or validated-surrogate mapping. |
 | 2 | QC-LOESS | Active | Correct within-batch run-order drift using batch-local QC anchors; 6–7 effective QC may use the gated log-linear fallback, while ≥8 may use LOWESS. |
 | 3 | Concentration Normalization | Active | Choose `PQN` (default; urine/global dilution) or `SpecNorm` (explicit tissue-reference division); this is the final normalized output. |
 | 4 | QC Batch Scaling | Manual diagnostics only | Emit batch diagnostics when explicitly requested with `diagnostics_only=True`; not part of Auto Run. |
 
 Important boundaries:
 
-- Step 1's current RT/CV-weighted automatic matching remains legacy compatibility behavior, not a validated universal correction for unknown features. Matched monitoring/correction replacement work is tracked in [issue #33](https://github.com/Chao-hu-Lab/Data_Normalization_project_v2/issues/33).
+- Step 1's RT/CV-weighted automatic matcher remains opt-in legacy compatibility code and is not exposed by the GUI. No mapping means monitoring-only success, not universal correction.
 - Step 2 does not align batches against a cross-batch QC target.
 - Step 3 may use QC samples to build a PQN reference, but it is not a batch-correction module.
 - Step 3 fails closed when QC samples are missing for the active adductomics policy.
@@ -115,6 +115,7 @@ Required sheets:
 | --- | --- |
 | `RawIntensity` | First column is the feature ID (`Mz/RT` or legacy `FeatureID`); sample columns contain feature intensities. |
 | `SampleInfo` | At minimum `Sample_Name` and `Sample_Type`; Step 2 also requires `Injection_Order`; `Batch` is used for batch-local handling and diagnostics. |
+| `ISTD_Mapping` | Optional Step 1 mapping sheet. Required columns: `Analyte_Feature_ID`, `ISTD_Feature_ID`, `Mapping_Type`, and `Validation_Reference`. |
 
 `RawIntensity` details:
 
@@ -149,6 +150,12 @@ output/
 ```
 
 The active normalized result is the Step 3 workbook. Step 4 output, when present, is diagnostic evidence only.
+
+Step 1 writes `ISTD_Monitoring` plus an `ISTD_Correction` matrix. Without a
+mapping, every analyte value and missingness state remains unchanged. With a
+mapping, each feature records its mapped ISTD, mapping type, validation
+reference, correction status, and rejection reason, so corrected and
+uncorrected features can coexist without hiding their estimand.
 
 Individual processor calls without a session directory still fall back to timestamped files under `output/`.
 

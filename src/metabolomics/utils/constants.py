@@ -165,6 +165,8 @@ NON_SAMPLE_COLUMNS = {
     'Original_Robust_CV%', 'Corrected_Robust_CV%', 'Robust_CV_Improvement%',
     'Variance_Test_pvalue', 'Variance_Test_qvalue', 'Wilcoxon_pvalue', 'Wilcoxon_qvalue',
     'Shapiro_pvalue', 'Kendall_Tau',
+    'Mapped_ISTD', 'Mapping_Type', 'Validation_Reference',
+    'ISTD_Correction_Status', 'ISTD_Correction_Reason',
     'LOESS_R2', 'LOESS_RMSE', 'LOWESS_R2', 'LOWESS_RMSE', 'Significant_Improvement',
     'Decision', 'Trend_Status', 'frac', 'outliers_removed',
     'median_correction_factor', 'correction_factor_cv',

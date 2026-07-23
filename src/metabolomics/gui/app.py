@@ -50,6 +50,8 @@ class DataNormalizationApp:
 
     @staticmethod
     def _get_step_card_label(step_name):
+        if step_name == STEP1_NAME:
+            return 'ISTD Monitoring / Selective Correction'
         if step_name == STEP4_NAME:
             return 'QC Batch Scaling (paused / diagnostics-only)'
         if ':' in step_name:
