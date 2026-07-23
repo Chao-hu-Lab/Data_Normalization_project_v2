@@ -2,19 +2,19 @@
 
 ## Current status
 
-Step 1 has two different realities that must not be conflated:
+Step 1 defaults to ISTD monitoring plus selective, mapping-gated correction:
 
-1. The current processor can discover red-font ISTD rows, gate them by QC
-   stability, automatically match every non-ISTD feature to one ISTD using
-   RT/CV/intensity/mass weights, and apply a ratio correction.
-2. That universal auto-matching behavior is legacy compatibility code. It is
-   not a scientifically validated default for broad untargeted DNA
-   adductomics, where a small set of spiked ISTDs is asked to represent
-   hundreds of structurally unknown features.
+1. Red-font ISTD rows are monitored for missingness, QC CV, and area/order
+   association.
+2. An analyte is corrected only when `ISTD_Mapping` explicitly assigns a
+   `matched` or `validated_surrogate` donor with a validation reference and
+   the donor passes feature-level quality checks.
+3. Unmapped or rejected features retain their original values and missingness
+   state, with an explicit status and reason.
 
-For the current broad adductomics workflow, Step 1 should default to `SKIP`.
-Skipping is a complete, explicit method decision; Step 2 can consume
-`RawIntensity` directly.
+The universal RT/CV/intensity/mass auto-matcher remains available only through
+the programmatic `legacy_auto_match=True` compatibility flag. It is not the
+GUI default and cannot be combined with `ISTD_Mapping`.
 
 The evidence and method review supporting this boundary lives in
 [`2026-07-23-istd-and-batch-identifiability-review.md`](../discussions/2026-07-23-istd-and-batch-identifiability-review.md).
@@ -28,10 +28,16 @@ ISTD rows may be used to report:
 - missingness and detection coverage;
 - QC CV and robust CV;
 - area behavior across injection order;
-- RT stability, saturation, and peak-quality alarms;
+- RT stability when sample-level RT data are available;
 - samples or run regions that require raw-data review.
 
 Monitoring does not modify unknown-feature intensities.
+The current matrix contains one static feature RT rather than sample-level RT,
+so the monitoring receipt records `not_available_from_current_matrix` instead
+of claiming RT stability.
+Missing or partial `Injection_Order` is likewise recorded in `Order_Status`;
+the processor does not substitute workbook column position or draw an
+order-trend plot when the order is incomplete.
 
 ### Matched analyte correction
 
@@ -58,27 +64,21 @@ When no validated mapping exists, retain the original value and record an
 explicit uncorrected/skip state. Do not silently select the nearest RT ISTD or
 the ISTD that makes training-QC CV look best.
 
-## Legacy processor behavior
+## Correction rule and rejection gates
 
-`src/metabolomics/processors/istd.py` currently:
+Accepted mappings apply:
 
-- identifies ISTDs from red font in the first `RawIntensity` column;
-- requires `RawIntensity`, `SampleInfo`, QC samples, and usable `Batch`
-  metadata;
-- skips when fewer than five ISTDs pass its QC-CV gate;
-- scores candidate ISTDs using RT, QC CV, intensity, and m/z;
-- applies
-  `corrected = original × ISTD_median / sample_ISTD`;
-- emits diagnostic plots and before/after QC summaries.
+`corrected = original × ISTD_median / sample_ISTD`
 
-These gates can reject obviously weak ISTDs, but they do not prove that the
-remaining ISTD is a valid surrogate for an unknown feature. The automatic
-matching path must therefore not be described as the recommended broad
-untargeted method.
+The entire analyte feature remains raw when:
 
-Replacement of this legacy behavior should be implemented as a focused,
-testable change rather than gradually adding more score weights or
-exceptions.
+- no explicit mapping exists;
+- a surrogate lacks a validation reference;
+- the donor's QC CV is not below 20%;
+- the donor is missing or non-positive wherever that analyte is observed.
+
+The last rule prevents a single output feature from switching estimands across
+samples or acquiring new missing values because of correction.
 
 ## Input contract
 
@@ -88,6 +88,9 @@ The workbook must contain:
 - `SampleInfo`: `Sample_Name`, `Sample_Type`, and complete `Batch` metadata for
   the current processor;
 - QC samples when Step 1 correction gates or QC diagnostics are requested.
+- optional `ISTD_Mapping`, with one row per analyte and the columns
+  `Analyte_Feature_ID`, `ISTD_Feature_ID`, `Mapping_Type`, and
+  `Validation_Reference`.
 
 Red font remains a legacy ISTD-role marker. A future canonical XIC handoff
 should supply typed feature roles and explicit mappings so DNP does not
@@ -98,11 +101,13 @@ create ISTD or QC anchors.
 
 ## Output and workflow behavior
 
-- `SKIPPED` must preserve the input matrix for downstream Step 2 and provide an
-  actionable reason.
-- A future selective implementation may return a mixed matrix containing
-  matched-corrected and uncorrected features, but only with feature-level
-  status/provenance.
+- With no detected ISTD, `SKIPPED` preserves the input workbook for Step 2 and
+  reports `no_istd_detected`.
+- With ISTDs but no accepted mappings, Step 1 succeeds in `monitoring_only`
+  mode and writes an analyte matrix identical to raw input.
+- A selective result may mix corrected and uncorrected features only because
+  each row carries `Mapped_ISTD`, `Mapping_Type`, `Validation_Reference`,
+  `ISTD_Correction_Status`, and `ISTD_Correction_Reason`.
 - Step 1 output must not be interpreted as cross-batch harmonization.
 - Improved training-QC CV or a visually tighter PCA is not sufficient
   validation of a surrogate correction.
