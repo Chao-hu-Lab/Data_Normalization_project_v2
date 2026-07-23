@@ -8,7 +8,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from metabolomics.gui.workflow import STEP1_NAME
+from metabolomics.workflow import STEP1_NAME
 from metabolomics.gui_qt.app import DNPMainWindow
 from metabolomics.gui_qt.controller import WorkflowController
 from tests.gui_qt_helpers import qt_app

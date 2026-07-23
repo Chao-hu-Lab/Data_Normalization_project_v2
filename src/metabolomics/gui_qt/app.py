@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from metabolomics.gui import theme
-from metabolomics.gui.workflow import (
+from metabolomics.workflow import (
     STEP1_NAME,
     STEP2_NAME,
     STEP3_METHOD_OPTIONS,

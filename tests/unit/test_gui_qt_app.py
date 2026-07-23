@@ -10,7 +10,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFrame, QLabel, QMessageBox, QSplitter, QStatusBar
 
 from metabolomics.gui import theme
-from metabolomics.gui.workflow import STEP1_NAME, STEP2_NAME, STEP4_NAME, StepState
+from metabolomics.workflow import STEP1_NAME, STEP2_NAME, STEP4_NAME, StepState
 from metabolomics.gui_qt.app import DNPMainWindow, STEP_NAMES, VISIBLE_STATES, StepCard
 from metabolomics.gui_qt.controller import WorkflowController
 from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
