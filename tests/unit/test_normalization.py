@@ -1169,12 +1169,14 @@ class TestConcentrationNormOutput:
         assert feature["Original_CV%"] == pytest.approx(expected_original_cv)
         assert feature["Normalized_CV%"] == pytest.approx(expected_normalized_cv)
         assert "SpecNorm_summary" in pd.ExcelFile(result.output_path).sheet_names
+        summary_values = pd.read_excel(
+            result.output_path,
+            sheet_name="SpecNorm_summary",
+            header=None,
+        )[0]
+        # pandas 3 preserves missing entries as float NaN after astype(str).
         summary_text = "\n".join(
-            pd.read_excel(
-                result.output_path,
-                sheet_name="SpecNorm_summary",
-                header=None,
-            )[0].astype(str)
+            summary_values.dropna().map(str)
         )
         assert "quality metrics 僅計算非 QC study samples" in summary_text
         assert "feature-level reproducibility 未見改善" not in summary_text
