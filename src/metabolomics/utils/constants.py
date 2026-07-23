@@ -62,6 +62,7 @@ SHEET_NAMES = {
     'concentration': 'ConcNormalization_Summary',
     'pqn_result': 'PQN_Result',
     'specnorm_result': 'SpecNorm_Result',
+    'design_identifiability': 'Design_Identifiability',
 }
 
 # Legacy workbook names still accepted on read to avoid breaking old outputs.

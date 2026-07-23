@@ -564,8 +564,17 @@ class TestQCLOWESSInput:
         input_path = tmp_path / "input.xlsx"
         output_path = tmp_path / "output.xlsx"
         plots_path = tmp_path / "plots"
-        raw_df = pd.DataFrame({"FeatureID": ["F1"], "QC_1": [1.0]})
-        sample_info_df = pd.DataFrame({"Sample_Name": ["QC_1"]})
+        raw_df = pd.DataFrame(
+            {"FeatureID": ["F1"], "QC_1": [1.0], "Sample_1": [2.0]}
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": ["QC_1", "Sample_1"],
+                "Sample_Type": ["QC", "Exposure"],
+                "Batch": ["A", "A"],
+                "Injection_Order": [1, 2],
+            }
+        )
 
         monkeypatch.setattr(qc_lowess_module, "resolve_session_dir", lambda **_kwargs: None)
         monkeypatch.setattr(qc_lowess_module, "get_output_root", lambda **_kwargs: str(tmp_path))
@@ -637,6 +646,7 @@ class TestQCLOWESSOutput:
             SHEET_NAMES["qc_lowess"],
             SHEET_NAMES["qc_lowess_advanced"],
             "SampleInfo",
+            SHEET_NAMES["design_identifiability"],
         }
 
     @pytest.mark.slow
@@ -915,6 +925,7 @@ class TestQCLOWESSOutput:
             SHEET_NAMES["qc_lowess"],
             SHEET_NAMES["qc_lowess_advanced"],
             'SampleInfo',
+            SHEET_NAMES["design_identifiability"],
         }
 
     @pytest.mark.slow

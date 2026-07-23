@@ -43,6 +43,10 @@ from metabolomics.utils.file_io import (
 from metabolomics.utils.data_validation import DataValidator, require_valid
 from metabolomics.utils.excel_colors import cell_has_red_font
 from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
+from metabolomics.utils.design_identifiability import (
+    DesignStatus,
+    build_design_identifiability_receipt,
+)
 from metabolomics.utils.console import safe_print as print
 from metabolomics.utils.workbook_input import (
     MissingSampleInfoSheetError,
@@ -2091,7 +2095,7 @@ def plot_lowess_trend_fitting(trend_data_dict, plots_dir, timestamp, max_per_pag
 def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_columns,
                           output_file, input_file, qc_corrected_values,
                           trend_stats_df, decision_stats, plots_dir=None, trend_plot_data=None,
-                          sample_type_row=None):
+                          sample_type_row=None, design_receipt=None):
     """保存結果到 Excel（含完整防呆檢查）"""
     try:
         # ===== 防呆1: 輸入數據有效性檢查 =====
@@ -2346,6 +2350,8 @@ def save_results_to_excel(raw_df, istd_df, lowess_df, sample_info_df, sample_col
             (QC_LOWESS_ADVANCED_SHEET, advanced_export),
             (SHEET_NAMES['sample_info'], sample_info_export),
         ]
+        if design_receipt is not None:
+            sheets_to_write.extend(design_receipt.to_excel_sheets().items())
 
         # 輸出時將內部欄名 'FeatureID' 還原為 FEATURE_ID_COLUMN
         def _rename_feature_col(df):
@@ -2680,6 +2686,17 @@ def main(input_file=None, session_dir=None):
     print(f"  輸入: {os.path.basename(file_path)}")
 
     raw_df, istd_df, sample_info_df, sample_type_row = load_and_process_data(file_path)
+    preflight_sample_columns, _ = identify_sample_columns(istd_df, sample_info_df)
+    design_receipt = build_design_identifiability_receipt(
+        sample_info_df,
+        sample_columns=preflight_sample_columns,
+    )
+    design_status = design_receipt.summary["overall_status"]
+    print(f"  - Design identifiability: {design_status}")
+    if design_status != DesignStatus.SUPPORTED.value:
+        for reason in design_receipt.reasons:
+            print(f"    ⚠ {reason}")
+
     lowess_df, sample_columns, qc_corrected_values, trend_stats_df, decision_stats, trend_plot_data = (
         perform_lowess_normalization(istd_df, sample_info_df)
     )
@@ -2719,6 +2736,7 @@ def main(input_file=None, session_dir=None):
                 'insufficient_feature_batch_tasks': insufficient_tasks,
                 'applied_feature_batch_tasks': applied_tasks,
                 'event_counts': dict(event_counts),
+                'design_identifiability': design_receipt.to_processing_extra(),
             },
         )
 
@@ -2741,7 +2759,8 @@ def main(input_file=None, session_dir=None):
         sample_columns, output_file, file_path,
         qc_corrected_values, trend_stats_df, decision_stats,
         plots_dir=_plots_dir, trend_plot_data=trend_plot_data,
-        sample_type_row=sample_type_row
+        sample_type_row=sample_type_row,
+        design_receipt=design_receipt,
     )
 
     if not success:
@@ -2760,6 +2779,9 @@ def main(input_file=None, session_dir=None):
         metabolites=metabolites_count,
         samples=samples_count,
         status=WorkflowOutcome.SUCCEEDED,
+        extra={
+            'design_identifiability': design_receipt.to_processing_extra(),
+        },
     )
 
 

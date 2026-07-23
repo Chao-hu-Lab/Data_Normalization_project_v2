@@ -7,6 +7,8 @@
   `docs/algorithms/istd.md`.
 - Step 2 feature-wise QC correction contract:
   `docs/algorithms/qc_lowess.md`.
+- Design-identifiability receipt contract:
+  `docs/algorithms/design_identifiability.md`.
 - Step 3 specimen-aware normalization contract:
   `docs/algorithms/normalization.md`.
 - Cross-batch correction boundary: `docs/algorithms/combat.md`.
