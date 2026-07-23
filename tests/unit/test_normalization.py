@@ -1174,7 +1174,7 @@ class TestConcentrationNormOutput:
                 result.output_path,
                 sheet_name="SpecNorm_summary",
                 header=None,
-            )[0].astype(str)
+            )[0].dropna().map(str)
         )
         assert "quality metrics 僅計算非 QC study samples" in summary_text
         assert "feature-level reproducibility 未見改善" not in summary_text
