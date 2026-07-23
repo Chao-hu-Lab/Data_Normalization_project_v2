@@ -37,6 +37,10 @@ from metabolomics.utils.file_io import (
 from metabolomics.utils.data_helpers import apply_feature_metadata_passthrough
 from metabolomics.utils.data_validation import DataValidator, require_valid
 from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
+from metabolomics.utils.design_identifiability import (
+    DesignStatus,
+    build_design_identifiability_receipt,
+)
 from metabolomics.utils.console import safe_print as print
 from metabolomics.utils.normalization_contract import (
     DEFAULT_NORMALIZATION_METHOD,
@@ -2320,6 +2324,7 @@ def save_normalization_results(
     preserved_data_df=None,
     sample_info_df=None,
     output_path=None,
+    design_receipt=None,
 ):
     """儲存標準化結果到Excel檔案"""
     try:
@@ -2422,6 +2427,26 @@ def save_normalization_results(
                     default=8,
                 )
                 ws_preserved.column_dimensions[column[0].column_letter].width = min(max_length + 2, 50)
+
+        if design_receipt is not None:
+            receipt_df = design_receipt.to_excel_sheets()[
+                SHEET_NAMES["design_identifiability"]
+            ]
+            ws_receipt = wb_new.create_sheet(
+                title=SHEET_NAMES["design_identifiability"]
+            )
+            cleaned_receipt_df = clean_dataframe_for_excel(receipt_df)
+            for r_idx, row in enumerate(
+                dataframe_to_rows(
+                    cleaned_receipt_df,
+                    index=False,
+                    header=True,
+                ),
+                1,
+            ):
+                for c_idx, value in enumerate(row, 1):
+                    ws_receipt.cell(row=r_idx, column=c_idx, value=value)
+            apply_header_fill(ws_receipt)
 
         # 儲存新工作簿
         wb_new.save(output_path)
@@ -2573,10 +2598,22 @@ def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALI
     # ProcessingResult reports the analysis matrix contract, not the presentation
     # shape after Sample_Type, statistics, and passthrough metadata are appended.
     result_candidate_columns, _ = identify_candidate_sample_columns(data_df)
-    result_sample_count = len(
-        build_sample_info_mapping(result_candidate_columns, sample_info_df)
+    result_sample_mapping = build_sample_info_mapping(
+        result_candidate_columns,
+        sample_info_df,
     )
+    result_sample_columns = list(result_sample_mapping)
+    result_sample_count = len(result_sample_columns)
     result_metabolite_count = len(data_df)
+    design_receipt = build_design_identifiability_receipt(
+        sample_info_df,
+        sample_columns=result_sample_columns,
+    )
+    design_status = design_receipt.summary["overall_status"]
+    print(f"✓ Design identifiability: {design_status}")
+    if design_status != DesignStatus.SUPPORTED.value:
+        for reason in design_receipt.reasons:
+            print(f"  ⚠ {reason}")
 
     # Determine session-aware paths
     if session_dir is not None:
@@ -2630,6 +2667,7 @@ def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALI
         preserved_data_df=data_df,
         sample_info_df=sample_info_df,
         output_path=_save_path,
+        design_receipt=design_receipt,
     )
 
     if not output_path:
@@ -2649,6 +2687,9 @@ def main(input_file=None, session_dir=None, normalization_method=DEFAULT_NORMALI
         metabolites=result_metabolite_count,
         samples=result_sample_count,
         status=WorkflowOutcome.SUCCEEDED,
+        extra={
+            'design_identifiability': design_receipt.to_processing_extra(),
+        },
     )
 
 
