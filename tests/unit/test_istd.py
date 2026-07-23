@@ -207,14 +207,57 @@ class TestISTDCorrectionOutput:
         assert Path(result.output_path) == workbook_path
         assert result.extra == {"total_istd": 0, "good_istd": 0}
 
+    def test_no_istd_skip_does_not_require_output_write_access(
+        self,
+        istd_module,
+        tmp_path,
+        monkeypatch,
+    ):
+        sample_names = ["QC1", "QC2", "QC3", "Sample1"]
+        raw_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0"],
+                **{name: [100.0] for name in sample_names},
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": sample_names,
+                "Sample_Type": ["QC", "QC", "QC", "Exposure"],
+                "Injection_Order": [1, 2, 3, 4],
+                "Batch": ["A"] * 4,
+            }
+        )
+        workbook_path = tmp_path / "no_istd_no_write.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            raw_df.to_excel(writer, sheet_name="RawIntensity", index=False)
+            sample_info_df.to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        real_open = open
+        write_attempts = []
+
+        def reject_write_probe(file, mode="r", *args, **kwargs):
+            if str(file).endswith(".write_test") and "w" in mode:
+                write_attempts.append(str(file))
+                raise PermissionError("output is read-only")
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", reject_write_probe)
+
+        result = istd_module.main(input_file=workbook_path)
+
+        assert result.status is WorkflowOutcome.SKIPPED
+        assert result.output_path == workbook_path
+        assert write_attempts == []
+
     @pytest.mark.slow
-    def test_skips_when_fewer_than_five_istds_have_qc_cv_below_20(
+    def test_monitoring_succeeds_when_fewer_than_five_istds_are_stable(
         self,
         istd_module,
         workbook_sheet_names,
         tmp_path,
     ):
-        """Step 1 should skip when too few ISTDs meet the QC CV gate."""
+        """Few stable ISTDs still support monitoring, but not automatic correction."""
         sample_names = ["QC1", "Exposure_1", "QC2", "Control_1", "QC3", "Exposure_2"]
         raw_df = pd.DataFrame(
             [
@@ -262,11 +305,16 @@ class TestISTDCorrectionOutput:
 
         result = istd_module.main(input_file=str(workbook_path))
 
-        assert result.status is WorkflowOutcome.SKIPPED
-        assert result.reason == "insufficient_good_istd"
-
-        # Skipped: output_path should point to the original input (no new file)
-        assert result.output_path == str(workbook_path)
+        assert result.status is WorkflowOutcome.SUCCEEDED
+        assert result.extra["istd_mode"] == "monitoring_only"
+        assert result.extra["corrected_features"] == 0
+        assert result.extra["good_istd"] == 4
+        assert set(workbook_sheet_names(result.output_path)) == {
+            "RawIntensity",
+            "SampleInfo",
+            "ISTD_Correction",
+            "ISTD_Monitoring",
+        }
 
     @pytest.mark.slow
     def test_main_returns_processing_result(self, istd_module, sample_input_file, validate_processing_result):
@@ -364,7 +412,12 @@ class TestISTDCorrectionOutput:
             return
 
         output_path = result.output_path if hasattr(result, "output_path") else result.get('output_path')
-        expected_sheets = {'RawIntensity', 'SampleInfo', 'ISTD_Correction'}
+        expected_sheets = {
+            'RawIntensity',
+            'SampleInfo',
+            'ISTD_Correction',
+            'ISTD_Monitoring',
+        }
         assert set(workbook_sheet_names(output_path)) == expected_sheets
 
 
@@ -618,3 +671,38 @@ class TestISTDCorrectionHelpers:
         assert "Step1_ISTD_Tracking_20260328_120000.png" in plot_names
         assert "Step1_CV_Comparison_20260328_120000.png" in plot_names
         assert "Step1_Density_Overlay_20260328_120000.png" in plot_names
+
+    def test_istd_tracking_plot_requires_complete_injection_order(
+        self,
+        istd_module,
+        tmp_path,
+    ):
+        sample_columns = ["QC_1", "Sample_A1", "QC_2"]
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": sample_columns,
+                "Sample_Type": ["QC", "Exposure", "QC"],
+                "Batch": ["A", "A", "A"],
+                "Injection_Order": [1, np.nan, 3],
+            }
+        )
+        original_df = pd.DataFrame(
+            {
+                "FeatureID": ["ISTD_1"],
+                "is_ISTD": [True],
+                "QC_1": [100.0],
+                "Sample_A1": [105.0],
+                "QC_2": [98.0],
+            }
+        )
+
+        output = istd_module.plot_istd_stability_tracking(
+            original_df,
+            sample_columns,
+            sample_info_df,
+            tmp_path,
+            "20260723_000000",
+        )
+
+        assert output is None
+        assert not list(tmp_path.glob("Step1_ISTD_Tracking_*.png"))

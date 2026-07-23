@@ -2,6 +2,8 @@ import os
 import threading
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtGui import QDesktopServices
@@ -63,6 +65,9 @@ def test_p3_window_uses_real_cards_pills_file_bar_and_status_bar():
     assert all(
         card.status_label.objectName() == "statusPill"
         for card in window.step_cards.values()
+    )
+    assert window.step_cards[STEP1_NAME].title_label.text() == (
+        "ISTD Monitoring / Selective Correction"
     )
     assert window.file_bar.objectName() == "fileBar"
     assert isinstance(window.statusBar(), QStatusBar)
@@ -325,6 +330,48 @@ def test_p2_view_runs_a_step_and_renders_the_terminal_state():
     assert window.step_cards[STEP1_NAME].status_label.text() == "Done"
     assert "Starting Step 1" in window.log.toPlainText()
     window.close()
+
+
+@pytest.mark.parametrize(
+    ("mode", "corrected_features", "expected_label"),
+    [
+        ("monitoring_only", 0, "Monitoring only"),
+        ("selective_correction", 3, "Corrected: 3 features"),
+    ],
+)
+def test_step1_card_distinguishes_the_completed_istd_mode(
+    mode,
+    corrected_features,
+    expected_label,
+):
+    app = qt_app()
+
+    def processor(**kwargs):
+        return ProcessingResult(
+            file_path=kwargs["input_file"],
+            output_path="C:/session/step1.xlsx",
+            metabolites=10,
+            samples=5,
+            extra={
+                "istd_mode": mode,
+                "corrected_features": corrected_features,
+            },
+        )
+
+    controller = WorkflowController(
+        processors={STEP1_NAME: processor},
+        session_factory=lambda _input: "C:/session",
+    )
+    window = DNPMainWindow(controller=controller)
+    window.show()
+    controller.select_input("C:/input.xlsx")
+
+    window.step_cards[STEP1_NAME].run_button.click()
+    wait_until(lambda: not controller.is_running)
+
+    assert window.step_cards[STEP1_NAME].status_label.text() == expected_label
+    window.close()
+    app.processEvents()
 
 
 def test_heartbeat_is_owned_by_the_ui_timer_not_the_worker():
