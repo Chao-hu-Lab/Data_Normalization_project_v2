@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QThread, Qt
 import shiboken6
 
-from metabolomics.gui.workflow import (
+from metabolomics.workflow import (
     STEP1_NAME,
     STEP2_NAME,
     STEP3_NAME,

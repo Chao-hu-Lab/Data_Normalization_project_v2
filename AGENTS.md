@@ -3,6 +3,8 @@
 ## Authority Routing
 
 - Active workflow boundary: `README.md`.
+- Toolkit-agnostic workflow state: `src/metabolomics/workflow.py`.
+  `src/metabolomics/gui/workflow.py` is a compatibility re-export only.
 - Step 1 scientific contract and legacy implementation status:
   `docs/algorithms/istd.md`.
 - Step 2 feature-wise QC correction contract:

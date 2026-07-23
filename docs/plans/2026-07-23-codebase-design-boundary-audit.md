@@ -1,6 +1,6 @@
 # PRD / Issue：Codebase design 邊界與模組命名健康檢查
 
-- 狀態：Reviewed proposal（以整合 #33／#34 後的 tree 校準；尚未動模組）
+- 狀態：In progress（以整合 #33／#34 後的 tree 校準；slice 1 已實作）
 - 類型：Engineering / maintainability（characterization parity，不改行為）
 - 範圍：`src/metabolomics/` 的套件邊界與命名，不含科學演算法變更
 - 產出目標：一份可執行的重新分類提案；本文件本身**只讀不改** production 程式碼
@@ -26,7 +26,7 @@ identifiability receipt）已在整合後的 `README.md`、`AGENTS.md`、
 
 ```
 processors/   istd, qc_lowess, normalization, qc_batch_scaling   （Step 1–4）
-gui/          Tkinter legacy app + toolkit-agnostic workflow + theme tokens
+gui/          Tkinter legacy app + workflow compatibility shim + theme tokens
 gui_qt/       active PySide6 app/controller/view support
 utils/        17 個 Python 模組，混合通用 helper 與 domain contract
 adapters/     preprocessing_to_dnp
@@ -51,14 +51,14 @@ adapters/     preprocessing_to_dnp
 
 ## 4. 問題（design smells，依嚴重度排序）
 
-### P1 — `gui/` 名實不符，混合「legacy surface + 純編排邏輯 + Qt 資源」
+### P1 — `gui/` 仍混合「legacy surface + compatibility shim + Qt 資源」
 
 `gui/` 這個名字目前同時代表三種不同的東西：
 
 | 檔案 | 實際身分 | 誰在用 |
 | --- | --- | --- |
 | `gui/app.py`（`import tkinter`） | **非 production entrypoint 的 legacy GUI** | production code 不 import；多個 GUI／isolated-import tests 仍引用 |
-| `gui/workflow.py` | 自述「Pure workflow policy and state / no dependency on Tk widgets」的**toolkit-agnostic 編排邏輯** | active `gui_qt/controller.py`、`gui_qt/app.py` 與契約測試 |
+| `gui/workflow.py` | `metabolomics.workflow` 的 compatibility re-export | 僅相容性測試；production internal imports 已移除 |
 | `gui/theme.py` | 目前實際為 Qt-only design tokens | active `gui_qt/app.py`、`gui_qt/qss.py` |
 
 後果：
@@ -66,11 +66,11 @@ adapters/     preprocessing_to_dnp
 1. **legacy surface 與 active surface 難以區分**：兩個入口點都不碰
    `gui/app.py`，但它仍被多個測試 import。證據支持「非出貨 legacy GUI」，
    不足以在本 issue 直接判定可刪。
-2. **編排邏輯被錯貼為 GUI**：`WorkflowState` / `StepState` 是應用層 workflow 狀態機，
-   與任何 UI toolkit 無關，卻住在 `gui/` 底下。契約測試要透過
-   `from metabolomics.gui import workflow` 才能拿到 Step 3 method 契約，語意錯位。
-3. **命名指向相反**：active GUI 是 `gui_qt/`，但它必須 import 名為 `gui` 的套件
-   才能取得 workflow 與 theme——`gui` 這個「更主幹」的名字反而是 legacy 容器。
+2. **workflow state 的主要錯位已由 slice 1 解決**：`WorkflowState` /
+   `StepState` 現在住在 `metabolomics.workflow`；舊 GUI 路徑只為未知外部 consumer
+   暫留 shim，不再是 production dependency。
+3. **theme 邊界仍名實不符**：active GUI 是 `gui_qt/`，workflow dependency 已移出，
+   但 Qt app／QSS 仍必須從名為 `gui` 的 legacy 容器取得 theme tokens。
 
 ### P2 — `gui/` vs `gui_qt/` 沒有任何命名說明誰是 canonical
 
@@ -92,7 +92,7 @@ adapters/     preprocessing_to_dnp
     monitoring receipt 與 correction rejection states；同樣是 Step 1 domain module。
   - `sample_classification`、`data_validation`：領域規則集中地。
   - `normalization_contract`：Step 3 method 的**共享契約來源**，被
-    `processors/normalization` 與 `gui/workflow` 同時消費——是 domain contract 而非 util。
+    `processors/normalization` 與 `metabolomics.workflow` 同時消費——是 domain contract 而非 util。
   - `workbook_input`：workbook 輸入 policy。
 
 **內部證據顯示 facade 的收錄範圍與檔案樹不一致**：`utils/__init__` 匯出了
@@ -109,23 +109,26 @@ adapters/     preprocessing_to_dnp
 
 ## 5. 影響（誰受影響、可觀察損失）
 
-- **人類維護者**：找 workflow 狀態機要進 `gui/`；找科學 identifiability 邏輯要進
-  `utils/`——兩者都與直覺相反，增加 onboarding 與 review 成本。
+- **人類維護者**：workflow 狀態機已移到 canonical top-level module；剩餘主要問題是
+  `gui/` 仍同時承載 legacy app、compatibility shim 與 Qt-only theme，而科學
+  identifiability 邏輯仍在 `utils/`。
 - **AI agent 導航**：命名是 agent 決定「該讀哪個檔」的主要訊號。`gui` 含非 GUI、
   `utils` 含深科學模組，會讓 agent 讀錯層或漏讀契約。
 - **契約可發現性**：`normalization_contract`、`design_identifiability` 這類有文件
   背書的產品面，被埋在 `utils/` 使其權重被低估，增加「繞過契約」的風險。
 
-## 6. 提案方向（decision-oriented，尚未實作）
+## 6. 漸進 slices（decision-oriented）
 
 以下為獨立、漸進、可回滾的 slices。第一個 slice 已收斂，其餘仍需後續決策。
 
-1. **第一個 slice：只搬 toolkit-agnostic workflow state**
-   - 把 `gui/workflow.py` 的實作上移為 `metabolomics/workflow.py`。
-   - active Qt、legacy Tk 與內部測試改 import canonical path。
+1. **第一個 slice：只搬 toolkit-agnostic workflow state（已實作）**
+   - 已把 `gui/workflow.py` 的實作上移為 `metabolomics/workflow.py`。
+   - active Qt、legacy Tk 與內部測試已改 import canonical path。
    - `metabolomics.gui.workflow` 暫留 compatibility re-export；不假設 repo 外沒有
      consumer，也不在這個 slice 決定 Tkinter 去留。
    - 不動 processor、workbook schema、科學演算法、theme 或 domain utils。
+   - Characterization：canonical 與 legacy import 的 class/function identity 相同；
+     production internal imports 已不再依賴 legacy path。
 2. **後續才拆其他 GUI 身分**
    - `theme.py` 移到共用 UI 資源位置（或併入 `gui_qt/`，若確定不再有第二個 GUI）。
    - `gui/app.py`（Tkinter）依 `2026-04-25-dead-code-cleanup-plan.md` 決定退役或
@@ -167,9 +170,11 @@ adapters/     preprocessing_to_dnp
 ## 附錄：證據索引
 
 - 入口點：`Data_Normalization_program_v2.py:9`、`src/metabolomics/__main__.py` → `gui_qt.app`
-- `gui/workflow.py:1` 自述 "Pure workflow policy and state ... no dependency on Tk widgets"
+- `workflow.py:1` 是 canonical toolkit-agnostic state；
+  `gui/workflow.py` 僅 compatibility re-export
 - `gui/app.py:1` `import tkinter`；無 production importer，測試仍直接或間接引用
-- `gui_qt/controller.py:10`、`gui_qt/app.py:38-39`、`gui_qt/qss.py:11` import `metabolomics.gui.*`
+- `gui_qt/controller.py`、`gui_qt/app.py` 與 legacy `gui/app.py` import
+  `metabolomics.workflow`
 - `utils/design_identifiability.py`、`utils/istd_mapping.py`、
   `utils/sample_classification.py`、`utils/data_validation.py`
 - `utils/__init__.py` facade 未收 `design_identifiability` / `data_validation` /

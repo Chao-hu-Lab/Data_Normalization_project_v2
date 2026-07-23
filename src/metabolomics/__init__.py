@@ -8,7 +8,7 @@ from importlib import import_module
 
 __version__ = "2.0.0"
 __author__ = "Metabolomics Team"
-__all__ = ["processors", "utils", "gui"]
+__all__ = ["processors", "utils", "gui", "workflow"]
 
 
 def __getattr__(name):
