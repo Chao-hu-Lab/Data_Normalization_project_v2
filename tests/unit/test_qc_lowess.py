@@ -18,6 +18,7 @@ from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
 from metabolomics.utils.constants import SHEET_NAMES
+from metabolomics.utils.excel_colors import cell_has_red_font
 from metabolomics.utils.results import WorkflowOutcome
 
 
@@ -713,46 +714,133 @@ class TestQCLOWESSOutput:
 
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_qc_lowess_result_preserves_presence_absence_marker(
+    def test_qc_lowess_preserves_current_step4_handoff_without_imputing(
         self,
         qc_lowess_module,
         lowess_ready_input_file,
         output_dir,
     ):
-        input_path = os.path.join(output_dir, "qc_lowess_marker_input.xlsx")
+        input_path = os.path.join(output_dir, "qc_lowess_step4_handoff.xlsx")
         if os.path.exists(input_path):
             os.remove(input_path)
         shutil.copy2(lowess_ready_input_file, input_path)
 
         workbook = load_workbook(input_path)
         try:
-            worksheet = workbook["RawIntensity"]
-            marker_col = worksheet.max_column + 1
-            worksheet.cell(row=1, column=marker_col, value="is_Presence_Absence_Marker")
-            worksheet.cell(row=2, column=marker_col, value="is_Presence_Absence_Marker")
-            worksheet.cell(row=3, column=marker_col, value=True)
-            worksheet.cell(row=4, column=marker_col, value=False)
-            worksheet.cell(row=5, column=marker_col, value=True)
+            raw = workbook[SHEET_NAMES["raw_intensity"]]
+            sample_info = workbook[SHEET_NAMES["sample_info"]]
+            sample_info_headers = {
+                cell.value: cell.column for cell in sample_info[1]
+            }
+            sample_name_col = sample_info_headers["Sample_Name"]
+            expected_sample_count = sum(
+                sample_info.cell(row=row, column=sample_name_col).value
+                not in (None, "")
+                for row in range(2, sample_info.max_row + 1)
+            )
+
+            study_columns = [
+                column
+                for column in range(2, raw.max_column + 1)
+                if str(raw.cell(row=2, column=column).value).upper() != "QC"
+            ]
+            analyte_rows = [
+                row
+                for row in range(3, raw.max_row + 1)
+                if not cell_has_red_font(raw.cell(row=row, column=1))
+            ]
+
+            metadata_headers = [
+                "Cohort_7_ratio",
+                "RareSubtype_ratio",
+                "QC_ratio",
+                "is_Presence_Absence_Marker",
+                "Feature_Filter_Keep_Reasons",
+                "Imputation_Tag_Reasons",
+            ]
+            metadata_type_row = [
+                "na",
+                "na",
+                "na",
+                "is_Presence_Absence_Marker",
+                "Feature_Filter_Keep_Reasons",
+                "Imputation_Tag_Reasons",
+            ]
+            patterns = [
+                (0.20, 0.20, 0.125, False, "stable", ""),
+                (0.30, 0.15, 0.0, True, "ratio_rescue", "low_overall_detection"),
+                (0.20, 0.05, 0.0, True, "mnar", "low_overall_detection"),
+            ]
+            missing_cells = []
+            seen_markers = set()
+            for row in analyte_rows:
+                marker = patterns[(row - 3) % len(patterns)][3]
+                if marker in seen_markers:
+                    continue
+                study_column = study_columns[len(seen_markers) % len(study_columns)]
+                raw.cell(row=row, column=study_column).value = None
+                missing_cells.append(
+                    (
+                        raw.cell(row=row, column=1).value,
+                        raw.cell(row=1, column=study_column).value,
+                    )
+                )
+                seen_markers.add(marker)
+            assert seen_markers == {False, True}
+
+            expected_metadata = {}
+            metadata_start = raw.max_column + 1
+            for offset, (header, type_value) in enumerate(
+                zip(metadata_headers, metadata_type_row, strict=True),
+            ):
+                column = metadata_start + offset
+                raw.cell(row=1, column=column, value=header)
+                raw.cell(row=2, column=column, value=type_value)
+
+            for row in range(3, raw.max_row + 1):
+                feature_id = raw.cell(row=row, column=1).value
+                pattern = patterns[(row - 3) % len(patterns)]
+                if row in analyte_rows:
+                    expected_metadata[feature_id] = dict(
+                        zip(metadata_headers, pattern, strict=True)
+                    )
+                for offset, value in enumerate(pattern):
+                    raw.cell(row=row, column=metadata_start + offset, value=value)
             workbook.save(input_path)
         finally:
             workbook.close()
 
-        step2_result = qc_lowess_module.main(input_file=input_path)
-        step2_output = (
-            step2_result.output_path
-            if hasattr(step2_result, "output_path")
-            else step2_result.get("output_path")
-        )
-
-        result_wb = load_workbook(step2_output, read_only=True, data_only=True)
+        result = qc_lowess_module.main(input_file=input_path)
+        assert result.samples == expected_sample_count
+        result_wb = load_workbook(result.output_path, read_only=True, data_only=True)
         try:
-            ws = result_wb[SHEET_NAMES["qc_lowess"]]
-            headers = [cell.value for cell in ws[1]]
-            marker_idx = headers.index("is_Presence_Absence_Marker") + 1
-            assert ws.cell(row=2, column=marker_idx).value == "is_Presence_Absence_Marker"
-            assert ws.cell(row=3, column=marker_idx).value is True
-            assert ws.cell(row=4, column=marker_idx).value is False
-            assert ws.cell(row=5, column=marker_idx).value is True
+            output = result_wb[SHEET_NAMES["qc_lowess"]]
+            output_headers = {
+                cell.value: cell.column for cell in output[1]
+            }
+            assert "Imputation_Strategy" not in output_headers
+            assert set(metadata_headers) <= set(output_headers)
+
+            output_rows = {
+                output.cell(row=row, column=1).value: row
+                for row in range(3, output.max_row + 1)
+            }
+            for feature_id, expected in expected_metadata.items():
+                output_row = output_rows[feature_id]
+                for header, expected_value in expected.items():
+                    actual = output.cell(
+                        row=output_row,
+                        column=output_headers[header],
+                    ).value
+                    if expected_value == "":
+                        actual = actual or ""
+                    assert actual == expected_value
+
+            for feature_id, sample_name in missing_cells:
+                assert output.cell(
+                    row=output_rows[feature_id],
+                    column=output_headers[sample_name],
+                ).value is None
         finally:
             result_wb.close()
 
