@@ -35,13 +35,14 @@ The first screenshot will show the main workflow screen with `data/synthetic_cor
 
 | Step | Module | Status | Responsibility |
 | --- | --- | --- | --- |
-| 1 | ISTD Correction | Active | Correct sample-level internal-standard behavior and mark skipped ISTD paths explicitly. |
+| 1 | ISTD Correction | Conditional / legacy auto-match | Monitor ISTDs and preserve explicit skip outcomes. Broad untargeted/adductomics runs should skip the current universal auto-matcher unless an analyte-to-ISTD mapping has independent validation. |
 | 2 | QC-LOESS | Active | Correct within-batch run-order drift using batch-local QC anchors; 6–7 effective QC may use the gated log-linear fallback, while ≥8 may use LOWESS. |
 | 3 | Concentration Normalization | Active | Choose `PQN` (default; urine/global dilution) or `SpecNorm` (explicit tissue-reference division); this is the final normalized output. |
 | 4 | QC Batch Scaling | Manual diagnostics only | Emit batch diagnostics when explicitly requested with `diagnostics_only=True`; not part of Auto Run. |
 
 Important boundaries:
 
+- Step 1's current RT/CV-weighted automatic matching remains legacy compatibility behavior, not a validated universal correction for unknown features. Matched monitoring/correction replacement work is tracked in [issue #33](https://github.com/Chao-hu-Lab/Data_Normalization_project_v2/issues/33).
 - Step 2 does not align batches against a cross-batch QC target.
 - Step 3 may use QC samples to build a PQN reference, but it is not a batch-correction module.
 - Step 3 fails closed when QC samples are missing for the active adductomics policy.
@@ -222,15 +223,16 @@ For output-affecting processor changes, run the real-workbook acceptance workflo
 ## Documentation
 
 - [Testing Guide](docs/TESTING.md): test layers, scenario smoke, and acceptance workbook equivalence.
-- [ISTD Algorithm](docs/algorithms/istd.md): Step 1 input contract, ISTD matching, and output interpretation.
+- [ISTD Algorithm](docs/algorithms/istd.md): Step 1 monitoring/matched-correction boundary, legacy auto-match status, and output interpretation.
 - [QC-LOWESS Algorithm](docs/algorithms/qc_lowess.md): Step 2 batch-local drift correction contract.
 - [Normalization Algorithm](docs/algorithms/normalization.md): Step 3 `PQN` / `SpecNorm` behavior and output sheets.
 - [Workflow Responsibility Spec](docs/plans/2026-04-23-dnp-workflow-responsibility-spec.md): active responsibility boundary for Steps 1-4.
 - [PQN Reference Rules](docs/plans/2026-04-23-pqn-reference-selection-rules.md): active adductomics QC-reference policy.
+- [Specimen-aware Step 3 Contract](docs/plans/2026-07-23-step3-specimen-aware-method-contract.md): active `PQN` / explicit `SpecNorm` method decision.
 - [ComBat Archive](docs/algorithms/combat.md): why ComBat is outside DNP's active boundary.
 - `python scripts/generate_batcheffect_data.py --all`: generate the disposable scenario matrix set and manifest under `build/scenario_matrices/`.
 
-Most dated planning notes under `docs/plans/` and `docs/superpowers/plans/` are archived records. The two active 2026-04-23 contract references listed above are exceptions until they are migrated into a dedicated contract directory.
+Most dated planning notes under `docs/plans/` and `docs/superpowers/plans/` are archived records. The active contract references listed above are exceptions until they are migrated into a dedicated contract directory.
 
 ## Troubleshooting
 

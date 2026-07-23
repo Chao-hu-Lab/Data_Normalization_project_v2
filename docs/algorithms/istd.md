@@ -1,242 +1,133 @@
-# ISTD Correction 代謝組學數據校正工具
+# ISTD Correction Contract
 
-## 📋 概述
+## Current status
 
-本工具針對 LC-MS 或 GC-MS 代謝組學數據執行內標物質 (Internal Standard, ISTD) 校正。工具自動識別內標、智能匹配每個代謝物的最佳內標、執行比例校正，並透過嚴謹的統計檢定評估校正效果。
+Step 1 has two different realities that must not be conflated:
 
-## 🎯 核心功能
+1. The current processor can discover red-font ISTD rows, gate them by QC
+   stability, automatically match every non-ISTD feature to one ISTD using
+   RT/CV/intensity/mass weights, and apply a ratio correction.
+2. That universal auto-matching behavior is legacy compatibility code. It is
+   not a scientifically validated default for broad untargeted DNA
+   adductomics, where a small set of spiked ISTDs is asked to represent
+   hundreds of structurally unknown features.
 
-### 1. 自動化 ISTD 識別
-從 Excel 的 `RawIntensity` 工作表中自動識別第一欄紅色字體標記的特徵 ID 作為內標物質。支援 openpyxl 常見的紅色 RGB/ARGB 寫法，並自動解析 `Mz/RT` 或相容的 `FeatureID` 格式 (如 `123.456/1.23`) 為 m/z 和保留時間 (RT)。
+For the current broad adductomics workflow, Step 1 should default to `SKIP`.
+Skipping is a complete, explicit method decision; Step 2 can consume
+`RawIntensity` directly.
 
-### 2. 智能 ISTD 匹配演算法
-採用多因素加權評分系統為每個代謝物選擇最佳內標：
+The evidence and method review supporting this boundary lives in
+[`2026-07-23-istd-and-batch-identifiability-review.md`](../discussions/2026-07-23-istd-and-batch-identifiability-review.md).
 
-```
-評分公式 (分數越低越好):
-Score = 0.60 × RT差異(標準化)
-      + 0.25 × CV%(標準化)
-      + 0.10 × 強度倒數(標準化)
-      + 0.05 × m/z差異(標準化)
-```
+## Supported scientific roles
 
-權重分配的考量：RT相似性主導匹配(60%)以校正層析時間相關的基質效應，CV%次之(25%)確保內標穩定性，強度(10%)和m/z相似性(5%)作為輔助指標。所有指標經Min-Max標準化後加權計算，確保不同量級的指標能公平比較。
+### ISTD monitoring
 
-### 3. 數據校正計算
+ISTD rows may be used to report:
 
-使用比例校正法:
-```
-校正強度 = 原始強度 × (內標平均強度 / 該樣本內標強度)
-```
+- missingness and detection coverage;
+- QC CV and robust CV;
+- area behavior across injection order;
+- RT stability, saturation, and peak-quality alarms;
+- samples or run regions that require raw-data review.
 
-這種方法標準化樣本間的系統性差異，校正基質效應和儀器波動，提升數據重現性。
+Monitoring does not modify unknown-feature intensities.
 
-### 4. 統計檢定框架
+### Matched analyte correction
 
-本工具採用三重統計檢定來客觀評估校正效果，每個檢定回答不同的關鍵問題：
+An analyte may be corrected using an ISTD only when an explicit mapping exists
+and its scope is known. A defensible mapping normally requires a matched
+stable-isotope-labelled analyte, or separately validated evidence that a
+surrogate shares the relevant recovery and matrix-response behavior.
 
-#### A. 配對 t 檢定 (Paired t-test) - 檢查平均值偏移
+The mapping and output must preserve feature-level provenance:
 
-**檢定問題:** 校正前後，QC 樣本的平均強度是否發生系統性改變？
+- analyte feature ID;
+- ISTD feature ID;
+- mapping type (`matched` or `validated_surrogate`);
+- validation reference;
+- correction status and rejection reason.
 
-理想的校正應該只降低變異，而不改變數據的中心位置。配對 t 檢定比較每個代謝物在校正前後的平均水平。虛無假設 (H₀) 是「校正前後平均值無差異」。
+Known targeted analytes that require concentration claims belong in a
+targeted/XIC assay with calibration and validation. An ISTD ratio alone does
+not create a concentration.
 
-**結果解讀:**
-- **p > 0.05 (理想):** 平均值未顯著改變，校正沒有引入系統性偏差
-- **p < 0.05 (需注意):** 平均值發生顯著偏移，可能表示校正過度或內標選擇不當
+### Abstention
 
-為什麼 p 值大反而好？因為我們不希望校正「扭曲」數據的真實水平，只希望它減少噪音。就像調整照片的對比度，不應該改變照片的整體亮度。
+When no validated mapping exists, retain the original value and record an
+explicit uncorrected/skip state. Do not silently select the nearest RT ISTD or
+the ISTD that makes training-QC CV look best.
 
-#### B. Levene's 變異數齊性檢定 - 檢查變異改善
+## Legacy processor behavior
 
-**檢定問題:** 校正前後，QC 樣本的變異程度是否有顯著差異？
+`src/metabolomics/processors/istd.py` currently:
 
-這是評估校正效果的核心檢定。Levene's test 比較兩組數據的離散程度（變異數），不需要假設數據符合正態分布，對於可能存在偏態的代謝組學數據特別適用。虛無假設 (H₀) 是「兩組變異數相等」。
+- identifies ISTDs from red font in the first `RawIntensity` column;
+- requires `RawIntensity`, `SampleInfo`, QC samples, and usable `Batch`
+  metadata;
+- skips when fewer than five ISTDs pass its QC-CV gate;
+- scores candidate ISTDs using RT, QC CV, intensity, and m/z;
+- applies
+  `corrected = original × ISTD_median / sample_ISTD`;
+- emits diagnostic plots and before/after QC summaries.
 
-**結果解讀:**
-- **p < 0.05 且 CV% 下降 (理想):** 變異顯著降低，校正成功改善數據穩定性
-- **p < 0.05 且 CV% 上升 (警示):** 變異顯著增加，校正可能適得其反
-- **p > 0.05 (中性):** 變異無顯著改變，校正效果不明顯或該代謝物本來就很穩定
+These gates can reject obviously weak ISTDs, but they do not prove that the
+remaining ISTD is a valid surrogate for an unknown feature. The automatic
+matching path must therefore not be described as the recommended broad
+untargeted method.
 
-這裡 p 值小才好，因為我們期望看到變異的「顯著降低」。就像評估降噪效果，我們要確認噪音確實有統計意義上的減少。
+Replacement of this legacy behavior should be implemented as a focused,
+testable change rather than gradually adding more score weights or
+exceptions.
 
-#### C. Shapiro-Wilk 正態性檢定 - 驗證檢定前提
+## Input contract
 
-**檢定問題:** 校正前後的差異值是否符合正態分布？
+The workbook must contain:
 
-配對 t 檢定的有效性建立在「配對差異符合正態分布」這個前提上。Shapiro-Wilk test 檢驗這個前提是否成立。虛無假設 (H₀) 是「數據來自正態分布」。
+- `RawIntensity`: feature IDs in the first column and sample intensity columns;
+- `SampleInfo`: `Sample_Name`, `Sample_Type`, and complete `Batch` metadata for
+  the current processor;
+- QC samples when Step 1 correction gates or QC diagnostics are requested.
 
-**結果解讀:**
-- **p > 0.05:** 數據符合正態分布，t 檢定結果可靠
-- **p < 0.05:** 數據偏離正態分布，t 檢定結果需謹慎解讀
+Red font remains a legacy ISTD-role marker. A future canonical XIC handoff
+should supply typed feature roles and explicit mappings so DNP does not
+rediscover identity from formatting.
 
-如果大量代謝物的正態性檢定失敗，可能需要考慮數據轉換（如 log 轉換）或使用非參數檢定。
+Missing intensities must remain missing at this stage. Do not impute values to
+create ISTD or QC anchors.
 
-#### 綜合判斷標準
+## Output and workflow behavior
 
-工具會整合三個檢定結果，給出清晰的判定：
-
-- ✅ **Yes (顯著改善):**  
-  CV% 改善 ≥ 10% 且 Levene's p < 0.05 且配對 t 檢定 p > 0.05  
-  *變異顯著降低，平均值未偏移，校正效果優異*
-
-- ⚠️ **Marginal (邊緣改善):**  
-  CV% 改善 5-10% 或僅部分統計條件滿足  
-  *有改善但不夠顯著，可能需要優化內標選擇*
-
-- 🔵 **Yes (CV% only):**  
-  CV% 有改善但統計檢定未達顯著  
-  *可能因樣本數不足或改善幅度較小*
-
-- ❌ **No (無顯著改善):**  
-  CV% 改善 < 5% 或統計檢定未顯示顯著差異  
-  *該代謝物可能本來就很穩定，或需要不同的校正策略*
-
-### 5. QC 變異係數計算與 PCA 分析
-
-**CV% 計算:** 分別計算校正前後 QC 樣本的變異係數 (`CV% = σ / μ × 100%`)，評估數據穩定性。一般而言，QC CV% < 20% 為可接受範圍，< 15% 為良好。
-
-**PCA 分析:** 執行 2D 主成分分析並繪製校正前後對比圖，使用 Hotelling T² 統計量進行多變量異常值檢測，繪製 95% 信賴橢圓視覺化樣本分布。
-
-### 6. P 值分布視覺化
-
-繪製三種統計檢定的 p 值分布直方圖，標示顯著性閾值 (α = 0.05)，幫助評估整體校正效果的統計特性。
-
-## 📊 輸入檔案格式
-
-輸入檔案必須為 **Excel 格式** (`.xlsx` 或 `.xls`)，包含以下工作表：
-
-### 1. `RawIntensity` 工作表
-- **第一欄格式:** `m/z/RT` (例: `123.456/1.23`)，欄名通常為 `Mz/RT`，也相容舊版 `FeatureID`
-- **內標標記:** 內標的特徵 ID 必須以紅色字體標記在第一欄
-- **數據欄位:** 各樣本的原始強度值
-
-### 2. `SampleInfo` 工作表
-- **必要欄位:** `Sample_Name`, `Sample_Type`
-- **建議欄位:** `Injection_Order`, `Batch`，供後續 Step 2/Step 4 使用
-- **Sample_Type 標記:** 必須包含 `QC` 標記以識別品質管制樣本
-
-## 🚀 使用方法
-
-### 程式化調用
-```python
-from metabolomics.processors import istd
-
-result = istd.main(input_file="your_data.xlsx")
-print(f"處理完成: {result.metabolites} 個代謝物")
-print(f"輸出檔案: {result.output_path}")
-```
-
-## 📁 輸出結果
-
-### Excel 結果檔案
-GUI / workflow session output:
-
-```text
-Step1_ISTD_Results.xlsx
-```
-
-Direct processor output without `session_dir`:
-
-```text
-ISTD_Results_YYYYMMDD_HHMMSS.xlsx
-```
-
-**ISTD_Correction 工作表:**
-- 校正前後強度數據
-- QC CV% 比較 (Original_QC_CV%, Corrected_QC_CV%, CV_Improvement%)
-- 統計檢定 p 值 (Mean_Shift_pvalue, Variance_Test_pvalue, Normality_pvalue)
-- 顯著性判定 (Significant_Improvement)
-- 匹配的內標資訊 (Matched_ISTD)
-
-**顏色標記:**
-- 🟠 橙色: CV% 欄位
-- 🔵 淡藍色: 統計檢定 p 值
-- 🟣 淡紫色: 正態性檢定
-- 🟢 綠色: 顯著改善 (Yes)
-- 🟡 黃色: 邊緣改善 (Marginal)
-- 🩷 淡粉色: 無顯著改善 (No)
-
-### 圖表輸出
-`ISTD_Correction_plots/` 資料夾包含：
-- **2D PCA 圖:** 校正前後對比，含 Hotelling T² 異常值標記和 95% 信賴橢圓
-- **Scree Plot:** 主成分解釋變異量
-- **P 值分布圖:** 三種統計檢定的分布
-
-## 🔍 結果解讀建議
-
-### 查看統計摘要
-
-**Original_QC_CV% vs Corrected_QC_CV%:**
-- 目標: QC CV% < 20% (可接受) 或 < 15% (良好)
-- 觀察整體改善趨勢
-
-**CV_Improvement%:**
-- \> 20%: 顯著改善
-- 10-20%: 良好改善
-- 5-10%: 輕微改善
-- < 5%: 改善不明顯
-
-**Significant_Improvement:**
-- 綠色 (Yes): 校正有效，推薦使用校正後數據
-- 黃色 (Marginal): 有改善但不顯著，可視情況使用
-- 粉色 (No): 校正無效，該代謝物可能本來就穩定
-
-### 查看 PCA 圖
-
-**理想特徵:**
-- QC 樣本在校正後更加聚集
-- 異常值數量減少或持平
-- 不同生物樣本組別仍維持可區分性
-
-**警示信號:**
-- QC 樣本反而更分散
-- 異常值大量增加
-- 生物組別的分離消失（過度校正）
-
-## 🧪 為什麼需要 ISTD 校正？
-
-代謝組學 MS 分析中的系統性差異來源：
-- **基質效應:** 樣本成分對離子化效率的影響
-- **儀器波動:** 質譜儀狀態的時間變化
-- **樣本處理差異:** 前處理步驟的微小變異
-
-內標物質（已知濃度的人為添加化合物）透過監測自身的強度變化，估算並校正這些非生物學因素的影響，提升數據的可比性和重現性。
-
-### 本工具的優勢
-- **自動化:** 大幅提升效率，減少人為誤差
-- **智能匹配:** 多因素評分確保最佳內標配對
-- **客觀評估:** 三重統計檢定量化校正效果
-- **完整可視化:** PCA 和分布圖提供直觀的品質評估
-
-## ⚙️ 技術細節
-
-### 依賴套件
-```
-pandas, numpy, openpyxl, scikit-learn, matplotlib, scipy
-```
-
-### 核心演算法
-- **內標匹配:** Min-Max 標準化 + 加權評分
-- **統計檢定:** 配對 t 檢定、Levene's test、Shapiro-Wilk test
-- **異常值檢測:** Hotelling T² (卡方分布 95% 分位數)
-
-## 📝 注意事項
-
-1. **內標標記:** 確保 RawIntensity 工作表第一欄的內標特徵 ID 已標記為紅色字體
-2. **QC 樣本:** SampleInfo 必須正確標記 QC 樣本（`Sample_Type` 欄位）
-3. **特徵 ID 格式:** 必須為 `m/z/RT` 格式，例如 `123.456/1.23`
-4. **最低樣本數:** 建議至少 5 個 QC 樣本以確保統計檢定有效
-
-## 🔄 後續流程
-
-ISTD 校正完成後，建議進行：
-1. **QC-LOWESS 校正:** 消除時間相關的批次效應（參見 QC-LOWESS 工具）
-2. **數據轉換:** Log transformation, Pareto scaling
-3. **統計分析:** 差異代謝物鑑定、通路富集分析
-
----
-
-**版本:** v2.0  
-**更新:** 2025  
-**環境:** Python 3.8+  
+- `SKIPPED` must preserve the input matrix for downstream Step 2 and provide an
+  actionable reason.
+- A future selective implementation may return a mixed matrix containing
+  matched-corrected and uncorrected features, but only with feature-level
+  status/provenance.
+- Step 1 output must not be interpreted as cross-batch harmonization.
+- Improved training-QC CV or a visually tighter PCA is not sufficient
+  validation of a surrogate correction.
+
+## Interpretation guardrails
+
+Do not claim that:
+
+- one or several non-matched ISTDs provide a universal matrix-wide correction;
+- RT proximity implies shared recovery or ion-suppression response;
+- a generic ISTD correction resolves sample-type/injection-order confounding;
+- agreement between two integrations proves biological correctness.
+
+ISTDs can show that order-associated technical behavior exists. They cannot,
+without analyte-specific response evidence and an identifiable study design,
+assign an observed group difference uniquely to biology or instrument drift.
+
+## Related contracts
+
+- [QC-LOWESS](qc_lowess.md): feature-wise batch-local run-order correction.
+- [Normalization](normalization.md): PQN and specimen-reference normalization.
+- [ComBat archive](combat.md): cross-batch model correction is outside the
+  active DNP workflow.
+- [XIC handoff issue](https://github.com/Chao-hu-Lab/Data_Normalization_project_v2/issues/32):
+  typed roles, cell states, and pre/post-correction quality ownership.
+- [Matched-only Step 1 issue](https://github.com/Chao-hu-Lab/Data_Normalization_project_v2/issues/33):
+  replace universal auto-matching with monitoring, selective correction, and
+  abstention states.
