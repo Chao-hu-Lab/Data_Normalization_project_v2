@@ -1,4 +1,4 @@
-from metabolomics.gui.workflow import (
+from metabolomics.workflow import (
     DEFAULT_STEP3_METHOD,
     STEP1_NAME,
     STEP2_NAME,

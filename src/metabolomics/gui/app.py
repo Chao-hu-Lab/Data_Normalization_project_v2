@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
-from metabolomics.gui.workflow import (
+from metabolomics.workflow import (
     DEFAULT_STEP3_METHOD,
     STEP1_NAME,
     STEP3_NAME,

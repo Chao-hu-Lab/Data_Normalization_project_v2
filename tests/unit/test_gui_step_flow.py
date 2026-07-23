@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from metabolomics.gui.app import DataNormalizationApp
-from metabolomics.gui.workflow import WorkflowState
+from metabolomics.workflow import WorkflowState
 from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
 
 

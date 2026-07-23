@@ -1,4 +1,4 @@
-from metabolomics.gui import workflow
+from metabolomics import workflow
 from metabolomics.processors import normalization
 from metabolomics.utils import normalization_contract
 
