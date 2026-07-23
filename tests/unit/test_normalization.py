@@ -1407,11 +1407,13 @@ class TestConcentrationNormOutput:
         step3_result = conc_norm_module.main(input_file=step2_with_extra_sheet, normalization_method="PQN")
         step3_output = step3_result.output_path if hasattr(step3_result, "output_path") else step3_result.get('output_path')
 
+        assert "design_identifiability" in step3_result.extra
         assert set(workbook_sheet_names(step3_output)) == {
             SHEET_NAMES["qc_lowess"],
             'SampleInfo',
             'PQN_Result',
             conc_norm_module.get_summary_sheet_name('PQN'),
+            SHEET_NAMES["design_identifiability"],
         }
 
     @pytest.mark.slow
@@ -1441,6 +1443,7 @@ class TestConcentrationNormOutput:
             'SampleInfo',
             'PQN_Result',
             conc_norm_module.get_summary_sheet_name('PQN'),
+            SHEET_NAMES["design_identifiability"],
         }
 
     @pytest.mark.slow

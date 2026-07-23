@@ -133,6 +133,15 @@ RMSE = √[Σ(觀測值 - 擬合值)² / n]
 
 Step 2 只有在至少一個 batch × feature 實際套用校正時回傳 `SUCCEEDED`；若全部 task 都因 QC 不足而未校正，回傳 `SKIPPED / insufficient_valid_qc_for_correction`，若 QC 足夠但沒有任何 task 通過決策，回傳 `SKIPPED / no_feature_correction_applied`。
 
+Step 2 會在擬合前，以實際矩陣中的 sample columns 產生
+`Design_Identifiability` receipt。它檢查 `Sample_Type × Batch` support、
+sample type/order association、design-matrix rank、scheduled QC endpoint
+coverage，以及 optional `Pair_ID`、`Bridge_ID`、`QC_Pool_ID`。這是
+diagnostic receipt，不是 correction gate；Step 2 自己需要的
+`Injection_Order` 與 QC 條件仍由原校正 validator fail closed。即使
+Step 2 因沒有 feature 通過而 `SKIPPED`，receipt 仍保留在
+`ProcessingResult.extra["design_identifiability"]`。
+
 此外，Step 2 會額外輸出：
 - `Clamped_Factor_Ratio`
 - `Outside_QC_Range_Count`

@@ -114,7 +114,7 @@ Required sheets:
 | Sheet | Required columns / content |
 | --- | --- |
 | `RawIntensity` | First column is the feature ID (`Mz/RT` or legacy `FeatureID`); sample columns contain feature intensities. |
-| `SampleInfo` | At minimum `Sample_Name` and `Sample_Type`; Step 2 also requires `Injection_Order`; `Batch` is used for batch-local handling and diagnostics. |
+| `SampleInfo` | At minimum `Sample_Name` and `Sample_Type`; Step 2 also requires `Injection_Order`; `Batch` is used for batch-local handling and design diagnostics. |
 | `ISTD_Mapping` | Optional Step 1 mapping sheet. Required columns: `Analyte_Feature_ID`, `ISTD_Feature_ID`, `Mapping_Type`, and `Validation_Reference`. |
 
 `RawIntensity` details:
@@ -131,6 +131,9 @@ Required sheets:
 | `Sample_Type` | Common values include `QC`, `Control`, `Exposure`, `Normal`, and `Blank`. |
 | `Injection_Order` | Required by Step 2; values must be complete and unique within each batch. |
 | `Batch` | Used for Step 2 batch-local correction and Step 4 diagnostics. |
+| `Pair_ID` | Optional typed pairing metadata. Missing values do not block unpaired processing; DNP does not infer pairs from sample names. |
+| `Bridge_ID` | Optional same-sample cross-batch bridge identifier. Without a repeated bridge, cross-batch level alignment remains an explicit evidence gap. |
+| `QC_Pool_ID` | Optional pooled-QC composition identifier. Different IDs across batches are flagged as non-comparable and are never converted into an automatic scale factor. |
 | named numeric specimen-reference | Required only for explicit `SpecNorm` (and the legacy hybrid); common names include `DNA_ug/20uL`, protein amount, concentration, reference, or amount columns. Every non-QC sample must contain a positive finite value. Operational metadata such as `Injection_Volume` is ignored. |
 
 ## Outputs
@@ -149,7 +152,10 @@ output/
         └── *.png
 ```
 
-The active normalized result is the Step 3 workbook. Step 4 output, when present, is diagnostic evidence only.
+The active normalized result is the Step 3 workbook. Step 2 and Step 3 expose a
+`Design_Identifiability` receipt; it diagnoses supported, assumption-dependent,
+and non-identifiable contrasts without modifying intensities. Step 4 output,
+when present, is diagnostic evidence only.
 
 Step 1 writes `ISTD_Monitoring` plus an `ISTD_Correction` matrix. Without a
 mapping, every analyte value and missingness state remains unchanged. With a
@@ -232,6 +238,7 @@ For output-affecting processor changes, run the real-workbook acceptance workflo
 - [Testing Guide](docs/TESTING.md): test layers, scenario smoke, and acceptance workbook equivalence.
 - [ISTD Algorithm](docs/algorithms/istd.md): Step 1 monitoring/matched-correction boundary, legacy auto-match status, and output interpretation.
 - [QC-LOWESS Algorithm](docs/algorithms/qc_lowess.md): Step 2 batch-local drift correction contract.
+- [Design Identifiability](docs/algorithms/design_identifiability.md): metadata-only support checks for sample type, order, batch, QC pools, pairs, and bridges.
 - [Normalization Algorithm](docs/algorithms/normalization.md): Step 3 `PQN` / `SpecNorm` behavior and output sheets.
 - [Workflow Responsibility Spec](docs/plans/2026-04-23-dnp-workflow-responsibility-spec.md): active responsibility boundary for Steps 1-4.
 - [PQN Reference Rules](docs/plans/2026-04-23-pqn-reference-selection-rules.md): active adductomics QC-reference policy.
