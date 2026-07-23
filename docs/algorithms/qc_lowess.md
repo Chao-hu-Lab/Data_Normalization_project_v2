@@ -22,12 +22,14 @@ LOWESS 是一種非參數局部加權回歸方法。對於每個樣本位置，L
 
 每個 feature 的 correction target 來自**當前 batch 的 QC 行為**，而不是跨批次 `global_qc_median`。在此基礎上，再根據 QC 樣本數量與穩定性自動選擇 `frac` 值：
 
-| QC 樣本數 | frac | 策略 |
-|-----------|------|------|
-| < 8 | 1.0 | 使用全部 QC，確保足夠資訊 |
-| 8-11 | 0.8 | 平衡平滑度與局部性 |
-| 12-19 | 0.6 | 中等局部敏感性 |
-| ≥ 20 | 0.4 | 高局部敏感性，捕捉細微變化 |
+| 條件 | frac 策略 |
+|-----------|------|
+| 有效 QC < 6 | 不擬合，該 batch × feature 維持原值 |
+| 有效 QC 6–7 | 只允許通過端點、LOOCV、單調趨勢與 drift/noise gates 的 log2-linear fallback |
+| 有效 QC ≥ 8 | 進入 batch-local LOWESS；仍須通過後續決策 gate |
+| QC CV 高於 acceptable 門檻 | 0.8 |
+| QC CV 高於 excellent 門檻 | 0.7 |
+| 較穩定 QC | `clip(0.85 - n/50, 0.5, 0.75)`；有效 QC ≤10 時下限為 0.7 |
 
 此動態策略避免樣本數不足時過擬合，或樣本充足時過度平滑，同時維持 Step 2 僅做 batch-local drift correction 的角色。
 
@@ -35,9 +37,40 @@ LOWESS 是一種非參數局部加權回歸方法。對於每個樣本位置，L
 
 在 LOWESS 擬合前，使用四分位距 (IQR) 方法識別異常 QC 樣本：
 - 界限：Q1 - 1.5×IQR 至 Q3 + 1.5×IQR
-- 保護機制：移除後須保留至少 70% 的 QC 或最少 5 個
+- 保護機制：IQR outlier filter 只有在移除後仍保留至少 70% 且不少於 5 個 QC 時才會採用；只要篩選後剩 6–7 點，就維持原值，不會再用被全資料挑選過的 QC 執行 LOOCV fallback。
 
 這確保 LOWESS 不被極端值誤導，同時保留足夠數據點進行可靠擬合。若離群值移除後剩餘點數不足，feature 會標記為 `outlier_filtering_left_too_few_points` 而直接跳過校正。
+
+#### 6–7 QC 的 log-linear fallback
+
+fallback 在 `log2(area)` 上比較 intercept-only 模型與
+`log2(area) ~ Injection_Order`。只有以下條件全部成立才套用：
+
+1. batch 的 `Injection_Order` 全部是實測、完整且唯一，有效 QC 並覆蓋第一與最後 injection order；
+2. leave-one-QC-out RMSE 相對 intercept-only 至少改善 10%；
+3. Kendall `|tau| >= 0.5` 且 `p < 0.05`；
+4. 線性模型預測的首尾 drift amplitude 大於模型 residual RMSE。
+
+第 2、3 點的 10%、`|tau| >= 0.5` 與 `p < 0.05` 是本專案採用的保守
+操作門檻，不是文獻中的通用硬標準。若模型需要把任何 correction factor
+截斷到 `[0.5, 2.0]`，該 feature 會判為不穩定並維持原值。
+
+令 `delta = median(fitted_QC) - fitted(order)`。6–7 QC fallback 不會把
+稀疏 QC 估計出的完整斜率直接套到 study samples；本專案採用 0.5
+log-scale shrinkage：
+
+`log2(corrected) = log2(area) + 0.5 × delta`。
+
+因此實際 area-scale correction factor 是 `2^(0.5 × delta)`，也就是完整
+線性 factor `2^delta` 的平方根。0.5 是本專案針對稀疏 QC 尾端風險採用的
+保守操作值，不是通用文獻常數。穩定性 gate 仍先檢查未 shrink 的完整模型
+factor；只要 `2^delta` 需要截斷到 `[0.5, 2.0]`，就拒絕整個 correction，
+不能用 shrinkage 規避原本的 clamp 防線。`cv_after` 與
+`cv_improvement` 則依實際套用 0.5 shrinkage 後的 QC 值計算。
+
+任一 gate 未通過便維持原值，並分別記錄 endpoint、LOOCV、monotonic
+trend 或 drift/noise reason。這是稀疏 QC 的保守 fallback，不是把
+LOWESS 門檻降低到六點。
 
 ### 3. 趨勢顯著性驗證與 skip-correction
 
@@ -97,6 +130,8 @@ RMSE = √[Σ(觀測值 - 擬合值)² / n]
 **安全限制:** 校正因子限制在 [0.5, 2.0] 範圍內，避免極端校正導致數據失真。
 
 只有 `Decision_Status = success` 的 batch 會把校正值寫入主輸出與 QC CV 計算來源；其他狀態（包括 `no_drift_detected` 與各種 rejection）一律保留原始強度。位於有效 QC injection-order span 之外的樣本也保留原始強度，不做 flat extrapolation 校正。
+
+Step 2 只有在至少一個 batch × feature 實際套用校正時回傳 `SUCCEEDED`；若全部 task 都因 QC 不足而未校正，回傳 `SKIPPED / insufficient_valid_qc_for_correction`，若 QC 足夠但沒有任何 task 通過決策，回傳 `SKIPPED / no_feature_correction_applied`。
 
 此外，Step 2 會額外輸出：
 - `Clamped_Factor_Ratio`
@@ -191,7 +226,7 @@ LOWESS 校正的主要數據來源通常是 `ISTD_Correction`；若 Step 1 因 g
 - **Injection_Order:** 記錄樣本分析順序（LOWESS 建模的關鍵）
 - **Batch:** 批次欄位；Step 2 會在 batch 內各自做 drift correction
 
-無正確 `Injection_Order` 資訊，LOWESS 無法建立可靠的時間趨勢模型。若資料缺少部分 injection order，程式可補遞增序號並提出警告，但正式分析應在 `SampleInfo` 補齊。
+無正確 `Injection_Order` 資訊，LOWESS 無法建立可靠的時間趨勢模型。缺失或重複的 injection order 不會再被臨時序號當成校正錨點；受影響的 batch × feature 會維持原值並記錄 `invalid_injection_order`，使用者必須先修正 `SampleInfo`。
 
 ## 🚀 使用方法
 
@@ -261,7 +296,9 @@ QC_LOESS_YYYYMMDD_HHMMSS.xlsx
 - `success`: 有足夠證據支持 batch-local drift correction
 - `no_drift_detected`: feature 本來就穩定，保留原值
 - `insufficient_qc` / `all_qc_invalid`: QC 訊息不足，不做校正
+- `invalid_injection_order`: batch 內注射順序缺失或重複，不做校正
 - `outlier_filtering_left_too_few_points`: QC 離群值移除後不再足夠擬合
+- `linear_fallback_outlier_filtering_not_allowed`: 稀疏 QC 經全資料挑選後不再執行 LOOCV fallback
 
 **LOWESS_R²:**
 - R² > 0.5: 擬合優良，趨勢捕捉良好

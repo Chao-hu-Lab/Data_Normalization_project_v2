@@ -237,13 +237,13 @@ def test_run_step_uses_previous_step_output_instead_of_last_output_file():
     app.run_step(step)
 
     assert captured["input_file"] == "C:/tmp/current-step2-output.xlsx"
-    assert captured["normalization_method"] == "SpecNorm+PQN"
+    assert captured["normalization_method"] == "PQN"
 
 
-def test_run_step_passes_selected_pqn_method_to_normalization():
+def test_run_step_passes_selected_specnorm_method_to_normalization():
     app = _make_app()
     step = app.steps[2]
-    app.normalization_method = type("DummyVar", (), {"get": lambda _self: "PQN"})()
+    app.normalization_method = type("DummyVar", (), {"get": lambda _self: "SpecNorm"})()
     captured = {}
 
     class _DummyModule:
@@ -258,7 +258,7 @@ def test_run_step_passes_selected_pqn_method_to_normalization():
 
     app.run_step(step)
 
-    assert captured["normalization_method"] == "PQN"
+    assert captured["normalization_method"] == "SpecNorm"
 
 
 def test_run_step_passes_diagnostics_only_to_step4():
@@ -394,7 +394,7 @@ def test_on_step_error_invalidates_failed_step_and_downstream(monkeypatch):
         lambda *args, **kwargs: prompt_calls.append((args, kwargs)) or False,
     )
 
-    app.on_step_error(step, "SampleInfo 中找不到 SpecNorm+PQN 所需的 specimen-reference 欄位")
+    app.on_step_error(step, "SampleInfo 中找不到 SpecNorm 所需的 specimen-reference 欄位")
 
     assert "Step 3: Concentration Normalization" not in app.workflow.completed_steps
     assert "Step 4: QC Batch Scaling" not in app.workflow.completed_steps
@@ -405,3 +405,21 @@ def test_on_step_error_invalidates_failed_step_and_downstream(monkeypatch):
     prompt_text = prompt_calls[0][0][1]
     assert "See the Log panel" in prompt_text
     assert "SampleInfo 中找不到" not in prompt_text
+
+
+def test_on_step_error_tells_user_to_fill_missing_batch(monkeypatch):
+    app = _make_app()
+    step = app.steps[0]
+    app.workflow.select_input("C:/tmp/input.xlsx")
+    app.workflow.begin(step["name"])
+    app.update_button_states = lambda: None
+    prompt_calls = []
+    monkeypatch.setattr(
+        "metabolomics.gui.app.messagebox.askyesno",
+        lambda *args, **kwargs: prompt_calls.append((args, kwargs)) or False,
+    )
+
+    app.on_step_error(step, "2 個樣本缺少 Batch 資訊；請先補齊 Batch 後再執行")
+
+    assert prompt_calls
+    assert "補齊 Batch" in prompt_calls[0][0][1]

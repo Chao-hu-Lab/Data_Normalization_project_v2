@@ -1790,12 +1790,20 @@ class DataNormalizationApp:
 
         self.set_progress(f"{step['name']} Error", running=False)
 
-        retry = messagebox.askyesno(
-            "Execution Failed",
-            f"{step['name']} failed.\n"
-            "See the Log panel for details.\n\n"
-            "Retry?"
-        )
+        if "請先補齊 Batch" in str(error):
+            prompt = (
+                f"{step['name']} failed.\n"
+                "請先補齊 Batch：請在 SampleInfo 填妥每個樣本的 Batch 欄位後再重試。\n\n"
+                "Retry?"
+            )
+        else:
+            prompt = (
+                f"{step['name']} failed.\n"
+                "See the Log panel for details.\n\n"
+                "Retry?"
+            )
+
+        retry = messagebox.askyesno("Execution Failed", prompt)
 
         if retry:
             self.execute_step(step)

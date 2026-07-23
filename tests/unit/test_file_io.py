@@ -95,7 +95,7 @@ class TestOutputRootInference:
 
     def test_get_output_root_routes_repo_data_inputs_during_pytest(self, tmp_path, monkeypatch):
         repo_root = tmp_path / "repo"
-        input_file = repo_root / "data" / "feature_matrix_with_qc_non_group_AfterVBA.xlsx"
+        input_file = repo_root / "data" / "synthetic_correction_input.xlsx"
         input_file.parent.mkdir(parents=True, exist_ok=True)
         input_file.touch()
         monkeypatch.setattr(file_io, "get_project_root", lambda: repo_root)
@@ -155,7 +155,7 @@ class TestSessionDir:
 
     def test_resolve_session_dir_autocreates_pytest_session(self, tmp_path, monkeypatch):
         repo_root = tmp_path / "repo"
-        input_file = repo_root / "data" / "feature_matrix_with_qc_non_group_AfterVBA.xlsx"
+        input_file = repo_root / "data" / "synthetic_correction_input.xlsx"
         input_file.parent.mkdir(parents=True, exist_ok=True)
         input_file.touch()
         monkeypatch.setattr(file_io, "get_project_root", lambda: repo_root)

@@ -8,11 +8,11 @@ Required metadata for each future example:
 
 | File | Provenance | Use case | Size | Notes |
 | --- | --- | --- | --- | --- |
-| `example-name_AfterVBA.xlsx` | Synthetic / de-identified source | GUI demo, Step 1-3 smoke, diagnostics-only Step 4 demo, or acceptance reference | To be filled | Include any expected limitations. |
+| `example-name.xlsx` | Synthetic / de-identified source | GUI demo, Step 1-3 smoke, diagnostics-only Step 4 demo, or acceptance reference | To be filled | Include any expected limitations. |
 
 Rules:
 
-- Use the post-VBA workbook layout expected by DNP.
+- Use the current workbook layout expected by DNP and leave correction-stage missing values blank.
 - Include `RawIntensity` and `SampleInfo`.
 - Do not include patient identifiers, private sample names, unpublished study metadata, or absolute local paths.
 - Prefer small files that are fast enough for local smoke tests.

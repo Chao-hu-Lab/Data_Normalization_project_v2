@@ -68,6 +68,7 @@ def select_processor_source_sheet(
 
     if purpose is WorkbookPurpose.BATCH_DIAGNOSTICS:
         for sheet_name in (
+            SHEET_NAMES["specnorm_result"],
             "SpecNorm_PQN_Result",
             SHEET_NAMES.get("pqn_result", "PQN_Result"),
         ):

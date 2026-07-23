@@ -21,6 +21,7 @@ tmp_pytest_*/
 *.xlsx
 *.xls
 !data/*.xlsx
+/data/*AfterVBA.xlsx
 
 # 所有圖片檔案
 *.png

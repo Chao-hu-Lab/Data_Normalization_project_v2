@@ -22,7 +22,7 @@ class ScenarioConfig:
     n_istd: int = 12
     batches: tuple[str, ...] = ("A", "B", "C")
     injections_per_batch: int = 24
-    qc_positions_within_batch: tuple[int, ...] = (1, 5, 9, 13, 17, 21)
+    qc_positions_within_batch: tuple[int, ...] = (1, 4, 7, 11, 14, 17, 20, 24)
     batch_factors: tuple[float, ...] = (1.00, 1.20, 0.88)
     residual_batch_factors: tuple[float, ...] = (1.00, 1.12, 0.92)
     drift_strength: float = 0.18
@@ -736,11 +736,7 @@ def summarize_dataset(
 def build_scenario_manifest_rows() -> list[dict[str, str]]:
     rows = []
     for scenario_name, config in SCENARIO_LIBRARY.items():
-        filename = (
-            "feature_matrix_with_qc_non_group_AfterVBA.xlsx"
-            if scenario_name == "balanced_pipeline"
-            else f"{scenario_name}.xlsx"
-        )
+        filename = f"{scenario_name}.xlsx"
         rows.append(
             {
                 "scenario": config.name,
@@ -803,7 +799,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Generate all scenario profiles into data/scenario_matrices/.",
+        help="Generate all scenario profiles into build/scenario_matrices/.",
     )
     parser.add_argument(
         "--seed",
@@ -819,7 +815,7 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
 
     if args.all:
-        output_root = repo_root / "data" / "scenario_matrices"
+        output_root = repo_root / "build" / "scenario_matrices"
         output_root.mkdir(parents=True, exist_ok=True)
         for scenario_name, config in SCENARIO_LIBRARY.items():
             output_path = output_root / f"{scenario_name}.xlsx"
@@ -828,10 +824,7 @@ def main() -> None:
         return
 
     config = compose_scenario_config(args.scenario)
-    if config.name == "balanced_pipeline":
-        output_path = repo_root / "data" / "feature_matrix_with_qc_non_group_AfterVBA.xlsx"
-    else:
-        output_path = repo_root / "data" / "scenario_matrices" / f"{config.name}.xlsx"
+    output_path = repo_root / "build" / "scenario_matrices" / f"{config.name}.xlsx"
     generate_scenario_workbook(config, output_path, seed=args.seed)
 
 

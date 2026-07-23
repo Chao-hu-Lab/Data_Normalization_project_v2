@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "recipe": "qc_limited_routing",
+  "recipe_version": 1,
+  "semantic_config_sha256": "61b471f41b1cc62dd9f996bf4016581a182742feaafb938d7357136b68745558",
+  "expected_invariant_classes": [
+    "sample_and_feature_identity",
+    "biology_and_rng_stream_assignment",
+    "qc_routing_observed_mask",
+    "missing_reason_except_detection_threshold_crossings"
+  ],
+  "development": {
+    "seeds": [51, 137, 911],
+    "variants": ["baseline"]
+  },
+  "holdout": {
+    "selection_method": "sha256:dnp-sparse-qc-holdout-v1:{index}:first-uint32-mod-2147483647",
+    "seeds": [
+      991505530,
+      2128608369,
+      592513875,
+      1703693361,
+      711421210,
+      1541683440,
+      919584906,
+      1957388970,
+      1334684525,
+      1890497211,
+      1206816986,
+      1019086916,
+      956048499,
+      1783367307,
+      1996312500,
+      1182238128,
+      1480249696,
+      1169902014,
+      457872698,
+      350026526
+    ],
+    "variants": ["baseline", "drift_low", "drift_high"]
+  },
+  "promotion_target": {
+    "effective_qc_count": 6,
+    "mild_harm_floor": -0.1,
+    "max_mild_harm_rate": 0.05,
+    "max_severe_harm_count": 0,
+    "max_biology_sign_flip_rate": 0.0,
+    "min_accepted_tasks": 50
+  }
+}

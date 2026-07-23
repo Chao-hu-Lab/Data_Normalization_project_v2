@@ -61,6 +61,7 @@ SHEET_NAMES = {
     'qc_batch_scaling_summary': 'QC_Batch_Scaling_summary',
     'concentration': 'ConcNormalization_Summary',
     'pqn_result': 'PQN_Result',
+    'specnorm_result': 'SpecNorm_Result',
 }
 
 # Legacy workbook names still accepted on read to avoid breaking old outputs.
@@ -169,7 +170,12 @@ NON_SAMPLE_COLUMNS = {
     'median_correction_factor', 'correction_factor_cv',
     'correction_factor_std', 'correction_factor_range_low',
     'correction_factor_range_high', 'Frac_Used', 'QC_CV_for_Frac',
-    'Frac_Strategy', 'exposure_ratio', 'normal_ratio', 'control_ratio', 'QC_ratio',
+    'Frac_Strategy', 'Fit_Strategy', 'Batch_Decision_Detail',
+    'LOOCV_RMSE',
+    'Linear_LOOCV_Baseline_RMSE_Log2', 'Linear_LOOCV_RMSE_Log2',
+    'Linear_LOOCV_Gain', 'Linear_Drift_Amplitude_Log2',
+    'Linear_Residual_RMSE_Log2', 'Linear_R2',
+    'exposure_ratio', 'normal_ratio', 'control_ratio', 'QC_ratio',
     # Additional metadata columns
     'mz', 'rt', 'm/z', 'Mass', 'Retention_Time',
     'is_Presence_Absence_Marker', 'Feature_Filter_Keep_Reasons', 'Imputation_Tag_Reasons',

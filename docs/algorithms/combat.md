@@ -6,7 +6,7 @@
 
 - Step 1 `ISTD Correction`: sample-level matrix / ionization stabilization
 - Step 2 `QC-LOESS`: batch-local run-order drift correction
-- Step 3 `PQN` / `SpecNorm+PQN`: active concentration normalization endpoint
+- Step 3 `PQN` / `SpecNorm`: active concentration normalization endpoint
 - Step 4 `QC Batch Scaling`: paused for active scientific correction; retained only as diagnostics-only
 
 `ComBat` 或其他 model-based cross-batch correction 不屬於目前 DNP active normalization boundary。若後續需要 cross-batch statistical harmonization，應在 DNP 外部作為獨立分析步驟設計、記錄與驗證，不應由 DNP workflow 默默執行。

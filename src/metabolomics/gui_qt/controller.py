@@ -270,10 +270,16 @@ class WorkflowController(QObject):
         self.workflow.fail(step_name, summary)
         self._last_failed_step = step_name
         self.log_line.emit("error", traceback_text.rstrip())
+        if "請先補齊 Batch" in summary:
+            notice_title = "Batch 資訊未填"
+            notice_message = "請先補齊 Batch：請在 SampleInfo 填妥每個樣本的 Batch 欄位後再重試。"
+        else:
+            notice_title = "Step failed"
+            notice_message = "The step failed. See the Log panel for details. Retry?"
         self.notice.emit(
             "retry",
-            "Step failed",
-            "The step failed. See the Log panel for details. Retry?",
+            notice_title,
+            notice_message,
             step_name,
         )
         self.changed.emit()

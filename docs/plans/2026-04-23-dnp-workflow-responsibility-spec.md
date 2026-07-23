@@ -16,7 +16,9 @@
 This document was written before the responsibility refactor landed. The current branch now implements the intended boundaries:
 
 - Step 2 `QC-LOESS` uses batch-local LOWESS targets and reports advanced per-feature status in `LOESS_summary`.
-- Step 3 `SpecNorm+PQN` uses QC samples when building a PQN reference spectrum, but it is not a batch-correction module.
+- Step 3 exposes `PQN` (default) and explicit `SpecNorm` as alternative
+  specimen-aware estimands. The legacy `SpecNorm+PQN` hybrid remains
+  compatibility-only and is not an active GUI/default method.
 - Step 4 `QC Batch Scaling` is paused for active scientific correction and remains available only through explicit diagnostics-only execution.
 
 This document defines the intended responsibility boundary for each active DNP step.
@@ -25,19 +27,20 @@ This document defines the intended responsibility boundary for each active DNP s
 
 | Step | Name | Primary purpose | Allowed to use QC? | Batch-aware? | Should do cross-batch alignment? |
 |------|------|-----------------|--------------------|--------------|----------------------------------|
-| 1 | ISTD Correction | correct sample-level ionization / matrix effects using internal standards | yes | no | no |
+| 1 | ISTD Monitoring / Selective Correction | monitor internal standards and apply only validated analyte-to-ISTD mappings; the current broad auto-matcher is legacy compatibility | yes | no | no |
 | 2 | QC-LOESS | correct within-batch run-order drift using QC anchors | yes | yes | no |
-| 3 | Concentration Normalization (`PQN` / `SpecNorm+PQN`) | correct sample-wise dilution / concentration scaling | yes, but only for PQN reference construction and QC evaluation | optional metadata-aware, not batch-correction-aware | no |
-| 4 | QC Batch Scaling | cross-batch QC-median alignment | yes | yes | yes, but currently deprecated / paused |
+| 3 | Concentration Normalization (`PQN` / `SpecNorm`) | correct sample-wise dilution or divide by an explicit specimen-reference measurement, depending on the selected estimand | yes, but only for PQN reference construction and QC evaluation | optional metadata-aware, not batch-correction-aware | no |
+| 4 | QC Batch Diagnostics | inspect residual batch/QC behavior without applying active cross-batch scaling | yes | yes | no |
 
 ## Intended Responsibility by Step
 
-### Step 1: ISTD Correction
+### Step 1: ISTD Monitoring / Selective Correction
 
 **Responsible for**
 
-- correcting analyte intensity using internal-standard relationships
-- reducing sample-specific matrix and ionization artifacts
+- monitoring ISTD missingness, RT, area, and run-order stability
+- correcting an analyte only when an explicit matched or separately validated
+  surrogate mapping exists
 - preserving run-order and batch structure for later steps
 
 **Not responsible for**
@@ -45,10 +48,13 @@ This document defines the intended responsibility boundary for each active DNP s
 - drift correction over injection order
 - cross-batch alignment
 - biological-group preservation logic
+- assigning every unknown feature to a nearest-RT or score-selected ISTD
 
 **Operational notes**
 
-- Step 1 may be skipped when ISTD quality is insufficient.
+- Broad untargeted/adductomics runs should skip the legacy universal auto-match
+  path when no validated feature-level mapping exists.
+- Step 1 may also be skipped when ISTD quality is insufficient.
 - Step 2 must remain valid when Step 1 output is unavailable.
 
 ### Step 2: QC-LOESS
@@ -77,19 +83,24 @@ This document defines the intended responsibility boundary for each active DNP s
 
 Step 2 is valid even when each batch has its own pooled QC material, because the method only assumes that QC samples are internally comparable within a batch over time.
 
-### Step 3: Concentration Normalization (`PQN` / `SpecNorm+PQN`)
+### Step 3: Concentration Normalization (`PQN` / `SpecNorm`)
 
 **Responsible for**
 
-- correcting sample-wise dilution / concentration differences
-- building a robust sample-scaling reference spectrum
-- optionally dividing real samples by a per-sample reference column such as `Creatinine_mg_dL`
+- selecting one declared sample-wise dilution/concentration estimand
+- building a robust sample-scaling reference spectrum for `PQN`
+- dividing real samples by an explicit trusted specimen-reference measurement
+  for `SpecNorm`
 
 **Current behavior in code**
 
 - `SpecNorm` divides only real samples by a per-sample reference value from `SampleInfo`.
 - QC samples are excluded from the `SpecNorm` division stage.
 - `PQN` uses a QC-derived reference when QC samples exist.
+- `PQN` is the default method; `SpecNorm` is an explicit alternative rather
+  than an automatically chained preprocessing stage.
+- Legacy `SpecNorm+PQN` aliases remain programmatically accepted for
+  compatibility, but are not an active GUI/default method.
 - If QC samples are missing, Step 3 stops with an explicit error; the all-sample robust median fallback is disabled for adductomics.
 
 **Must not do**
@@ -102,11 +113,11 @@ Step 2 is valid even when each batch has its own pooled QC material, because the
 
 Step 3 can remain global if the reference spectrum is intended to capture dilution structure rather than batch structure. However, if QC composition differs materially by batch, a global QC-derived PQN reference may import batch bias into the reference spectrum. That risk should be evaluated explicitly rather than silently treated as batch correction.
 
-### Step 4: QC Batch Scaling
+### Step 4: QC Batch Diagnostics
 
 **Current status**
 
-- paused / deprecated for active scientific use
+- diagnostics-only; paused for active scientific scaling
 
 **Reason**
 
@@ -119,12 +130,12 @@ The current method assumes that per-batch QC medians are comparable across batch
 
 ## Responsibility Table: Methods vs Bias Types
 
-| Bias type | Step 1 ISTD | Step 2 QC-LOESS | Step 3 PQN / SpecNorm+PQN | Step 4 QC Batch Scaling |
+| Bias type | Step 1 ISTD | Step 2 QC-LOESS | Step 3 PQN / SpecNorm | Step 4 QC Batch Diagnostics |
 |-----------|-------------|-----------------|---------------------------|-------------------------|
-| sample-specific matrix effect | yes | no | sometimes indirect | no |
+| sample-specific matrix effect | only for validated matched/selective correction | no | sometimes indirect | no |
 | within-batch run-order drift | no | yes | no | no |
 | dilution / concentration scaling | no | no | yes | no |
-| cross-batch location/scale offset | no | no by design | no | yes, but paused |
+| cross-batch location/scale offset | no | no by design | no | diagnostics only |
 | confounded biological-vs-batch structure | no | no | no | no |
 
 ## Active Design Rules

@@ -114,26 +114,42 @@ def output_dir(tmp_path):
 
 @pytest.fixture(scope="session")
 def sample_input_file(test_data_dir):
-    """
-    Return path to sample input file for testing.
-    Uses feature_matrix_with_qc_non_group_AfterVBA.xlsx as it contains QC samples.
-    """
-    file_path = os.path.join(test_data_dir, "feature_matrix_with_qc_non_group_AfterVBA.xlsx")
+    """Return the deterministic current-format correction fixture."""
+    file_path = os.path.join(test_data_dir, "synthetic_correction_input.xlsx")
     if not os.path.exists(file_path):
-        pytest.skip(f"Test data file not found: {file_path}")
+        pytest.fail(
+            "Canonical test fixture is missing. Rebuild it with "
+            "`python scripts/synthetic_matrix_vnext.py`: "
+            f"{file_path}"
+        )
     return file_path
 
 
 @pytest.fixture(scope="session")
-def sample_input_file_no_qc(test_data_dir):
-    """
-    Return path to sample input file without QC samples.
-    Uses feature_matrix_control_exposed_AfterVBA.xlsx.
-    """
-    file_path = os.path.join(test_data_dir, "feature_matrix_control_exposed_AfterVBA.xlsx")
-    if not os.path.exists(file_path):
-        pytest.skip(f"Test data file not found: {file_path}")
-    return file_path
+def sample_input_file_no_qc(sample_input_file, tmp_path_factory):
+    """Derive a no-QC contract input without tracking another binary fixture."""
+    output_path = tmp_path_factory.mktemp("no_qc_fixture") / "no_qc_input.xlsx"
+    shutil.copy2(sample_input_file, output_path)
+    workbook = load_workbook(output_path)
+    try:
+        sample_info = workbook["SampleInfo"]
+        sample_type_column = next(
+            cell.column
+            for cell in sample_info[1]
+            if cell.value == "Sample_Type"
+        )
+        for row in range(2, sample_info.max_row + 1):
+            if str(sample_info.cell(row, sample_type_column).value).upper() == "QC":
+                sample_info.cell(row, sample_type_column).value = "Control"
+
+        raw = workbook["RawIntensity"]
+        for column in range(2, raw.max_column + 1):
+            if str(raw.cell(2, column).value).upper() == "QC":
+                raw.cell(2, column).value = "Control"
+        workbook.save(output_path)
+    finally:
+        workbook.close()
+    return str(output_path)
 
 
 # ============================================================

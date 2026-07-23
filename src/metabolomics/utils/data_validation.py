@@ -146,6 +146,7 @@ class DataValidator:
         df: pd.DataFrame,
         required_columns: Optional[List[str]] = None,
         require_qc: bool = False,
+        require_batch: bool = False,
     ) -> ValidationResult:
         """
         Validate SampleInfo sheet structure and content.
@@ -173,7 +174,9 @@ class DataValidator:
         result.info['total_samples'] = len(df)
 
         # Check required columns
-        required_cols = required_columns or ['Sample_Name', 'Sample_Type']
+        required_cols = list(required_columns or ['Sample_Name', 'Sample_Type'])
+        if require_batch and 'Batch' not in required_cols:
+            required_cols.append('Batch')
         for col in required_cols:
             if col not in df.columns:
                 # Try to find similar column names
@@ -183,10 +186,25 @@ class DataValidator:
                         f"缺少 '{col}' 欄位，但找到類似欄位: {similar}"
                     )
                 else:
-                    result.add_error(f"缺少必要欄位: {col}")
+                    if col == 'Batch' and require_batch:
+                        result.add_error("SampleInfo 缺少 'Batch' 欄位；請先補齊 Batch 後再執行")
+                    else:
+                        result.add_error(f"缺少必要欄位: {col}")
 
         if not result.is_valid:
             return result
+
+        if require_batch:
+            missing_batch_mask = (
+                df['Batch'].isna()
+                | df['Batch'].astype(str).str.strip().eq('')
+            )
+            missing_batch_count = int(missing_batch_mask.sum())
+            if missing_batch_count:
+                result.add_error(
+                    f"{missing_batch_count} 個樣本缺少 Batch 資訊；請先補齊 Batch 後再執行"
+                )
+                return result
 
         # Check for duplicates
         duplicates = df[df['Sample_Name'].duplicated(keep=False)]

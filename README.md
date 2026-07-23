@@ -24,24 +24,25 @@ The current active scientific workflow ends at **Step 3**. Step 4 remains visibl
 
 GUI preview: pending verified capture.
 
-The first screenshot will show the main workflow screen with `data/feature_matrix_with_qc_AfterVBA.xlsx` loaded, `SpecNorm+PQN` selected, and Auto Run ready. Screenshot capture rules live in [docs/assets](docs/assets/README.md).
+The first screenshot will show the main workflow screen with `data/synthetic_correction_input.xlsx` loaded, `PQN` selected, and Auto Run ready. Screenshot capture rules live in [docs/assets](docs/assets/README.md).
 
 | Asset | Intended capture |
 | --- | --- |
-| `docs/assets/dnp-gui-overview.png` | Main GUI after selecting `data/feature_matrix_with_qc_AfterVBA.xlsx`, with `SpecNorm+PQN` selected and Auto Run ready. |
+| `docs/assets/dnp-gui-overview.png` | Main GUI after selecting `data/synthetic_correction_input.xlsx`, with `PQN` selected and Auto Run ready. |
 | `docs/assets/dnp-step3-session.png` | Optional output/session view showing the Step 3 workbook and generated plots. |
 
 ## Workflow Contract
 
 | Step | Module | Status | Responsibility |
 | --- | --- | --- | --- |
-| 1 | ISTD Correction | Active | Correct sample-level internal-standard behavior and mark skipped ISTD paths explicitly. |
-| 2 | QC-LOESS | Active | Correct within-batch run-order drift using batch-local QC anchors. |
-| 3 | Concentration Normalization | Active | Run `SpecNorm+PQN` by default, or `PQN` when no specimen-reference column should be used; this is the final normalized output. |
+| 1 | ISTD Correction | Conditional / legacy auto-match | Monitor ISTDs and preserve explicit skip outcomes. Broad untargeted/adductomics runs should skip the current universal auto-matcher unless an analyte-to-ISTD mapping has independent validation. |
+| 2 | QC-LOESS | Active | Correct within-batch run-order drift using batch-local QC anchors; 6–7 effective QC may use the gated log-linear fallback, while ≥8 may use LOWESS. |
+| 3 | Concentration Normalization | Active | Choose `PQN` (default; urine/global dilution) or `SpecNorm` (explicit tissue-reference division); this is the final normalized output. |
 | 4 | QC Batch Scaling | Manual diagnostics only | Emit batch diagnostics when explicitly requested with `diagnostics_only=True`; not part of Auto Run. |
 
 Important boundaries:
 
+- Step 1's current RT/CV-weighted automatic matching remains legacy compatibility behavior, not a validated universal correction for unknown features. Matched monitoring/correction replacement work is tracked in [issue #33](https://github.com/Chao-hu-Lab/Data_Normalization_project_v2/issues/33).
 - Step 2 does not align batches against a cross-batch QC target.
 - Step 3 may use QC samples to build a PQN reference, but it is not a batch-correction module.
 - Step 3 fails closed when QC samples are missing for the active adductomics policy.
@@ -85,31 +86,28 @@ python Data_Normalization_program_v2.py
 
 Typical GUI flow:
 
-1. Click **Browse** and select a VBA-preprocessed Excel workbook.
-2. Keep the default Step 3 method `SpecNorm+PQN`, or choose `PQN` when no specimen-reference column should be used.
+1. Click **Browse** and select a current-format Excel workbook.
+2. Keep the default Step 3 method `PQN` for urine/global dilution, or explicitly choose `SpecNorm` for tissue data with a trusted per-sample reference.
 3. Click **Auto Run** to execute the active workflow through Step 3.
 4. Open the Step 3 workbook or plots from the GUI.
 5. Run Step 4 only when you explicitly need diagnostics-only batch reports.
 
-For a first local smoke run, use the bundled workbook `data/feature_matrix_with_qc_AfterVBA.xlsx`; its `SampleInfo` sheet includes `Creatinine_mg_dL` for the default `SpecNorm+PQN` path.
+For a first local smoke run, use `data/synthetic_correction_input.xlsx`; it is deterministic synthetic data with endpoint QCs, unfilled missing values, ISTD markers, and a reference column that can exercise the explicit `SpecNorm` path.
 
 ## Example Workbooks
 
-The `data/` directory contains small workbooks for local exploration and regression checks. Prefer the `AfterVBA` variants when trying the GUI, because they represent the expected post-macro workbook layout.
+The tracked smoke-test workbook is generated from a reviewed simulation contract. It is not real experimental data and does not contain pre-correction imputation.
 
 | Path | Use for | Notes |
 | --- | --- | --- |
-| `data/feature_matrix_with_qc_AfterVBA.xlsx` | First GUI smoke run | Includes QC samples and the expected post-VBA sheet layout. |
-| `data/feature_matrix_with_qc_non_group_AfterVBA.xlsx` | Broader QC workflow checks | Useful when validating sample classification and non-group metadata paths. |
-| `data/feature_matrix_control_exposed_AfterVBA.xlsx` | Fail-closed contract checks | No QC happy path; useful for confirming Step 3 refuses unsupported QC-reference conditions. |
-| `data/scenario_matrices/SCENARIO_MATRIX_GUIDE.md` | Synthetic scenario index | Explains generated scenario matrices and the behavior each case exercises. |
-| `data/scenario_matrices/scenario_manifest.csv` | Machine-readable scenario inventory | Lists generated scenario files and expected smoke-test metadata. |
+| `data/synthetic_correction_input.xlsx` | First GUI and regression smoke run | Rebuild with `python scripts/synthetic_matrix_vnext.py`; same seed must preserve the semantic workbook digest. |
+| `build/scenario_matrices/` | Generated stress scenarios | Untracked outputs from `python scripts/generate_batcheffect_data.py --all`. |
 
 Future larger examples should go under [data/examples](data/examples/README.md) or be linked from this section with file size and provenance. Do not add private research workbooks to the repository.
 
 ## Input Workbook Contract
 
-DNP expects an Excel workbook (`.xlsx` or `.xls`) that has already been preprocessed by the project VBA macro.
+DNP expects a current-format Excel workbook (`.xlsx` or `.xls`). Missing intensities must remain blank at the correction stages; imputation belongs after correction and before statistical methods that require a complete matrix.
 
 Required sheets:
 
@@ -130,9 +128,9 @@ Required sheets:
 | --- | --- |
 | `Sample_Name` | Must match data-sheet sample columns exactly or through the shared sample-name normalization rules. |
 | `Sample_Type` | Common values include `QC`, `Control`, `Exposure`, `Normal`, and `Blank`. |
-| `Injection_Order` | Required by Step 2 QC-LOESS. |
+| `Injection_Order` | Required by Step 2; values must be complete and unique within each batch. |
 | `Batch` | Used for Step 2 batch-local correction and Step 4 diagnostics. |
-| named numeric specimen-reference | Required for `SpecNorm+PQN`; common names include `Creatinine_mg_dL`, `DNA_ug/20uL`, protein amount, concentration, reference, or amount columns. Operational metadata such as `Injection_Volume` is ignored. |
+| named numeric specimen-reference | Required only for explicit `SpecNorm` (and the legacy hybrid); common names include `DNA_ug/20uL`, protein amount, concentration, reference, or amount columns. Every non-QC sample must contain a positive finite value. Operational metadata such as `Injection_Volume` is ignored. |
 
 ## Outputs
 
@@ -144,7 +142,7 @@ output/
     ├── Step1_ISTD_Results.xlsx
     ├── Step2_QC_LOESS.xlsx
     ├── Step3_Normalized_PQN.xlsx
-    ├── Step3_Normalized_SpecNorm_PQN.xlsx
+    ├── Step3_Normalized_SpecNorm.xlsx
     ├── Step4_QC_Batch_Scaling.xlsx  # optional diagnostics-only output
     └── plots/
         └── *.png
@@ -165,7 +163,13 @@ result1 = istd.main(input_file="your_data.xlsx")
 result2 = qc_lowess.main(input_file=result1.output_path)
 result3 = normalization.main(
     input_file=result2.output_path,
-    normalization_method="SpecNorm+PQN",
+    normalization_method="PQN",  # urine/global dilution default
+)
+
+# Tissue DNA example: signal per unit DNA.
+result3_tissue = normalization.main(
+    input_file=result2.output_path,
+    normalization_method="SpecNorm",
 )
 
 # Optional diagnostics-only Step 4.
@@ -182,11 +186,15 @@ calculation, and save failures raise exceptions. The GUI workflow owns the separ
 
 Supported Step 3 method names:
 
-- `SpecNorm+PQN`
-- `SpecNorm_PQN`
 - `PQN`
+- `SpecNorm`
+
+Legacy programmatic aliases `SpecNorm+PQN` and `SpecNorm_PQN` remain accepted
+for backward compatibility, but are not active GUI choices.
 
 `SpecNorm` means specimen-reference normalization in this project: real samples are divided by a trusted per-sample reference value from `SampleInfo`; QC samples are not divided in this stage.
+
+Method selection is explicit and specimen-aware rather than column-driven: tissue DNA-input `SpecNorm` may follow the distinct feature-level QC correction, while urine defaults to PQN. The legacy `SpecNorm+PQN` implementation is scale-invariant to the specimen-reference division for samples with valid references, so it is not described as two independent corrections; see [Normalization Algorithm](docs/algorithms/normalization.md#依-specimen-type-選擇方法tissue-specnormurine-pqn).
 
 ## CLI Status
 
@@ -215,25 +223,26 @@ For output-affecting processor changes, run the real-workbook acceptance workflo
 ## Documentation
 
 - [Testing Guide](docs/TESTING.md): test layers, scenario smoke, and acceptance workbook equivalence.
-- [ISTD Algorithm](docs/algorithms/istd.md): Step 1 input contract, ISTD matching, and output interpretation.
+- [ISTD Algorithm](docs/algorithms/istd.md): Step 1 monitoring/matched-correction boundary, legacy auto-match status, and output interpretation.
 - [QC-LOWESS Algorithm](docs/algorithms/qc_lowess.md): Step 2 batch-local drift correction contract.
-- [Normalization Algorithm](docs/algorithms/normalization.md): Step 3 `PQN` / `SpecNorm+PQN` behavior and output sheets.
+- [Normalization Algorithm](docs/algorithms/normalization.md): Step 3 `PQN` / `SpecNorm` behavior and output sheets.
 - [Workflow Responsibility Spec](docs/plans/2026-04-23-dnp-workflow-responsibility-spec.md): active responsibility boundary for Steps 1-4.
 - [PQN Reference Rules](docs/plans/2026-04-23-pqn-reference-selection-rules.md): active adductomics QC-reference policy.
+- [Specimen-aware Step 3 Contract](docs/plans/2026-07-23-step3-specimen-aware-method-contract.md): active `PQN` / explicit `SpecNorm` method decision.
 - [ComBat Archive](docs/algorithms/combat.md): why ComBat is outside DNP's active boundary.
-- [Scenario Matrix Guide](data/scenario_matrices/SCENARIO_MATRIX_GUIDE.md): generated synthetic scenario matrix index.
+- `python scripts/generate_batcheffect_data.py --all`: generate the disposable scenario matrix set and manifest under `build/scenario_matrices/`.
 
-Most dated planning notes under `docs/plans/` and `docs/superpowers/plans/` are archived records. The two active 2026-04-23 contract references listed above are exceptions until they are migrated into a dedicated contract directory.
+Most dated planning notes under `docs/plans/` and `docs/superpowers/plans/` are archived records. The active contract references listed above are exceptions until they are migrated into a dedicated contract directory.
 
 ## Troubleshooting
 
 | Symptom | Check |
 | --- | --- |
-| Missing `RawIntensity` or `SampleInfo` | Confirm the workbook was VBA-preprocessed and contains the required sheets. |
+| Missing `RawIntensity` or `SampleInfo` | Confirm the workbook follows the current input contract and contains both required sheets. |
 | No ISTD found | Confirm ISTD feature IDs are marked with red font in the first column of `RawIntensity`. |
 | Sample name mismatch | Align `SampleInfo.Sample_Name` with data-sheet sample columns; DNP fails closed instead of silently guessing. |
 | Step 2 cannot start | Confirm `SampleInfo` has `Sample_Name`, `Sample_Type`, and `Injection_Order`, and contains QC samples. |
-| `SpecNorm+PQN` cannot start | Confirm `SampleInfo` has a usable named numeric specimen-reference column, or choose `PQN`. |
+| `SpecNorm` cannot start | Confirm every non-QC sample has a positive finite value in a trusted named specimen-reference column, or choose `PQN` when reference division is not the intended estimand. |
 | Auto Run stops before Step 4 | This is expected. Auto Run ends at Step 3; Step 4 is manual diagnostics-only. |
 
 ## License
