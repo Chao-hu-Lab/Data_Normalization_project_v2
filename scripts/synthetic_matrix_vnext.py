@@ -89,12 +89,22 @@ def _named_rngs(seed: int) -> dict[str, np.random.Generator]:
     }
 
 
-def _build_sample_info() -> pd.DataFrame:
+def _build_sample_info(design: str = "balanced") -> pd.DataFrame:
+    if design not in {"balanced", "order_confounded"}:
+        raise ValueError(f"Unsupported study design: {design}")
+
     rows: list[dict[str, object]] = []
     qc_index = exposure_index = control_index = 1
     injection_order = 1
     for batch in ("A", "B", "C"):
-        study_types = ["Exposure", "Control"] * 8
+        if design == "balanced":
+            study_types = ["Exposure", "Control"] * 8
+        elif batch == "A":
+            study_types = ["Control"] * 16
+        elif batch == "B":
+            study_types = ["Control"] * 8 + ["Exposure"] * 8
+        else:
+            study_types = ["Exposure"] * 16
         study_cursor = 0
         for local_position in range(1, 25):
             if local_position in QC_POSITIONS:
@@ -278,6 +288,7 @@ def generate_simulation(
     *,
     seed: int = 51,
     variant: str | None = None,
+    design: str = "balanced",
 ) -> SimulationResult:
     """Generate one reviewed synthetic scenario and its reconstructable truth."""
     if recipe not in ("routine_recoverable", "qc_limited_routing"):
@@ -294,7 +305,7 @@ def generate_simulation(
     drift_scale = QC_LIMITED_ROUTING_DRIFT_SCALES.get(variant or "baseline")
 
     rngs = _named_rngs(seed)
-    sample_info = _build_sample_info()
+    sample_info = _build_sample_info(design=design)
     feature_info = _build_feature_info(rngs["feature_assignments"])
     n_samples = len(sample_info)
     n_features = len(feature_info)

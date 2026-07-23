@@ -146,6 +146,54 @@ def test_paired_drift_variants_share_unperturbed_truth_and_random_uniforms():
     )
 
 
+def test_study_design_parameter_controls_order_confounding():
+    balanced = generate_simulation(
+        "routine_recoverable",
+        seed=51,
+        design="balanced",
+    )
+    confounded = generate_simulation(
+        "routine_recoverable",
+        seed=51,
+        design="order_confounded",
+    )
+
+    def study_counts(result):
+        study = result.sample_info.loc[
+            result.sample_info["Sample_Type"].ne("QC")
+        ]
+        return (
+            study.groupby(["Batch", "Sample_Type"])
+            .size()
+            .unstack(fill_value=0)
+            .to_dict("index")
+        )
+
+    assert study_counts(balanced) == {
+        "A": {"Control": 8, "Exposure": 8},
+        "B": {"Control": 8, "Exposure": 8},
+        "C": {"Control": 8, "Exposure": 8},
+    }
+    assert study_counts(confounded) == {
+        "A": {"Control": 16, "Exposure": 0},
+        "B": {"Control": 8, "Exposure": 8},
+        "C": {"Control": 0, "Exposure": 16},
+    }
+    pd.testing.assert_series_equal(
+        balanced.sample_info["Sample_Type"].eq("QC"),
+        confounded.sample_info["Sample_Type"].eq("QC"),
+    )
+
+
+def test_study_design_parameter_rejects_unknown_values():
+    with pytest.raises(ValueError, match="Unsupported study design"):
+        generate_simulation(
+            "routine_recoverable",
+            seed=51,
+            design="unknown",
+        )
+
+
 def test_step2_metrics_recognize_perfect_counterfactual_recovery():
     result = generate_simulation("routine_recoverable", seed=51)
     perfect = result.truth.step2_counterfactual.copy()
