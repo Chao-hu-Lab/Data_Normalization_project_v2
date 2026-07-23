@@ -64,6 +64,9 @@ def test_p3_window_uses_real_cards_pills_file_bar_and_status_bar():
         card.status_label.objectName() == "statusPill"
         for card in window.step_cards.values()
     )
+    assert window.step_cards[STEP1_NAME].title_label.text() == (
+        "ISTD Monitoring / Selective Correction"
+    )
     assert window.file_bar.objectName() == "fileBar"
     assert isinstance(window.statusBar(), QStatusBar)
     assert window.step_cards[STEP4_NAME].note_label.text() == (

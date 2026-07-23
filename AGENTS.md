@@ -19,9 +19,10 @@ document and keep this file as a router plus guardrails.
 ## Scientific Guardrails
 
 - Broad untargeted/adductomics runs must not treat the legacy RT/CV-weighted
-  ISTD auto-matcher as a validated universal correction. Default to Step 1
-  `SKIP` unless an explicit analyte-to-ISTD mapping and its validation evidence
-  exist.
+  ISTD auto-matcher as a validated universal correction. Default to
+  monitoring-only output; correct only features with an explicit
+  analyte-to-ISTD mapping and validation reference. Step 1 is `SKIPPED` only
+  when the input contains no ISTD.
 - ISTD monitoring, matched analyte correction, validated surrogate correction,
   and abstention are different states. Outputs and tests must not collapse them
   into one generic "ISTD corrected" state.

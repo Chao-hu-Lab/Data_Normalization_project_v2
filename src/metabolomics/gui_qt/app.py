@@ -70,6 +70,8 @@ def _repolish(widget: QWidget) -> None:
 
 def _step_title(step_name: str) -> tuple[str, str]:
     title = step_name.split(":", 1)[-1].strip()
+    if step_name == STEP1_NAME:
+        return "ISTD Monitoring / Selective Correction", ""
     if step_name == STEP4_NAME:
         return title, "(paused / diagnostics-only)"
     return title, ""

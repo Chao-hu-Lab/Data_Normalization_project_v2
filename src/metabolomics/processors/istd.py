@@ -37,6 +37,13 @@ from metabolomics.utils.data_validation import DataValidator, require_valid
 from metabolomics.utils.excel_colors import cell_has_red_font
 from metabolomics.utils.results import ProcessingResult, WorkflowOutcome
 from metabolomics.utils.console import safe_print as print
+from metabolomics.utils.istd_mapping import (
+    ISTD_MAPPING_SHEET,
+    ISTD_MONITORING_SHEET,
+    build_istd_monitoring_table,
+    calculate_selective_istd_correction,
+    validate_istd_mapping,
+)
 from metabolomics.utils.excel_format import (
     apply_cv_quality_fill,
     apply_header_fill,
@@ -1196,16 +1203,10 @@ def build_step1_plot_sample_metadata(sample_columns, sample_info_df, col_to_info
         return sample_meta
 
     sample_meta['injection_order'] = pd.to_numeric(sample_meta['injection_order'], errors='coerce')
-    max_existing = sample_meta['injection_order'].dropna().max()
-    if pd.isna(max_existing):
-        max_existing = 0
-
-    missing_mask = sample_meta['injection_order'].isna()
-    if missing_mask.any():
-        filler = np.arange(1, missing_mask.sum() + 1, dtype=float) + float(max_existing)
-        sample_meta.loc[missing_mask, 'injection_order'] = filler
-
-    return sample_meta.sort_values(['injection_order', 'fallback_order']).reset_index(drop=True)
+    return sample_meta.sort_values(
+        ['injection_order', 'fallback_order'],
+        na_position='last',
+    ).reset_index(drop=True)
 
 
 def plot_istd_stability_tracking(
@@ -1222,7 +1223,7 @@ def plot_istd_stability_tracking(
         return None
 
     sample_meta = build_step1_plot_sample_metadata(sample_columns, sample_info_df, col_to_info=col_to_info)
-    if sample_meta.empty:
+    if sample_meta.empty or sample_meta['injection_order'].isna().any():
         return None
 
     ordered_sample_columns = [col for col in sample_meta['sample_column'] if col in original_df.columns]
@@ -1532,7 +1533,8 @@ def apply_fdr_correction(pvalues):
 # ========== 🔧 修改：save_results_to_excel==========
 def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
                           all_sheets, sample_columns, original_workbook, plots_dir=None,
-                          col_to_info=None, cv_results_df=None):
+                          col_to_info=None, cv_results_df=None, mapping_df=None,
+                          monitoring_df=None):
     """
     儲存結果到 Excel，使用 Wilcoxon 配對符號等級檢定 + Levene's test
     """
@@ -1546,7 +1548,7 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
         raise ValueError("沒有成功校正的代謝物")
 
     print(f"\n準備儲存結果:")
-    print(f"  - 校正成功的代謝物數量: {len(results_df)}")
+    print(f"  - 輸出的 analyte feature 數量: {len(results_df)}")
     print(f"  - 樣本數量: {len(sample_columns)}")
 
     # 检查必要欄位
@@ -1625,6 +1627,10 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
         SHEET_NAMES['raw_intensity']: all_sheets[SHEET_NAMES['raw_intensity']],
         SHEET_NAMES['sample_info']: all_sheets[SHEET_NAMES['sample_info']],
     }
+    if mapping_df is not None and not mapping_df.empty:
+        retained_sheets[ISTD_MAPPING_SHEET] = mapping_df.copy()
+    if monitoring_df is not None:
+        retained_sheets[ISTD_MONITORING_SHEET] = monitoring_df.copy()
 
     if rename_map:
         print(f"✓ 簡化 {len(rename_map)} 個欄位名稱（移除 DNA/RNA_programN_ 前綴）")
@@ -1736,7 +1742,7 @@ def save_results_to_excel(original_df, results_df, sample_info_df, output_file,
     print(f"{'='*70}\n")
 
 
-def main(input_file=None, session_dir=None):
+def main(input_file=None, session_dir=None, *, legacy_auto_match=False):
     """
     主函數 - 修改為與 GUI 配合
 
@@ -1828,33 +1834,58 @@ def main(input_file=None, session_dir=None):
     print(f"  - QC 樣本數: {len(gate_eval['qc_columns'])}")
     print(f"  - ISTD 總數: {gate_eval['total_istd']}")
     print(f"  - QC_CV% < {CV_QUALITY_THRESHOLDS['excellent']:.0f}% 的 ISTD: {gate_eval['good_istd_count']}")
-    if gate_eval['should_skip']:
+    if gate_eval['total_istd'] == 0:
         print("  - 決策: 跳過 Step 1 ISTD Correction")
-        print("  - 原因: 合格 ISTD 數量不足，後續 Step 2 應直接使用 RawIntensity")
+        print("  - 原因: 未偵測到 ISTD，後續 Step 2 應直接使用 RawIntensity")
+    elif gate_eval['good_istd_count'] < 5:
+        print("  - 提醒: 穩定 ISTD 少於 5 個；仍可監測或執行逐 feature 明確 mapping")
     print("="*70 + "\n")
 
-    if gate_eval['should_skip']:
+    if gate_eval['total_istd'] == 0:
         # Skip: no output workbook is produced. Downstream steps should continue
         # from the original input and apply their own fallback filtering.
-        skip_reason = (
-            'no_istd_detected'
-            if gate_eval['total_istd'] == 0
-            else 'insufficient_good_istd'
-        )
         return ProcessingResult(
             file_path=input_file,
             output_path=input_file,
             metabolites=len(original_df),
             samples=len(gate_eval['sample_columns']),
             status=WorkflowOutcome.SKIPPED,
-            reason=skip_reason,
+            reason='no_istd_detected',
             extra={
                 'total_istd': gate_eval['total_istd'],
                 'good_istd': gate_eval['good_istd_count'],
             }
         )
 
-    results_df, sample_columns = calculate_corrected_ratios(original_df, sample_info_df)
+    mapping_df = all_sheets.get(ISTD_MAPPING_SHEET)
+    monitoring_df = build_istd_monitoring_table(original_df, sample_info_df)
+    if legacy_auto_match:
+        validated_mapping = validate_istd_mapping(mapping_df, original_df)
+        if not validated_mapping.empty:
+            raise ValueError(
+                "legacy_auto_match cannot be combined with an ISTD_Mapping sheet"
+            )
+        results_df, sample_columns = calculate_corrected_ratios(
+            original_df,
+            sample_info_df,
+        )
+        corrected_features = len(results_df)
+        correction_summary = {
+            "istd_mode": "legacy_auto_match",
+            "corrected_features": corrected_features,
+            "uncorrected_features": 0,
+            "mapping_rows": 0,
+            "status_counts": {"legacy_auto_match": corrected_features},
+            "monitored_istds": len(monitoring_df),
+        }
+    else:
+        results_df, sample_columns, correction_summary = (
+            calculate_selective_istd_correction(
+                original_df,
+                sample_info_df,
+                mapping_df=mapping_df,
+            )
+        )
 
     cv_results_df = calculate_qc_cv_with_statistical_test(
         results_df,
@@ -1867,20 +1898,36 @@ def main(input_file=None, session_dir=None):
     save_results_to_excel(
         original_df, results_df, sample_info_df,
         output_file, all_sheets, sample_columns, input_file,
-        plots_dir=_plots_dir, col_to_info=col_to_info, cv_results_df=cv_results_df
+        plots_dir=_plots_dir, col_to_info=col_to_info, cv_results_df=cv_results_df,
+        mapping_df=mapping_df, monitoring_df=monitoring_df,
     )
-    generate_step1_diagnostic_plots(
-        original_df,
-        results_df,
-        sample_columns,
-        sample_info_df,
-        cv_results_df,
-        plots_dir=str(_plots_dir),
-        timestamp=run_timestamp,
-        col_to_info=col_to_info,
-    )
+    if correction_summary["corrected_features"] > 0:
+        generate_step1_diagnostic_plots(
+            original_df,
+            results_df,
+            sample_columns,
+            sample_info_df,
+            cv_results_df,
+            plots_dir=str(_plots_dir),
+            timestamp=run_timestamp,
+            col_to_info=col_to_info,
+        )
+    else:
+        os.makedirs(_plots_dir, exist_ok=True)
+        plot_istd_stability_tracking(
+            original_df,
+            sample_columns,
+            sample_info_df,
+            str(_plots_dir),
+            run_timestamp,
+            col_to_info=col_to_info,
+        )
 
-    print(f"\n  ✓ ISTD Correction 完成 → {os.path.basename(output_file)}")
+    print(
+        f"\n  ✓ Step 1 完成 ({correction_summary['istd_mode']}; "
+        f"corrected={correction_summary['corrected_features']}) "
+        f"→ {os.path.basename(output_file)}"
+    )
 
     # 🎯 返回統計資訊給 GUI
     return ProcessingResult(
@@ -1890,6 +1937,11 @@ def main(input_file=None, session_dir=None):
         metabolites=len(original_df),
         samples=len(sample_columns),
         status=WorkflowOutcome.SUCCEEDED,
+        extra={
+            **correction_summary,
+            'total_istd': gate_eval['total_istd'],
+            'good_istd': gate_eval['good_istd_count'],
+        },
     )
 
 
