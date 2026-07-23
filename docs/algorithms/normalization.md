@@ -82,6 +82,13 @@ Adductomics 目前採微量分析政策：不論 Step 2 LOESS 後的穩定性如
 
 如果工作簿沒有 QC 樣本，Step 3 會明確中止，而不是用所有樣本建立 robust median reference。
 
+Step 3 會依實際進入 normalization matrix 的 sample columns 重新計算
+design-identifiability receipt，並將單一 canonical
+`Design_Identifiability` sheet 寫入 active output，同時放入
+`ProcessingResult.extra`。這避免 Step 2 skip 時只存在記憶體中的
+receipt 在 downstream handoff 消失。Receipt 不會改變 PQN／SpecNorm
+數值，也不會把 non-comparable pooled QC 轉成 cross-batch scaling。
+
 ### 2. 互斥的標準化流程
 
 #### 步驟 1: 樣本分類
