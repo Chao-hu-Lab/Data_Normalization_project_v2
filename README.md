@@ -1,144 +1,122 @@
 # Data Normalization Workflow v2
 
-Data Normalization Workflow v2 (DNP) is a Python workflow for LC-MS metabolomics matrix preprocessing. It applies internal-standard correction, batch-local QC-LOESS drift correction, and concentration normalization, then leaves cross-batch scaling as an explicit diagnostics-only step.
+Data Normalization Workflow v2 (DNP) is a fail-closed LC-MS matrix
+preprocessing workflow. It supports explicit ISTD monitoring/correction,
+batch-local QC drift correction, specimen-aware normalization, and design
+identifiability diagnostics without pretending that an unidentifiable study
+design has been repaired.
 
-The current active scientific workflow ends at **Step 3**. Step 4 remains visible in the GUI for manual diagnostics, but it is not an endorsed correction output and is not run by Auto Run.
+The endorsed workflow ends at **Step 3**. Step 4 remains available only as a
+manual diagnostics surface.
 
-## Contents
+## What DNP does
 
-- [Preview](#preview)
-- [Workflow Contract](#workflow-contract)
-- [Install](#install)
-- [Quick Start](#quick-start)
-- [Example Workbooks](#example-workbooks)
-- [Input Workbook Contract](#input-workbook-contract)
-- [Outputs](#outputs)
-- [Python API](#python-api)
-- [CLI Status](#cli-status)
-- [Testing](#testing)
-- [Documentation](#documentation)
-- [Troubleshooting](#troubleshooting)
-- [License](#license)
+| Step | Method | Current responsibility |
+| --- | --- | --- |
+| 1 | ISTD Monitoring / Selective Correction | Monitor marked ISTDs. Preserve raw analyte values by default; correct only explicitly mapped features whose donor passes quality gates. |
+| 2 | QC-LOWESS / linear fallback | Correct feature-wise, within-batch run-order drift. Six or seven effective QC points may use gated log-linear correction; eight or more may use LOWESS. |
+| 3 | `PQN` or `SpecNorm` | Produce the final normalized matrix. `PQN` is the urine/global-dilution default; `SpecNorm` is explicit specimen-reference division for tissue data. |
+| 4 | QC Batch Scaling diagnostics | Report residual batch behavior when explicitly requested. It does not produce an endorsed corrected matrix. |
 
-## Preview
+Steps 2 and 3 also write a `Design_Identifiability` receipt. It reports which
+sample-type contrasts are supported, assumption-dependent, or
+non-identifiable from the available batch, order, QC-pool, pair, and bridge
+metadata. The receipt never modifies intensities.
 
-GUI preview: pending verified capture.
+## Quick start
 
-The first screenshot will show the main workflow screen with `data/synthetic_correction_input.xlsx` loaded, `PQN` selected, and Auto Run ready. Screenshot capture rules live in [docs/assets](docs/assets/README.md).
-
-| Asset | Intended capture |
-| --- | --- |
-| `docs/assets/dnp-gui-overview.png` | Main GUI after selecting `data/synthetic_correction_input.xlsx`, with `PQN` selected and Auto Run ready. |
-| `docs/assets/dnp-step3-session.png` | Optional output/session view showing the Step 3 workbook and generated plots. |
-
-## Workflow Contract
-
-| Step | Module | Status | Responsibility |
-| --- | --- | --- | --- |
-| 1 | ISTD Monitoring / Selective Correction | Active, mapping-gated | Monitor all marked ISTDs. Preserve raw analyte values by default; correct only features with an explicit matched or validated-surrogate mapping. |
-| 2 | QC-LOESS | Active | Correct within-batch run-order drift using batch-local QC anchors; 6–7 effective QC may use the gated log-linear fallback, while ≥8 may use LOWESS. |
-| 3 | Concentration Normalization | Active | Choose `PQN` (default; urine/global dilution) or `SpecNorm` (explicit tissue-reference division); this is the final normalized output. |
-| 4 | QC Batch Scaling | Manual diagnostics only | Emit batch diagnostics when explicitly requested with `diagnostics_only=True`; not part of Auto Run. |
-
-Important boundaries:
-
-- Step 1's RT/CV-weighted automatic matcher remains opt-in legacy compatibility code and is not exposed by the GUI. No mapping means monitoring-only success, not universal correction.
-- Step 2 does not align batches against a cross-batch QC target.
-- Step 3 may use QC samples to build a PQN reference, but it is not a batch-correction module.
-- Step 3 fails closed when QC samples are missing for the active adductomics policy.
-- Step 4 active scaling is paused; use it only for residual analysis, QC alignment plots, and batch boxplots.
-- Sample columns must map reliably to `SampleInfo`; unmapped sample columns fail closed.
-
-## Install
-
-### Runtime
+Install the runtime dependencies:
 
 ```powershell
 pip install -r requirements.txt
 ```
 
-Runtime dependencies are tracked in [requirements.txt](requirements.txt). The core stack is:
-
-- `pandas`
-- `numpy`
-- `openpyxl`
-- `scipy`
-- `scikit-learn`
-- `statsmodels`
-- `matplotlib`
-- `PySide6` (Qt for Python)
-
-### Development
-
-```powershell
-pip install -r requirements-dev.txt
-```
-
-CI targets Python 3.11 and 3.12. Installing `requirements.txt` provides the PySide6 runtime used by the desktop GUI.
-
-## Quick Start
-
-Launch the PySide6/Qt GUI from the repository root:
+Launch the PySide6 desktop application:
 
 ```powershell
 python Data_Normalization_program_v2.py
 ```
 
-Typical GUI flow:
+Typical workflow:
 
-1. Click **Browse** and select a current-format Excel workbook.
-2. Keep the default Step 3 method `PQN` for urine/global dilution, or explicitly choose `SpecNorm` for tissue data with a trusted per-sample reference.
-3. Click **Auto Run** to execute the active workflow through Step 3.
-4. Open the Step 3 workbook or plots from the GUI.
-5. Run Step 4 only when you explicitly need diagnostics-only batch reports.
+1. Select a current-format Excel workbook.
+2. Keep `PQN` for urine/global dilution, or choose `SpecNorm` when tissue
+   samples have a trusted per-sample reference.
+3. Run Auto Run. It executes Steps 1–3 and stops before Step 4.
+4. Use the Step 3 workbook as the normalized result.
+5. Run Step 4 manually only when residual batch diagnostics are needed.
 
-For a first local smoke run, use `data/synthetic_correction_input.xlsx`; it is deterministic synthetic data with endpoint QCs, unfilled missing values, ISTD markers, and a reference column that can exercise the explicit `SpecNorm` path.
+For a deterministic smoke test, use
+`data/synthetic_correction_input.xlsx`. It is synthetic, contains endpoint
+QCs and unfilled missing values, and is not real study data.
 
-## Example Workbooks
+## Scientific boundaries
 
-The tracked smoke-test workbook is generated from a reviewed simulation contract. It is not real experimental data and does not contain pre-correction imputation.
+- Step 1 does not automatically assign unknown features to the nearest or
+  statistically convenient ISTD.
+- The legacy RT/CV/intensity/mass auto-matcher is programmatic compatibility
+  code and is not exposed by the GUI.
+- No `ISTD_Mapping` means monitoring-only success. No detected ISTD means Step
+  1 is skipped and Step 2 receives the original `RawIntensity` workbook.
+- The current matrix does not contain sample-level RT observations. Step 1
+  therefore reports RT stability as unavailable instead of inventing a trend.
+- Step 2 is batch-local run-order correction, not cross-batch harmonization.
+- Step 3 may use QC samples to build a PQN reference, but it is not a batch
+  correction method.
+- Step 4 is diagnostics-only. Active ComBat or QC-median batch scaling is
+  outside the current product boundary.
+- Missing intensities remain missing during correction. Imputation belongs
+  after correction and before statistical methods that require a complete
+  matrix.
+- Strong sample-type/batch/order association is an identifiability warning.
+  Software cannot uniquely separate biology from drift when the design does
+  not contain the required contrast.
 
-| Path | Use for | Notes |
-| --- | --- | --- |
-| `data/synthetic_correction_input.xlsx` | First GUI and regression smoke run | Rebuild with `python scripts/synthetic_matrix_vnext.py`; same seed must preserve the semantic workbook digest. |
-| `build/scenario_matrices/` | Generated stress scenarios | Untracked outputs from `python scripts/generate_batcheffect_data.py --all`. |
+## Input workbook
 
-Future larger examples should go under [data/examples](data/examples/README.md) or be linked from this section with file size and provenance. Do not add private research workbooks to the repository.
+DNP's current workbook contract uses `.xlsx`.
 
-## Input Workbook Contract
+### Required sheets
 
-DNP expects a current-format Excel workbook (`.xlsx` or `.xls`). Missing intensities must remain blank at the correction stages; imputation belongs after correction and before statistical methods that require a complete matrix.
-
-Required sheets:
-
-| Sheet | Required columns / content |
+| Sheet | Contract |
 | --- | --- |
-| `RawIntensity` | First column is the feature ID (`Mz/RT` or legacy `FeatureID`); sample columns contain feature intensities. |
-| `SampleInfo` | At minimum `Sample_Name` and `Sample_Type`; Step 2 also requires `Injection_Order`; `Batch` is used for batch-local handling and design diagnostics. |
-| `ISTD_Mapping` | Optional Step 1 mapping sheet. Required columns: `Analyte_Feature_ID`, `ISTD_Feature_ID`, `Mapping_Type`, and `Validation_Reference`. |
+| `RawIntensity` | First column is `Mz/RT` or legacy `FeatureID`; remaining sample columns contain intensities. ISTD feature IDs are marked with red font. |
+| `SampleInfo` | Contains `Sample_Name` and `Sample_Type`. Step 2 also requires complete batch-local `Injection_Order`; `Batch` is required by the current correction and diagnostic policies. |
 
-`RawIntensity` details:
+### Optional Step 1 mapping
 
-- Feature IDs use the `m/z/RT` style, for example `150.0583/2.35`.
-- ISTD features are marked with red font in the first column.
-- Optional `Sample_Type` metadata rows are preserved and excluded from numeric calculations.
+`ISTD_Mapping` enables selective feature correction:
 
-`SampleInfo` details:
-
-| Column | Purpose |
+| Column | Meaning |
 | --- | --- |
-| `Sample_Name` | Must match data-sheet sample columns exactly or through the shared sample-name normalization rules. |
+| `Analyte_Feature_ID` | Feature to evaluate for correction. Each analyte may appear once. |
+| `ISTD_Feature_ID` | Explicit donor feature marked as an ISTD in `RawIntensity`. |
+| `Mapping_Type` | `matched` or `validated_surrogate`. |
+| `Validation_Reference` | SOP, assay record, or other provenance supporting the mapping. |
+
+Mappings fail closed when feature identities are ambiguous, the donor is
+unstable, or donor values are unavailable where the analyte is observed.
+Rejected and unmapped features retain their raw values.
+
+### Sample metadata
+
+| Column | Use |
+| --- | --- |
+| `Sample_Name` | Matches an intensity column through the shared sample-name rules. |
 | `Sample_Type` | Common values include `QC`, `Control`, `Exposure`, `Normal`, and `Blank`. |
-| `Injection_Order` | Required by Step 2; values must be complete and unique within each batch. |
-| `Batch` | Used for Step 2 batch-local correction and Step 4 diagnostics. |
-| `Pair_ID` | Optional typed pairing metadata. Missing values do not block unpaired processing; DNP does not infer pairs from sample names. |
-| `Bridge_ID` | Optional same-sample cross-batch bridge identifier. Without a repeated bridge, cross-batch level alignment remains an explicit evidence gap. |
-| `QC_Pool_ID` | Optional pooled-QC composition identifier. Different IDs across batches are flagged as non-comparable and are never converted into an automatic scale factor. |
-| named numeric specimen-reference | Required only for explicit `SpecNorm` (and the legacy hybrid); common names include `DNA_ug/20uL`, protein amount, concentration, reference, or amount columns. Every non-QC sample must contain a positive finite value. Operational metadata such as `Injection_Volume` is ignored. |
+| `Injection_Order` | Required by Step 2; complete and unique within each batch. |
+| `Batch` | Defines batch-local correction and design diagnostics. |
+| `Pair_ID` | Optional typed pairing metadata. DNP does not infer pairs from sample names. |
+| `Bridge_ID` | Optional same-sample cross-batch bridge identifier. |
+| `QC_Pool_ID` | Optional pooled-QC composition identifier. Different pools are not treated as interchangeable scale anchors. |
+| specimen-reference column | Required for `SpecNorm`; every non-QC sample must have a positive finite value in a trusted DNA, protein, concentration, reference, or amount column. |
+
+Unmapped sample columns and missing required metadata raise actionable errors
+instead of falling back to column position or guessed labels.
 
 ## Outputs
 
-GUI and workflow runs write into a timestamped session directory:
+GUI and workflow runs use a timestamped session directory:
 
 ```text
 output/
@@ -147,118 +125,87 @@ output/
     ├── Step2_QC_LOESS.xlsx
     ├── Step3_Normalized_PQN.xlsx
     ├── Step3_Normalized_SpecNorm.xlsx
-    ├── Step4_QC_Batch_Scaling.xlsx  # optional diagnostics-only output
+    ├── Step4_QC_Batch_Scaling.xlsx   # optional, diagnostics-only
     └── plots/
         └── *.png
 ```
 
-The active normalized result is the Step 3 workbook. Step 2 and Step 3 expose a
-`Design_Identifiability` receipt; it diagnoses supported, assumption-dependent,
-and non-identifiable contrasts without modifying intensities. Step 4 output,
-when present, is diagnostic evidence only.
+Important workbook receipts:
 
-Step 1 writes `ISTD_Monitoring` plus an `ISTD_Correction` matrix. Without a
-mapping, every analyte value and missingness state remains unchanged. With a
-mapping, each feature records its mapped ISTD, mapping type, validation
-reference, correction status, and rejection reason, so corrected and
-uncorrected features can coexist without hiding their estimand.
+- `ISTD_Monitoring`: ISTD missingness, QC CV, area/order association, RT/order
+  availability, and alarms.
+- `ISTD_Correction`: mixed corrected/uncorrected analyte matrix with mapped
+  ISTD, mapping type, validation reference, status, and reason per feature.
+- `Design_Identifiability`: metadata-only support assessment written by Steps
+  2 and 3.
 
-Individual processor calls without a session directory still fall back to timestamped files under `output/`.
+Each processor returns a `ProcessingResult`. Downstream automation should read
+`result.output_path` rather than infer filenames.
 
 ## Python API
 
-The processor entry points are intentionally stable:
+```python
+from metabolomics.processors import istd, normalization, qc_lowess
+
+step1 = istd.main(input_file="your_data.xlsx")
+step2 = qc_lowess.main(input_file=step1.output_path)
+step3 = normalization.main(
+    input_file=step2.output_path,
+    normalization_method="PQN",  # or "SpecNorm"
+)
+
+print(step3.status.value)  # "succeeded" or "skipped"
+print(step3.output_path)
+```
+
+Supported Step 3 method names are `PQN` and `SpecNorm`. Legacy aliases
+`SpecNorm+PQN` and `SpecNorm_PQN` remain accepted programmatically but are not
+GUI choices.
+
+Optional Step 4 diagnostics:
 
 ```python
-from metabolomics.processors import istd, normalization, qc_batch_scaling, qc_lowess
+from metabolomics.processors import qc_batch_scaling
 
-result1 = istd.main(input_file="your_data.xlsx")
-result2 = qc_lowess.main(input_file=result1.output_path)
-result3 = normalization.main(
-    input_file=result2.output_path,
-    normalization_method="PQN",  # urine/global dilution default
-)
-
-# Tissue DNA example: signal per unit DNA.
-result3_tissue = normalization.main(
-    input_file=result2.output_path,
-    normalization_method="SpecNorm",
-)
-
-# Optional diagnostics-only Step 4.
-result4 = qc_batch_scaling.main(
-    input_file=result3.output_path,
+diagnostics = qc_batch_scaling.main(
+    input_file=step3.output_path,
     diagnostics_only=True,
 )
 ```
 
-Each processor returns a `ProcessingResult` with `status="succeeded"` or `status="skipped"`.
-Skipped results include a `reason` and pass through a valid `.output_path`; validation,
-calculation, and save failures raise exceptions. The GUI workflow owns the separate
-`failed` and `cancelled` outcomes. Downstream code should read `.output_path`, not infer filenames.
+## Development and verification
 
-Supported Step 3 method names:
+Install development dependencies:
 
-- `PQN`
-- `SpecNorm`
+```powershell
+pip install -r requirements-dev.txt
+```
 
-Legacy programmatic aliases `SpecNorm+PQN` and `SpecNorm_PQN` remain accepted
-for backward compatibility, but are not active GUI choices.
-
-`SpecNorm` means specimen-reference normalization in this project: real samples are divided by a trusted per-sample reference value from `SampleInfo`; QC samples are not divided in this stage.
-
-Method selection is explicit and specimen-aware rather than column-driven: tissue DNA-input `SpecNorm` may follow the distinct feature-level QC correction, while urine defaults to PQN. The legacy `SpecNorm+PQN` implementation is scale-invariant to the specimen-reference division for samples with valid references, so it is not described as two independent corrections; see [Normalization Algorithm](docs/algorithms/normalization.md#依-specimen-type-選擇方法tissue-specnormurine-pqn).
-
-## CLI Status
-
-The repository currently has GUI launchers and maintenance scripts, but not a first-class end-user CLI for arbitrary Step 1-3 workflow runs.
-
-Supported entry points:
-
-- `python Data_Normalization_program_v2.py`: launch the PySide6/Qt GUI from the repository root.
-- `python -m metabolomics`: launch the PySide6/Qt package entry point when `src/` is on `PYTHONPATH` or the package is installed.
-- Python processor API: call `istd.main(...)`, `qc_lowess.main(...)`, and `normalization.main(...)` from automation code.
-- `scripts/run_cleanup_acceptance_workflow.py` and `scripts/verify_workbook_equivalence.py`: acceptance and regression utilities, not general user-facing workflow commands.
-
-## Testing
-
-Recommended local gates:
+Recommended gates:
 
 ```powershell
 python -m pytest -m "not slow and not integration" -q
 python -m pytest .\tests\integration\test_scenario_smoke.py -q
-python -m ruff check src tests scripts Data_Normalization_program_v2.py --select F401,F841,F821
+python -m ruff check src tests scripts Data_Normalization_program_v2.py
 git diff --check
 ```
 
-For output-affecting processor changes, run the real-workbook acceptance workflow and workbook equivalence checker described in [docs/TESTING.md](docs/TESTING.md).
+For output-affecting processor changes, also run the real-workbook acceptance
+and workbook-equivalence checks described in [docs/TESTING.md](docs/TESTING.md).
+Do not commit private research workbooks or one-off diagnostic outputs.
 
 ## Documentation
 
-- [Testing Guide](docs/TESTING.md): test layers, scenario smoke, and acceptance workbook equivalence.
-- [ISTD Algorithm](docs/algorithms/istd.md): Step 1 monitoring/matched-correction boundary, legacy auto-match status, and output interpretation.
-- [QC-LOWESS Algorithm](docs/algorithms/qc_lowess.md): Step 2 batch-local drift correction contract.
-- [Design Identifiability](docs/algorithms/design_identifiability.md): metadata-only support checks for sample type, order, batch, QC pools, pairs, and bridges.
-- [Normalization Algorithm](docs/algorithms/normalization.md): Step 3 `PQN` / `SpecNorm` behavior and output sheets.
-- [Workflow Responsibility Spec](docs/plans/2026-04-23-dnp-workflow-responsibility-spec.md): active responsibility boundary for Steps 1-4.
-- [PQN Reference Rules](docs/plans/2026-04-23-pqn-reference-selection-rules.md): active adductomics QC-reference policy.
-- [Specimen-aware Step 3 Contract](docs/plans/2026-07-23-step3-specimen-aware-method-contract.md): active `PQN` / explicit `SpecNorm` method decision.
-- [ComBat Archive](docs/algorithms/combat.md): why ComBat is outside DNP's active boundary.
-- `python scripts/generate_batcheffect_data.py --all`: generate the disposable scenario matrix set and manifest under `build/scenario_matrices/`.
+- [Testing Guide](docs/TESTING.md)
+- [ISTD Monitoring and Selective Correction](docs/algorithms/istd.md)
+- [QC-LOWESS](docs/algorithms/qc_lowess.md)
+- [Design Identifiability](docs/algorithms/design_identifiability.md)
+- [Normalization](docs/algorithms/normalization.md)
+- [ComBat boundary](docs/algorithms/combat.md)
+- [Workflow responsibility spec](docs/plans/2026-04-23-dnp-workflow-responsibility-spec.md)
+- [PQN reference rules](docs/plans/2026-04-23-pqn-reference-selection-rules.md)
+- [Specimen-aware Step 3 contract](docs/plans/2026-07-23-step3-specimen-aware-method-contract.md)
 
-Most dated planning notes under `docs/plans/` and `docs/superpowers/plans/` are archived records. The active contract references listed above are exceptions until they are migrated into a dedicated contract directory.
-
-## Troubleshooting
-
-| Symptom | Check |
-| --- | --- |
-| Missing `RawIntensity` or `SampleInfo` | Confirm the workbook follows the current input contract and contains both required sheets. |
-| No ISTD found | Confirm ISTD feature IDs are marked with red font in the first column of `RawIntensity`. |
-| Sample name mismatch | Align `SampleInfo.Sample_Name` with data-sheet sample columns; DNP fails closed instead of silently guessing. |
-| Step 2 cannot start | Confirm `SampleInfo` has `Sample_Name`, `Sample_Type`, and `Injection_Order`, and contains QC samples. |
-| `SpecNorm` cannot start | Confirm every non-QC sample has a positive finite value in a trusted named specimen-reference column, or choose `PQN` when reference division is not the intended estimand. |
-| Auto Run stops before Step 4 | This is expected. Auto Run ends at Step 3; Step 4 is manual diagnostics-only. |
-
-## License
-
-This project is for research purposes.
+Most dated files under `docs/plans/` and `docs/superpowers/plans/` are archived
+decision records. Follow the authority routing in `AGENTS.md` for current
+contracts.
