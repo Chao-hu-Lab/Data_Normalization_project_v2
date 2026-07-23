@@ -1761,18 +1761,6 @@ def main(input_file=None, session_dir=None, *, legacy_auto_match=False):
     if input_file is None:
         raise ValueError("input_file is required; GUI must provide the file path.")
 
-    session_dir = resolve_session_dir(input_file=input_file, session_dir=session_dir)
-
-
-    # 🔧 建立 output 資料夾
-    output_dir = get_output_root(input_file=input_file)
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir, exist_ok=True)
-        print(f"已建立 'output' 資料夾: {output_dir}")
-
-    if input_file is None:
-        raise ValueError("input_file is required; GUI must provide the file path.")
-
     # 驗證檔案是否存在
     if not os.path.exists(input_file):
         raise FileNotFoundError(f"找不到檔案: {input_file}")
@@ -1784,48 +1772,6 @@ def main(input_file=None, session_dir=None, *, legacy_auto_match=False):
 
     # 載入數據 (raises ValueError on failure)
     original_df, sample_info_df, all_sheets, col_to_info = load_and_process_data(input_file)
-
-    # 計算校正結果 (raises ValueError on failure)
-    sample_columns = None
-
-    # 🔧 修改：儲存結果到 output 資料夾
-    run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
-    if session_dir is not None:
-        from metabolomics.utils.file_io import session_output_path, session_plots_dir
-        output_file = session_output_path(session_dir, step=1, prefix="ISTD_Results")
-        _plots_dir = session_plots_dir(session_dir)
-    else:
-        output_file = build_output_path("ISTD_Results", input_file=input_file, timestamp=run_timestamp)
-        _plots_dir = build_plots_dir(
-            "ISTD_Correction_plots",
-            input_file=input_file,
-            timestamp=run_timestamp,
-            session_prefix="ISTD_Correction"
-        )
-
-    def _plot_path(filename_without_ext):
-        """Build plot file path, adding step prefix when in session mode."""
-        if session_dir is not None:
-            return os.path.join(str(_plots_dir), f"Step1_{filename_without_ext}.png")
-        return os.path.join(str(_plots_dir), f"{filename_without_ext}_{run_timestamp}.png")
-
-    # ===== 防呆17: 输出目录权限检查 =====
-    try:
-        # 测试写入权限
-        test_file = os.path.join(output_dir, '.write_test')
-        with open(test_file, 'w') as f:
-            f.write('test')
-        os.remove(test_file)
-    except Exception as e:
-        print(f"❌ 錯誤：無法寫入 output 目錄")
-        print(f"   請檢查目錄權限: {output_dir}")
-        print(f"   詳細錯誤: {e}")
-        raise Exception(f"輸出目錄無寫入權限: {output_dir}")
-
-    # ===== 防呆18: 输出文件检查 =====
-    if os.path.exists(output_file):
-        print(f"⚠️ 警告：輸出檔案已存在，將被覆蓋")
-        print(f"   {output_file}")
 
     gate_eval = evaluate_istd_gate(original_df, col_to_info, sample_info_df=sample_info_df)
     print("\n" + "="*70)
@@ -1856,6 +1802,45 @@ def main(input_file=None, session_dir=None, *, legacy_auto_match=False):
                 'good_istd': gate_eval['good_istd_count'],
             }
         )
+
+    session_dir = resolve_session_dir(input_file=input_file, session_dir=session_dir)
+    output_dir = get_output_root(input_file=input_file)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"已建立 'output' 資料夾: {output_dir}")
+
+    run_timestamp = datetime.now().strftime(DATETIME_FORMAT_FULL)
+    if session_dir is not None:
+        from metabolomics.utils.file_io import session_output_path, session_plots_dir
+        output_file = session_output_path(session_dir, step=1, prefix="ISTD_Results")
+        _plots_dir = session_plots_dir(session_dir)
+    else:
+        output_file = build_output_path(
+            "ISTD_Results",
+            input_file=input_file,
+            timestamp=run_timestamp,
+        )
+        _plots_dir = build_plots_dir(
+            "ISTD_Correction_plots",
+            input_file=input_file,
+            timestamp=run_timestamp,
+            session_prefix="ISTD_Correction",
+        )
+
+    try:
+        test_file = os.path.join(output_dir, '.write_test')
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+    except Exception as e:
+        print("❌ 錯誤：無法寫入 output 目錄")
+        print(f"   請檢查目錄權限: {output_dir}")
+        print(f"   詳細錯誤: {e}")
+        raise Exception(f"輸出目錄無寫入權限: {output_dir}") from e
+
+    if os.path.exists(output_file):
+        print("⚠️ 警告：輸出檔案已存在，將被覆蓋")
+        print(f"   {output_file}")
 
     mapping_df = all_sheets.get(ISTD_MAPPING_SHEET)
     monitoring_df = build_istd_monitoring_table(original_df, sample_info_df)

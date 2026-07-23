@@ -207,6 +207,49 @@ class TestISTDCorrectionOutput:
         assert Path(result.output_path) == workbook_path
         assert result.extra == {"total_istd": 0, "good_istd": 0}
 
+    def test_no_istd_skip_does_not_require_output_write_access(
+        self,
+        istd_module,
+        tmp_path,
+        monkeypatch,
+    ):
+        sample_names = ["QC1", "QC2", "QC3", "Sample1"]
+        raw_df = pd.DataFrame(
+            {
+                "Mz/RT": ["100.1/1.0"],
+                **{name: [100.0] for name in sample_names},
+            }
+        )
+        sample_info_df = pd.DataFrame(
+            {
+                "Sample_Name": sample_names,
+                "Sample_Type": ["QC", "QC", "QC", "Exposure"],
+                "Injection_Order": [1, 2, 3, 4],
+                "Batch": ["A"] * 4,
+            }
+        )
+        workbook_path = tmp_path / "no_istd_no_write.xlsx"
+        with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+            raw_df.to_excel(writer, sheet_name="RawIntensity", index=False)
+            sample_info_df.to_excel(writer, sheet_name="SampleInfo", index=False)
+
+        real_open = open
+        write_attempts = []
+
+        def reject_write_probe(file, mode="r", *args, **kwargs):
+            if str(file).endswith(".write_test") and "w" in mode:
+                write_attempts.append(str(file))
+                raise PermissionError("output is read-only")
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", reject_write_probe)
+
+        result = istd_module.main(input_file=workbook_path)
+
+        assert result.status is WorkflowOutcome.SKIPPED
+        assert result.output_path == workbook_path
+        assert write_attempts == []
+
     @pytest.mark.slow
     def test_monitoring_succeeds_when_fewer_than_five_istds_are_stable(
         self,
